@@ -1,223 +1,217 @@
+// util simple para slots 20 min (L–V)
+function getTimeSlots() {
+    return [
+        "08:00",
+        "08:20",
+        "08:40",
+        "09:00",
+        "09:20",
+        "09:40",
+        "10:00",
+        "10:20",
+        "10:40",
+        "11:00",
+        "11:20",
+        "11:40",
+        "14:00",
+        "14:20",
+        "14:40",
+        "15:00",
+        "15:20",
+        "15:40",
+        "16:00",
+        "16:20",
+        "16:40",
+    ];
+}
+
 function chatbotResponse(message, session) {
     let response = "";
     let nextState = session.state;
-    let attempts = session.attempts || 0;
     let data = session.data || {};
-
     const msg = message.toLowerCase();
 
-    // ======================
-    // START / BIENVENIDA
-    // ======================
+    /* ======================
+     START + MENÚ
+  ====================== */
     if (session.state === "START") {
         response =
             "Para tu seguridad, no compartas información clínica sensible por WhatsApp.\n" +
-            "Si es una urgencia, acude a los servicios de emergencia de tu ciudad.\n\n" +
-            "Soy el asistente del consultorio del Dr. Guido Pugliese.\n" +
-            "¿En qué te puedo ayudar hoy?\n\n" +
-            "1️⃣ Agendar cita\n" +
-            "2️⃣ Reprogramar cita\n" +
-            "3️⃣ Cancelar cita\n" +
-            "4️⃣ Información";
+            "Si es una urgencia, acude a servicios de emergencia.\n\n" +
+            "Soy el asistente del consultorio del Dr. Guido Pugliese.\n\n" +
+            "1️⃣ Agendar cita";
 
         nextState = "MENU";
-    }
-
-    // ======================
-    // MENU PRINCIPAL
-    // ======================
-    else if (session.state === "MENU") {
+    } else if (session.state === "MENU") {
         if (msg === "1") {
             response = "Perfecto. Para agendar, indícame tu nombre completo.";
             nextState = "AGENDAR_NOMBRE";
-        } else if (msg === "2") {
-            response = "Claro. Para reprogramar, indícame tu nombre completo.";
-            nextState = "REPROGRAMAR_NOMBRE";
-        } else if (msg === "3") {
-            response = "Entendido. Para cancelar, indícame tu nombre completo.";
-            nextState = "CANCELAR_NOMBRE";
-        } else if (msg === "4") {
-            response =
-                "¿Qué información necesitas?\n\n" +
-                "1️⃣ Ubicación\n" +
-                "2️⃣ Horarios\n" +
-                "3️⃣ Medios de pago\n" +
-                "4️⃣ Hablar con secretaría\n" +
-                "5️⃣ Volver al menú";
-            nextState = "INFO_MENU";
         } else {
-            response =
-                "Para ayudarte más rápido, elige una opción del menú:\n" +
-                "1️⃣ Agendar\n2️⃣ Reprogramar\n3️⃣ Cancelar\n4️⃣ Información";
+            response = "Por favor elige 1️⃣ para agendar cita.";
         }
-    }
+    } else if (session.state === "AGENDAR_NOMBRE") {
 
-    // ======================
-    // INFORMACIÓN (FAQ)
-    // ======================
-    else if (session.state === "INFO_MENU") {
-        if (msg === "1") {
-            response =
-                "Estamos ubicados en: [DIRECCIÓN DEL CONSULTORIO].\n\n" +
-                "1️⃣ Ver en Google Maps\n" +
-                "2️⃣ Volver al menú";
-            nextState = "INFO_UBICACION";
-        } else if (msg === "2") {
-            response =
-                "Horario de atención:\n[LUNES A VIERNES – HORARIO].\n\n" +
-                "1️⃣ Agendar cita\n" +
-                "2️⃣ Volver";
-            nextState = "INFO_HORARIOS";
-        } else if (msg === "3") {
-            response =
-                "Medios de pago:\nEfectivo / Tarjetas / Transferencia.\n\n" +
-                "1️⃣ Agendar cita\n" +
-                "2️⃣ Volver";
-            nextState = "INFO_PAGOS";
-        } else if (msg === "4") {
-            response =
-                "Te paso con secretaría para ayudarte directamente.\n" +
-                "Te responderán en el próximo horario hábil.";
-            nextState = "HANDOFF";
-        } else if (msg === "5") {
-            nextState = "START";
-            response = "Volviendo al menú principal…";
-        } else {
-            response = "Por favor elige una opción válida del menú.";
-        }
-    }
-
-    // ======================
-    // AGENDAR CITA
-    // ======================
-    else if (session.state === "AGENDAR_NOMBRE") {
+    /* ======================
+     NOMBRE
+  ====================== */
         data.nombre = message;
+
         response =
-            `Gracias, ${data.nombre}.\n¿Qué tipo de cita necesitas?\n\n` +
-            "1️⃣ Primera vez\n" +
-            "2️⃣ Control / seguimiento\n" +
-            "3️⃣ No estoy seguro(a)";
-        nextState = "AGENDAR_TIPO";
-    } else if (session.state === "AGENDAR_TIPO") {
-        data.tipoCita = message;
+            `Gracias, ${data.nombre}.\n\n` +
+            "¿Es tu primera vez con el especialista?\n\n" +
+            "1️⃣ Sí\n" +
+            "2️⃣ No";
+
+        nextState = "AGENDAR_PRIMERA_VEZ";
+    } else if (session.state === "AGENDAR_PRIMERA_VEZ") {
+
+    /* ======================
+     PRIMERA VEZ
+  ====================== */
+        if (msg === "1") data.primeraVez = "Sí";
+        else if (msg === "2") data.primeraVez = "No";
+        else {
+            response = "Elige 1️⃣ o 2️⃣.";
+            return { response, nextState, data };
+        }
+
         response =
-            "¿Tienes preferencia de fecha u horario?\n\n" +
-            "1️⃣ Esta semana\n" +
-            "2️⃣ Próxima semana\n" +
-            "3️⃣ En la mañana\n" +
-            "4️⃣ En la tarde\n" +
-            "5️⃣ Me es indiferente";
-        nextState = "AGENDAR_PREFERENCIA";
-    } else if (session.state === "AGENDAR_PREFERENCIA") {
-        data.preferencia = message;
+            "Selecciona el servicio:\n\n" +
+            "1️⃣ Visita Ortopedia y Traumatología\n" +
+            "2️⃣ Consulta de Ortopedia y Traumatología";
+
+        nextState = "AGENDAR_SERVICIO";
+    } else if (session.state === "AGENDAR_SERVICIO") {
+
+    /* ======================
+     SERVICIO
+  ====================== */
+        const servicios = {
+            1: "Visita Ortopedia y Traumatología",
+            2: "Consulta de Ortopedia y Traumatología",
+        };
+
+        if (!servicios[msg]) {
+            response = "Selecciona una opción válida (1 o 2).";
+            return { response, nextState, data };
+        }
+
+        data.servicio = servicios[msg];
+
         response =
-            "Perfecto. Ya tengo tu solicitud.\n" +
-            "La estoy enviando a secretaría para confirmarte la cita.\n\n" +
-            "Te responderán lo antes posible en el próximo horario hábil.";
+            "Selecciona tu aseguradora:\n\n" +
+            "1️⃣ Agendo cita sin aseguradora\n" +
+            "2️⃣ Colmédica\n" +
+            "3️⃣ Colsanitas\n" +
+            "4️⃣ Allianz\n" +
+            "5️⃣ Panamerican Life";
+
+        nextState = "AGENDAR_ASEGURADORA";
+    } else if (session.state === "AGENDAR_ASEGURADORA") {
+
+    /* ======================
+     ASEGURADORA
+  ====================== */
+        const aseguradoras = {
+            1: "Sin aseguradora",
+            2: "Colmédica",
+            3: "Colsanitas",
+            4: "Allianz",
+            5: "Panamerican Life",
+        };
+
+        if (!aseguradoras[msg]) {
+            response = "Selecciona una opción válida (1 a 5).";
+            return { response, nextState, data };
+        }
+
+        data.aseguradora = aseguradoras[msg];
+
+        response =
+            "Selecciona el día de tu preferencia (Lunes a Viernes).\n" +
+            "Ejemplo: Lunes / Martes / Miércoles / Jueves / Viernes";
+
+        nextState = "AGENDAR_DIA";
+    } else if (session.state === "AGENDAR_DIA") {
+
+    /* ======================
+     DÍA
+  ====================== */
+        data.dia = message;
+
+        const slots = getTimeSlots()
+            .slice(0, 6)
+            .map((h, i) => `${i + 1}️⃣ ${h}`)
+            .join("\n");
+
+        response =
+            "Selecciona un horario disponible (citas de 20 minutos):\n\n" +
+            slots +
+            "\n\nResponde con el número.";
+
+        nextState = "AGENDAR_HORA";
+    } else if (session.state === "AGENDAR_HORA") {
+
+    /* ======================
+     HORA
+  ====================== */
+        const slots = getTimeSlots();
+        const index = parseInt(msg) - 1;
+
+        if (isNaN(index) || !slots[index]) {
+            response = "Selecciona un número válido de horario.";
+            return { response, nextState, data };
+        }
+
+        data.hora = slots[index];
+
+        response =
+            "Para confirmarte la cita, ¿este WhatsApp es tu número de contacto?\n\n" +
+            "1️⃣ Sí\n" +
+            "2️⃣ No";
+
+        nextState = "AGENDAR_CONTACTO";
+    } else if (session.state === "AGENDAR_CONTACTO") {
+
+    /* ======================
+     CONTACTO
+  ====================== */
+        if (msg === "1") {
+            data.telefono = "Mismo número WhatsApp";
+            nextState = "HANDOFF";
+        } else if (msg === "2") {
+            response = "Indícame el número de contacto.";
+            nextState = "AGENDAR_TELEFONO";
+            return { response, nextState, data };
+        } else {
+            response = "Elige 1️⃣ o 2️⃣.";
+            return { response, nextState, data };
+        }
+    } else if (session.state === "AGENDAR_TELEFONO") {
+        data.telefono = message;
         nextState = "HANDOFF";
     }
 
-    // ======================
-    // REPROGRAMAR
-    // ======================
-    else if (session.state === "REPROGRAMAR_NOMBRE") {
-        data.nombre = message;
+    /* ======================
+     HANDOFF FINAL
+  ====================== */
+    if (nextState === "HANDOFF") {
         response =
-            "¿Recuerdas la fecha y hora actual de la cita?\n\n" +
-            "1️⃣ Sí\n" +
-            "2️⃣ No";
-        nextState = "REPROGRAMAR_RECUERDA";
-    } else if (session.state === "REPROGRAMAR_RECUERDA") {
-        if (msg === "1") {
-            response = "Indícame la fecha y hora actual, por favor.";
-            nextState = "REPROGRAMAR_FECHA";
-        } else {
-            response = "No hay problema. Te paso con secretaría para ayudarte.";
-            nextState = "HANDOFF";
-        }
-    } else if (session.state === "REPROGRAMAR_FECHA") {
-        data.fechaActual = message;
-        response =
-            "Para validar tu solicitud, indícame los últimos 2 dígitos de tu documento.";
-        nextState = "REPROGRAMAR_VALIDACION";
-    } else if (session.state === "REPROGRAMAR_VALIDACION") {
-        if (/^\d{2}$/.test(message)) {
-            response =
-                "Gracias. Ya envié tu solicitud de reprogramación a secretaría.";
-            nextState = "HANDOFF";
-        } else {
-            attempts++;
-            if (attempts >= 2) {
-                response =
-                    "No pude validar la información. Te paso con secretaría.";
-                nextState = "HANDOFF";
-            } else {
-                response =
-                    "El dato no es válido. Intenta nuevamente con los últimos 2 dígitos.";
-            }
-        }
-    }
+            "Perfecto. Ya tengo tu solicitud de cita.\n\n" +
+            "📌 Resumen:\n" +
+            `Nombre: ${data.nombre}\n` +
+            `Primera vez: ${data.primeraVez}\n` +
+            `Servicio: ${data.servicio}\n` +
+            `Aseguradora: ${data.aseguradora}\n` +
+            `Día: ${data.dia}\n` +
+            `Hora: ${data.hora}\n\n` +
+            "La envié a secretaría para confirmación en Doctoralia.\n" +
+            "Te contactarán en el próximo horario hábil.";
 
-    // ======================
-    // CANCELAR
-    // ======================
-    else if (session.state === "CANCELAR_NOMBRE") {
-        data.nombre = message;
-        response =
-            "¿Recuerdas la fecha y hora de la cita?\n\n" + "1️⃣ Sí\n" + "2️⃣ No";
-        nextState = "CANCELAR_RECUERDA";
-    } else if (session.state === "CANCELAR_RECUERDA") {
-        if (msg === "1") {
-            response = "Indícame la fecha y hora, por favor.";
-            nextState = "CANCELAR_FECHA";
-        } else {
-            response = "No hay problema. Te paso con secretaría para ayudarte.";
-            nextState = "HANDOFF";
-        }
-    } else if (session.state === "CANCELAR_FECHA") {
-        data.fecha = message;
-        response =
-            "Para confirmar, indícame los últimos 2 dígitos de tu documento.";
-        nextState = "CANCELAR_VALIDACION";
-    } else if (session.state === "CANCELAR_VALIDACION") {
-        if (/^\d{2}$/.test(message)) {
-            response =
-                "Gracias. Ya envié tu solicitud de cancelación a secretaría.";
-            nextState = "HANDOFF";
-        } else {
-            response =
-                "No pude validar la información. Te paso con secretaría.";
-            nextState = "HANDOFF";
-        }
-    }
-
-    // ======================
-    // HANDOFF
-    // ======================
-    else if (session.state === "HANDOFF") {
-        response =
-            "Este caso fue escalado a secretaría.\n" +
-            "Te contactarán lo antes posible.\n\n" +
-            "Gracias por comunicarte con el consultorio.";
         nextState = "CERRADO";
     }
 
-    // ======================
-    // DEFAULT
-    // ======================
-    else {
-        response =
-            "Para ayudarte más rápido, vuelve al menú principal.\n" +
-            "Escribe cualquier mensaje para comenzar.";
-        nextState = "START";
-    }
-
-    return {
-        response,
-        nextState,
-        attempts,
-        data,
-    };
+    return { response, nextState, data };
 }
 
 module.exports = chatbotResponse;

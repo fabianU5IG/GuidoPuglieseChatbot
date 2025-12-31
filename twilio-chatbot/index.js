@@ -5,11 +5,10 @@ const chatbotResponse = require("./chatbot");
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// Sesiones en memoria (por WhatsApp number)
 const sessions = {};
 
 app.get("/", (req, res) => {
-    res.send("🤖 Chatbot Dr. Guido Pugliese activo");
+    res.send("🤖 Chatbot Dr. Guido - OK");
 });
 
 app.post("/webhook", (req, res) => {
@@ -19,23 +18,20 @@ app.post("/webhook", (req, res) => {
     if (!sessions[from]) {
         sessions[from] = {
             state: "START",
-            attempts: 0,
             data: {},
         };
     }
 
     const session = sessions[from];
+    const { response, nextState, data } = chatbotResponse(message, session);
 
-    const result = chatbotResponse(message, session);
-
-    session.state = result.nextState;
-    session.attempts = result.attempts ?? session.attempts;
-    session.data = result.data ?? session.data;
+    session.state = nextState;
+    session.data = data;
 
     res.set("Content-Type", "text/xml");
     res.send(`
     <Response>
-      <Message>${result.response}</Message>
+      <Message>${response}</Message>
     </Response>
   `);
 });
