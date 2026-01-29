@@ -1,16 +1,24 @@
-const { DOCTORALIA_BOOKING_START_URL } = require("../constants");
+// services/doctoralia.service.js
+const { DOCTORALIA } = require("../constants");
 
-function buildDoctoraliaRedirect(data) {
-  const params = new URLSearchParams();
-  if (data.fechaISO && data.hora) {
-    params.append("date", `${data.fechaISO}T${data.hora}:00`);
-  }
-  if (data.modalidad) {
-    params.append("visitType", data.modalidad === "Consulta en línea" ? "online" : "office");
-  }
-  if (data.servicio) {
-    params.append("reason", data.servicio);
-  }
-  return `${DOCTORALIA_BOOKING_START_URL}?${params.toString()}`;
+function buildDoctoraliaDateTime(date, time) {
+    // date: YYYY-MM-DD
+    // time: HH:mm
+    return `${date}T${time}:00${DOCTORALIA.TIMEZONE_OFFSET}`;
 }
-module.exports = { buildDoctoraliaRedirect };
+
+function buildDoctoraliaUrl(date, time) {
+    const dateTime = buildDoctoraliaDateTime(date, time);
+
+    return (
+        `https://www.doctoralia.co/booking/seleccionar-fecha/` +
+        `${DOCTORALIA.DOCTOR_ID}/` +
+        `${DOCTORALIA.ADDRESS_ID}/` +
+        `${dateTime}/` +
+        `${DOCTORALIA.SPECIALTY_ID}`
+    );
+}
+
+module.exports = {
+    buildDoctoraliaUrl,
+};
