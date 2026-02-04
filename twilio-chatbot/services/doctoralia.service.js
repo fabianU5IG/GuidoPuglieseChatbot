@@ -1,13 +1,14 @@
-// services/doctoralia.service.js
-const { DOCTORALIA } = require("../constants");
+import { DOCTORALIA } from "../constants.js";
 
 function buildDoctoraliaDateTime(date, time) {
-    // date: YYYY-MM-DD
-    // time: HH:mm
-    return `${date}T${time}:00${DOCTORALIA.TIMEZONE_OFFSET}`;
+    const [day, month] = date.split("/");
+    const [hour, minute] = time.split(":");
+    const year = new Date().getFullYear();
+
+    return `${year}-${month}-${day}T${hour}:${minute}:00`;
 }
 
-function buildDoctoraliaUrl(date, time) {
+export function buildDoctoraliaUrl(date, time, slotId) {
     const dateTime = buildDoctoraliaDateTime(date, time);
 
     return (
@@ -15,10 +16,6 @@ function buildDoctoraliaUrl(date, time) {
         `${DOCTORALIA.DOCTOR_ID}/` +
         `${DOCTORALIA.ADDRESS_ID}/` +
         `${dateTime}/` +
-        `${DOCTORALIA.SPECIALTY_ID}`
+        `${slotId}`
     );
 }
-
-module.exports = {
-    buildDoctoraliaUrl,
-};

@@ -1,181 +1,64 @@
-require("dotenv").config();
-
-const express = require("express");
-const bodyParser = require("body-parser");
-const twilio = require("twilio");
-const { MessagingResponse } = twilio.twiml;
-
-const chatbotResponse = require("./chatbot");
-const {
-    isMainMenuText,
-    isInfoMenuText,
-    parseConfirmMenu,
-    normalizeLabel,
-    MAIN_MENU_MAP,
-    INFO_MENU_MAP,
-} = require("./menuUtils");
-
-const { sendContentTemplate } = require("./twilioInteractive");
+import "dotenv/config";
+import express from "express";
+import bodyParser from "body-parser";
+import chatbotResponse from "./chatbot.js";
 
 const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
+const PORT = process.env.PORT || 3000;
 
 /**
- * Memoria simple en RAM (OK para MVP).
- * En producción con múltiples instancias → Redis / DB.
+ * Sesiones en memoria por número de WhatsApp
+ * (suficiente para desarrollo y pruebas)
  */
 const sessions = {};
 
-app.get("/", (req, res) => {
-    res.send("🤖 Chatbot Doctoralia - OK");
-});
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
+/**
+ * Webhook Twilio WhatsApp
+ */
 app.post("/webhook", async (req, res) => {
     try {
-        const from = (req.body.From || "").trim();
-        const inboundBody = (req.body.Body || "").trim();
+        const message = req.body.Body || "";
+        const from = req.body.From || "";
+        const phone = from.replace("whatsapp:", "");
 
-        const buttonPayload = (req.body.ButtonPayload || "").trim();
-        const buttonText = (req.body.ButtonText || "").trim();
-
-        if (!from) {
-            return res.status(400).send("Missing From");
-        }
-
-        if (!sessions[from]) {
-            sessions[from] = {
+        if (!sessions[phone]) {
+            sessions[phone] = {
                 state: "MENU",
                 data: {},
-                lastMenuMap: {},
             };
         }
 
-        const session = sessions[from];
+        const session = sessions[phone];
+        const context = { from: phone };
 
-        // 1️⃣ Normalizar input
-        let userMessage = buttonPayload || inboundBody;
-
-        // 2️⃣ Resolver clicks sin payload (fallback por texto)
-        if (!buttonPayload && inboundBody) {
-            const key = normalizeLabel(inboundBody);
-            if (session.lastMenuMap[key]) {
-                userMessage = session.lastMenuMap[key];
-            }
-        }
-
-        // 3️⃣ Ejecutar lógica del bot
-        const result = chatbotResponse(userMessage, session);
-
-        if (!result || !result.response) {
-            throw new Error("chatbotResponse returned invalid result");
-        }
+        const result = await chatbotResponse(message, session, context);
 
         session.state = result.nextState;
-        session.data = result.data;
+        session.data = result.data || {};
 
-        const respondEmpty = () => {
-            const twiml = new MessagingResponse();
-            res.type("text/xml").send(twiml.toString());
-        };
+        res.set("Content-Type", "text/xml");
 
-        // =============================
-        // MENÚ PRINCIPAL (LIST)
-        // =============================
-        if (
-            isMainMenuText(result.response) &&
-            process.env.CONTENT_SID_MENU_PRINCIPAL
-        ) {
-            await sendContentTemplate({
-                to: from,
-                contentSid: process.env.CONTENT_SID_MENU_PRINCIPAL,
-            });
-
-            session.lastMenuMap = MAIN_MENU_MAP;
-            return respondEmpty();
+        // 🛑 NO MENSAJE → RESPUESTA VACÍA (NO "OK", NO "null")
+        if (!result.response) {
+            return res.send("<Response></Response>");
         }
 
-        // =============================
-        // MENÚ INFO (LIST)
-        // =============================
-        if (
-            isInfoMenuText(result.response) &&
-            process.env.CONTENT_SID_MENU_INFO
-        ) {
-            await sendContentTemplate({
-                to: from,
-                contentSid: process.env.CONTENT_SID_MENU_INFO,
-            });
-
-            session.lastMenuMap = INFO_MENU_MAP;
-            return respondEmpty();
-        }
-
-        // =============================
-        // CONFIRMACIONES (QUICK REPLIES)
-        // =============================
-        const confirm = parseConfirmMenu(result.response);
-
-        if (confirm) {
-            const optCount = confirm.options.length;
-
-            if (optCount === 2 && process.env.CONTENT_SID_CONFIRM_2) {
-                await sendContentTemplate({
-                    to: from,
-                    contentSid: process.env.CONTENT_SID_CONFIRM_2,
-                    contentVariables: {
-                        1: confirm.body,
-                        2: confirm.options[0].label,
-                        3: confirm.options[1].label,
-                    },
-                });
-
-                session.lastMenuMap = confirm.options.reduce((acc, opt) => {
-                    acc[normalizeLabel(opt.label)] = String(opt.id);
-                    return acc;
-                }, {});
-
-                return respondEmpty();
-            }
-
-            if (optCount === 3 && process.env.CONTENT_SID_CONFIRM_3) {
-                await sendContentTemplate({
-                    to: from,
-                    contentSid: process.env.CONTENT_SID_CONFIRM_3,
-                    contentVariables: {
-                        1: confirm.body,
-                        2: confirm.options[0].label,
-                        3: confirm.options[1].label,
-                        4: confirm.options[2].label,
-                    },
-                });
-
-                session.lastMenuMap = confirm.options.reduce((acc, opt) => {
-                    acc[normalizeLabel(opt.label)] = String(opt.id);
-                    return acc;
-                }, {});
-
-                return respondEmpty();
-            }
-        }
-
-        // =============================
-        // FALLBACK TEXTO
-        // =============================
-        const twiml = new MessagingResponse();
-        twiml.message(result.response);
-        res.type("text/xml").send(twiml.toString());
+        // ✅ MENSAJE NORMAL
+        res.send(`
+      <Response>
+        <Message>${result.response}</Message>
+      </Response>
+    `);
     } catch (error) {
         console.error("❌ Error en webhook:", error);
-
-        const twiml = new MessagingResponse();
-        twiml.message(
-            "Lo siento, ocurrió un error procesando tu mensaje. Por favor intenta nuevamente.",
-        );
-        res.type("text/xml").send(twiml.toString());
+        res.set("Content-Type", "text/xml");
+        res.send("<Response></Response>");
     }
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`🤖 Server running on port ${port}`);
+app.listen(PORT, () => {
+    console.log(`✅ Chatbot corriendo en puerto ${PORT}`);
 });

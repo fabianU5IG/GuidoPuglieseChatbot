@@ -1,31 +1,30 @@
-// utils/time.js
+const ALL_SLOTS = [
+    "08:00",
+    "08:20",
+    "08:40",
+    "09:00",
+    "09:20",
+    "09:40",
+    "10:00",
+    "10:20",
+    "10:40",
+    "11:00",
+    "11:20",
+    "11:40",
+    "14:00",
+    "14:20",
+    "14:40",
+    "15:00",
+    "15:20",
+    "15:40",
+    "16:00",
+    "16:20",
+    "16:40",
+];
 
-function pad(num) {
-    return num.toString().padStart(2, "0");
-}
-
-function generateSlots(startHour, endHour, intervalMinutes) {
-    const slots = [];
-
-    for (let hour = startHour; hour < endHour; hour++) {
-        for (let min = 0; min < 60; min += intervalMinutes) {
-            slots.push(`${pad(hour)}:${pad(min)}`);
-        }
-    }
-
-    return slots;
-}
-
-function getTimeSlots() {
-    const interval = 20; // minutos
-
-    // Mañana: 08:00 a 12:00
-    const morningSlots = generateSlots(8, 12, interval);
-
-    // Tarde: 14:00 a 17:00
-    const afternoonSlots = generateSlots(14, 17, interval);
-
-    return [...morningSlots, ...afternoonSlots];
+function getTimeSlots(page = 0, pageSize = 6) {
+    const start = page * pageSize;
+    return ALL_SLOTS.slice(start, start + pageSize);
 }
 
 module.exports = {

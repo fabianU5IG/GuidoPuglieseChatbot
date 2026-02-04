@@ -1,123 +1,178 @@
-const { getTimeSlots } = require("../utils/time");
-const { buildDoctoraliaUrl } = require("../services/doctoralia.service");
+import timeUtils from "../utils/time.js";
+import { buildDoctoraliaUrl } from "../services/doctoralia.service.js";
+import { createFinalAppointment } from "../services/chatbot-db.service.js";
 
-function agendarState(state, msg, rawMsg, data) {
-    switch (state) {
-        case "AGENDAR_NOMBRE":
-            data.nombre = rawMsg.trim();
+const { getTimeSlots } = timeUtils;
+
+const SLOT_IDS = {
+    VISITA: 287224,
+    CONSULTA: 287248,
+};
+
+function isValidDateDDMM(value) {
+    if (!/^\d{2}\/\d{2}$/.test(value)) return false;
+
+    const [day, month] = value.split("/").map(Number);
+    const year = new Date().getFullYear();
+
+    const date = new Date(year, month - 1, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return !isNaN(date) && date >= today;
+}
+
+export default async function agendarState(msg, data, context) {
+    const phone = context.from;
+
+    if (!data.step) {
+        data.step = "ASK_NAME";
+        return {
+            response:
+                "Vamos a iniciar el agendamiento 😊\n\n¿Cuál es tu nombre completo?",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    switch (data.step) {
+        case "ASK_NAME":
+            if (msg.length < 3) {
+                return {
+                    response: "Por favor ingresa tu nombre completo 😊",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            data.fullName = msg;
+            data.firstName = msg.split(" ")[0];
+            data.step = "ASK_DATE";
+
             return {
-                response: "¿Es tu primera vez?\n1️⃣ Sí\n2️⃣ No",
-                nextState: "AGENDAR_PRIMERA_VEZ",
+                response: `Gracias, ${data.firstName} 😊\n\n¿Para qué fecha deseas agendar la cita?\n(DD/MM)`,
+                nextState: "AGENDAR",
                 data,
             };
 
-        case "AGENDAR_PRIMERA_VEZ":
-            data.primeraVez = msg === "1" ? "Sí" : "No";
-            return {
-                response: "¿Cómo deseas tu cita?\n1️⃣ Presencial\n2️⃣ En línea",
-                nextState: "AGENDAR_MODALIDAD",
-                data,
-            };
+        case "ASK_DATE":
+            if (!isValidDateDDMM(msg)) {
+                return {
+                    response: "❌ Fecha inválida.\nDebe ser DD/MM y futura.",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
 
-        case "AGENDAR_MODALIDAD":
-            data.modalidad =
-                msg === "2" ? "Consulta en línea" : "Visita presencial";
-            return {
-                response: "Servicio:\n1️⃣ Ortopedia\n2️⃣ Consulta",
-                nextState: "AGENDAR_SERVICIO",
-                data,
-            };
+            data.date = msg;
+            data.page = 0;
+            data.step = "ASK_TIME";
+            return buildTimeResponse(data);
 
-        case "AGENDAR_SERVICIO":
-            data.servicio =
-                msg === "2"
-                    ? "Consulta de Ortopedia y Traumatología"
-                    : "Visita Ortopedia y Traumatología";
-            return {
-                response: "📅 Ingresa la fecha de la cita (YYYY-MM-DD)",
-                nextState: "AGENDAR_FECHA",
-                data,
-            };
-
-        case "AGENDAR_FECHA":
-            data.fechaISO = rawMsg.trim();
-
-            const slots = getTimeSlots().slice(0, 6);
-
-            return {
-                response:
-                    `⏰ ¿A qué hora deseas tu cita?\n\n` +
-                    slots.map((h, i) => `${i + 1}️⃣ ${h}`).join("\n") +
-                    `\n\nResponde con el número de la opción.`,
-                nextState: "AGENDAR_HORA",
-                data,
-            };
-
-        case "AGENDAR_HORA": {
-            const offset = data.slotOffset || 0;
-            const allSlots = getTimeSlots();
-            const visibleSlots = allSlots.slice(offset, offset + 6);
-
-            // ➕ Opción: Más horarios
+        case "ASK_TIME":
             if (msg === "7") {
-                const newOffset = offset + 6;
-
-                if (newOffset >= allSlots.length) {
-                    return {
-                        response:
-                            "❌ No hay más horarios disponibles.\n" +
-                            "Por favor selecciona una de las opciones mostradas.",
-                        nextState: "AGENDAR_HORA",
-                        data,
-                    };
-                }
-
-                data.slotOffset = newOffset;
-
-                const nextSlots = allSlots.slice(newOffset, newOffset + 6);
-
-                return {
-                    response:
-                        `⏰ Más horarios disponibles:\n\n` +
-                        nextSlots.map((h, i) => `${i + 1}️⃣ ${h}`).join("\n") +
-                        `\n7️⃣ Más horarios\n\n` +
-                        `Responde con el número de la opción.`,
-                    nextState: "AGENDAR_HORA",
-                    data,
-                };
+                data.page++;
+                return buildTimeResponse(data);
             }
 
-            // ⏰ Selección normal de hora
             const index = parseInt(msg, 10) - 1;
-            const selectedHour = visibleSlots[index];
+            const slots = getTimeSlots(data.page);
+            const hour = slots[index];
 
-            if (isNaN(index) || !selectedHour) {
+            if (!hour) {
                 return {
-                    response:
-                        "❌ Opción inválida.\n" +
-                        "Por favor responde solo con el número correspondiente a la hora deseada.",
-                    nextState: "AGENDAR_HORA",
+                    response: "❌ Opción inválida.",
+                    nextState: "AGENDAR",
                     data,
                 };
             }
 
-            data.hora = selectedHour;
-
-            const url = buildDoctoraliaUrl(data.fechaISO, data.hora);
+            data.time = hour;
+            data.step = "ASK_TYPE";
 
             return {
                 response:
-                    `Perfecto 👍\n\n` +
-                    `Tu cita quedó seleccionada para:\n` +
-                    `📅 Fecha: ${data.fechaISO}\n` +
-                    `⏰ Hora: ${data.hora}\n\n` +
-                    `Para finalizar el agendamiento, confirma aquí:\n\n` +
-                    `🔗 ${url}`,
-                nextState: "POST_DOCTORALIA",
+                    "¿Qué tipo de atención deseas?\n\n1️⃣ Visita\n2️⃣ Consulta",
+                nextState: "AGENDAR",
                 data,
             };
-        }
+
+        case "ASK_TYPE":
+            if (msg === "1") {
+                data.slotId = SLOT_IDS.VISITA;
+                data.attentionType = "Visita";
+            } else if (msg === "2") {
+                data.slotId = SLOT_IDS.CONSULTA;
+                data.attentionType = "Consulta";
+            } else {
+                return {
+                    response:
+                        "Selecciona una opción válida:\n1️⃣ Visita\n2️⃣ Consulta",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            data.redirectUrl = buildDoctoraliaUrl(
+                data.date,
+                data.time,
+                data.slotId,
+            );
+
+            data.step = "POST_REDIRECT";
+
+            return {
+                response:
+                    `Perfecto ${data.firstName} 🗓️\n\n` +
+                    `Tipo: *${data.attentionType}*\n\n` +
+                    `Finaliza tu agendamiento aquí:\n\n${data.redirectUrl}\n\n` +
+                    `1️⃣ Ya terminé\n2️⃣ Quiero hacer otra solicitud`,
+                nextState: "AGENDAR",
+                data,
+            };
+
+        case "POST_REDIRECT":
+            if (msg === "1") {
+                await createFinalAppointment({
+                    phone,
+                    fullName: data.fullName,
+                    date: data.date,
+                    time: data.time,
+                    status: "CONFIRMED",
+                });
+
+                return {
+                    response:
+                        `✅ ¡Listo ${data.firstName}!\n\n` +
+                        "Tu cita quedó registrada.\nQue tengas un excelente día 😊",
+                    nextState: "END",
+                    data: {},
+                };
+            }
+
+            if (msg === "2") {
+                return { response: null, nextState: "MENU", data: {} };
+            }
+
+            return {
+                response: "Responde 1️⃣ o 2️⃣",
+                nextState: "AGENDAR",
+                data,
+            };
     }
 }
 
-module.exports = agendarState;
+function buildTimeResponse(data) {
+    const slots = getTimeSlots(data.page);
+    let response = "Horas disponibles:\n\n";
+
+    slots.forEach((h, i) => {
+        response += `${i + 1}️⃣ ${h}\n`;
+    });
+
+    if (getTimeSlots(data.page + 1).length) {
+        response += "\n7️⃣ Más horarios";
+    }
+
+    return { response, nextState: "AGENDAR", data };
+}

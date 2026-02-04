@@ -1,42 +1,54 @@
-function menuState(msg, data) {
-    // 1️⃣ Agendar cita (flujo normal)
+export default function menuState(msg, data) {
     if (msg === "1") {
         return {
-            response: "Perfecto. ¿Cuál es tu nombre completo?",
-            nextState: "AGENDAR_NOMBRE",
-            data,
+            response:
+                "Vamos a iniciar el agendamiento 😊\n\n" +
+                "¿Cuál es tu nombre completo?",
+            nextState: "AGENDAR",
+            data: {
+                step: "ASK_NAME",
+            },
         };
     }
 
-    // 2️⃣ Reagendar cita
     if (msg === "2") {
         return {
             response:
                 "🔄 Reagendar cita\n\n" +
-                "Para reprogramar tu cita, Doctoralia requiere que ingreses a tu cuenta.\n\n" +
-                "👉 Accede aquí:\n" +
+                "Puedes hacerlo desde Doctoralia:\n" +
                 "https://www.doctoralia.co/panel-del-paciente/\n\n" +
-                "Si tienes algún inconveniente, puedes escribirnos y te ayudamos.",
-            nextState: "MENU",
-            data,
+                "1️⃣ Hablar con secretaria\n" +
+                "2️⃣ Volver al menú",
+            nextState: "SECRETARIA",
+            data: {
+                tipo: "REAGENDAR",
+            },
         };
     }
 
-    // 3️⃣ Cancelar cita
     if (msg === "3") {
         return {
             response:
                 "❌ Cancelar cita\n\n" +
-                "Para cancelar tu cita, debes hacerlo directamente desde tu cuenta de Doctoralia.\n\n" +
-                "👉 Accede aquí:\n" +
+                "Puedes hacerlo desde Doctoralia:\n" +
                 "https://www.doctoralia.co/panel-del-paciente/\n\n" +
-                "Si necesitas ayuda adicional, puedes escribirnos.",
-            nextState: "MENU",
-            data,
+                "1️⃣ Hablar con secretaria\n" +
+                "2️⃣ Volver al menú",
+            nextState: "SECRETARIA",
+            data: {
+                tipo: "CANCELAR",
+            },
         };
     }
 
-    // Menú por defecto
+    if (msg === "99") {
+        return {
+            response: null,
+            nextState: "DASHBOARD",
+            data: {},
+        };
+    }
+
     return {
         response:
             "Soy el asistente del consultorio del Dr. Guido Pugliese.\n\n" +
@@ -47,5 +59,3 @@ function menuState(msg, data) {
         data,
     };
 }
-
-module.exports = menuState;
