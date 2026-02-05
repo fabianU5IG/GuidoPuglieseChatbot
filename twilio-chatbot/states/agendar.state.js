@@ -1,7 +1,11 @@
 import timeUtils from "../utils/time.js";
 import { buildDoctoraliaUrl } from "../services/doctoralia.service.js";
-import { createFinalAppointment } from "../services/chatbot-db.service.js";
-
+import {
+    createProposedAppointment,
+    confirmAppointment,
+    logAppointmentMessage,
+} from "../services/chatbot-db.service.js";
+import { notifySecretaryNewAppointment } from "./whatsapp.service.js";
 const { getTimeSlots } = timeUtils;
 
 const SLOT_IDS = {
@@ -22,9 +26,10 @@ function isValidDateDDMM(value) {
     return !isNaN(date) && date >= today;
 }
 
-export default async function agendarState(msg, data, context) {
-    const phone = context.from;
+export default async function agendarState(msg, data, context = {}) {
+    const phone = context.from || "UNKNOWN";
 
+    // 🚀 Inicio del flujo
     if (!data.step) {
         data.step = "ASK_NAME";
         return {
@@ -50,7 +55,9 @@ export default async function agendarState(msg, data, context) {
             data.step = "ASK_DATE";
 
             return {
-                response: `Gracias, ${data.firstName} 😊\n\n¿Para qué fecha deseas agendar la cita?\n(DD/MM)`,
+                response:
+                    `Gracias, ${data.firstName} 😊\n\n` +
+                    "¿Para qué fecha deseas agendar la cita?\n(DD/MM)",
                 nextState: "AGENDAR",
                 data,
             };
@@ -92,7 +99,9 @@ export default async function agendarState(msg, data, context) {
 
             return {
                 response:
-                    "¿Qué tipo de atención deseas?\n\n1️⃣ Visita\n2️⃣ Consulta",
+                    "¿Qué tipo de atención deseas?\n\n" +
+                    "1️⃣ Visita\n" +
+                    "2️⃣ Consulta",
                 nextState: "AGENDAR",
                 data,
             };
@@ -107,16 +116,58 @@ export default async function agendarState(msg, data, context) {
             } else {
                 return {
                     response:
-                        "Selecciona una opción válida:\n1️⃣ Visita\n2️⃣ Consulta",
+                        "Selecciona una opción válida:\n\n" +
+                        "1️⃣ Visita\n" +
+                        "2️⃣ Consulta",
                     nextState: "AGENDAR",
                     data,
                 };
             }
 
+            // 🔗 Link Doctoralia
             data.redirectUrl = buildDoctoraliaUrl(
                 data.date,
                 data.time,
                 data.slotId,
+            );
+
+            // 🗄️ Crear cita PROPOSED
+            const appointmentId = await createProposedAppointment({
+                phone,
+                fullName: data.fullName,
+                date: data.date,
+                time: data.time,
+            });
+
+            data.appointmentId = appointmentId;
+            await notifySecretaryNewAppointment({
+                fullName: data.fullName,
+                phone,
+                date: data.date,
+                time: data.time,
+                attentionType: data.attentionType,
+                redirectUrl: data.redirectUrl,
+            });
+
+            // 📩 Mensajes internos para secretaria
+            await logAppointmentMessage(
+                appointmentId,
+                `Inicio de agendamiento por bot`,
+            );
+
+            await logAppointmentMessage(
+                appointmentId,
+                `Paciente: ${data.fullName}`,
+            );
+
+            await logAppointmentMessage(
+                appointmentId,
+                `Fecha: ${data.date} | Hora: ${data.time}`,
+            );
+
+            await logAppointmentMessage(
+                appointmentId,
+                `Link Doctoralia: ${data.redirectUrl}`,
             );
 
             data.step = "POST_REDIRECT";
@@ -125,26 +176,23 @@ export default async function agendarState(msg, data, context) {
                 response:
                     `Perfecto ${data.firstName} 🗓️\n\n` +
                     `Tipo: *${data.attentionType}*\n\n` +
-                    `Finaliza tu agendamiento aquí:\n\n${data.redirectUrl}\n\n` +
-                    `1️⃣ Ya terminé\n2️⃣ Quiero hacer otra solicitud`,
+                    `Finaliza tu agendamiento aquí:\n\n` +
+                    `${data.redirectUrl}\n\n` +
+                    "1️⃣ Ya terminé\n" +
+                    "2️⃣ Quiero hacer otra solicitud",
                 nextState: "AGENDAR",
                 data,
             };
 
         case "POST_REDIRECT":
             if (msg === "1") {
-                await createFinalAppointment({
-                    phone,
-                    fullName: data.fullName,
-                    date: data.date,
-                    time: data.time,
-                    status: "CONFIRMED",
-                });
+                await confirmAppointment(data.appointmentId);
 
                 return {
                     response:
                         `✅ ¡Listo ${data.firstName}!\n\n` +
-                        "Tu cita quedó registrada.\nQue tengas un excelente día 😊",
+                        "Tu cita quedó registrada.\n" +
+                        "Que tengas un excelente día 😊",
                     nextState: "MENU",
                     data: {},
                 };
@@ -182,5 +230,9 @@ function buildTimeResponse(data) {
         response += "\n7️⃣ Más horarios";
     }
 
-    return { response, nextState: "AGENDAR", data };
+    return {
+        response,
+        nextState: "AGENDAR",
+        data,
+    };
 }
