@@ -1,13 +1,24 @@
 export default function menuState(msg, data) {
+    // RENDER FORZADO DEL MENÚ
+    if (data?.renderMenu) {
+        return {
+            response:
+                "Soy el asistente del consultorio del Dr. Guido Pugliese.\n\n" +
+                "1️⃣ Agendar cita\n" +
+                "2️⃣ Reagendar cita\n" +
+                "3️⃣ Cancelar cita",
+            nextState: "MENU",
+            data: {},
+        };
+    }
+
     if (msg === "1") {
         return {
             response:
                 "Vamos a iniciar el agendamiento 😊\n\n" +
                 "¿Cuál es tu nombre completo?",
             nextState: "AGENDAR",
-            data: {
-                step: "ASK_NAME",
-            },
+            data: { step: "ASK_NAME" },
         };
     }
 
@@ -20,9 +31,7 @@ export default function menuState(msg, data) {
                 "1️⃣ Hablar con secretaria\n" +
                 "2️⃣ Volver al menú",
             nextState: "SECRETARIA",
-            data: {
-                tipo: "REAGENDAR",
-            },
+            data: { tipo: "REAGENDAR" },
         };
     }
 
@@ -35,20 +44,15 @@ export default function menuState(msg, data) {
                 "1️⃣ Hablar con secretaria\n" +
                 "2️⃣ Volver al menú",
             nextState: "SECRETARIA",
-            data: {
-                tipo: "CANCELAR",
-            },
+            data: { tipo: "CANCELAR" },
         };
     }
 
     if (msg === "99") {
-        return {
-            response: null,
-            nextState: "DASHBOARD",
-            data: {},
-        };
+        return { response: null, nextState: "DASHBOARD", data: {} };
     }
 
+    // DEFAULT
     return {
         response:
             "Soy el asistente del consultorio del Dr. Guido Pugliese.\n\n" +
@@ -56,6 +60,6 @@ export default function menuState(msg, data) {
             "2️⃣ Reagendar cita\n" +
             "3️⃣ Cancelar cita",
         nextState: "MENU",
-        data,
+        data: {},
     };
 }

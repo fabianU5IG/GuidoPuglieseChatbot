@@ -62,7 +62,7 @@ export default async function chatbotResponse(message, session, context = {}) {
     }
 
     if (state === "SECRETARIA") {
-        return secretariaState(rawMsg, data);
+        return secretariaState(msg, data, context);
     }
 
     // 🔁 Fallback seguro

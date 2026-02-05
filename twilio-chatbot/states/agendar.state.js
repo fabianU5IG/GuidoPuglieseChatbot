@@ -145,13 +145,21 @@ export default async function agendarState(msg, data, context) {
                     response:
                         `✅ ¡Listo ${data.firstName}!\n\n` +
                         "Tu cita quedó registrada.\nQue tengas un excelente día 😊",
-                    nextState: "END",
+                    nextState: "MENU",
                     data: {},
                 };
             }
 
             if (msg === "2") {
-                return { response: null, nextState: "MENU", data: {} };
+                return {
+                    response:
+                        "Soy el asistente del consultorio del Dr. Guido Pugliese.\n\n" +
+                        "1️⃣ Agendar cita\n" +
+                        "2️⃣ Reagendar cita\n" +
+                        "3️⃣ Cancelar cita",
+                    nextState: "MENU",
+                    data: {},
+                };
             }
 
             return {
