@@ -22,8 +22,17 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     //const userPhone = context.from;
     const userPhone = context.from.replace(/\D/g, "");
-    let state = session.state || "MENU";
-    let data = session.data || {};
+
+    let state;
+    let data;
+
+    if (SECRETARY_PHONES.includes(userPhone)) {
+        state = "DASHBOARD";
+        data = data || {}; // siempre limpio
+    } else {
+        state = session.state || "MENU";
+        data = session.data || {};
+    }
     console.log(
         "📱 Usuario:",
         userPhone,
@@ -32,11 +41,6 @@ export default async function chatbotResponse(message, session, context = {}) {
         "| Mensaje:",
         rawMsg,
     );
-    // 🔐 FORZAR DASHBOARD PARA SECRETARÍA
-    if (SECRETARY_PHONES.includes(userPhone)) {
-        state = "DASHBOARD";
-    }
-
     // 🔹 Registro centralizado en DB
     await registerChatbotInteraction({
         phone: userPhone,

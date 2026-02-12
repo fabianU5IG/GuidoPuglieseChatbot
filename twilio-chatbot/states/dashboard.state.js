@@ -28,7 +28,10 @@ function isValidDateDDMM(value) {
     return !isNaN(date) && date >= today;
 }
 
-export default async function dashboardState(msg, data, context) {
+export default async function dashboardState(msg, data = {}, context) {
+    console.log("📊 Entrando a DASHBOARD");
+    console.log("Step actual:", data?.step);
+
     const from = context.from.replace(/\D/g, "");
 
     if (!SECRETARY_PHONES.includes(from)) {
@@ -39,41 +42,73 @@ export default async function dashboardState(msg, data, context) {
         };
     }
 
-    if (!data.step) data.step = "INBOX";
+    if (!data.step) {
+        data.step = "INBOX";
+    }
 
     switch (data.step) {
         /* =========================
            INBOX
         ========================= */
         case "INBOX": {
-            const cases = await getPendingCases();
+            let cases = [];
 
-            if (!cases.length) {
+            try {
+                cases = await getPendingCases();
+            } catch (err) {
+                console.error("❌ Error getPendingCases:", err);
+            }
+
+            if (!Array.isArray(cases)) {
+                console.log("⚠️ getPendingCases devolvió:", cases);
+                cases = [];
+            }
+
+            console.log("📋 Casos encontrados:", cases.length);
+
+            if (cases.length === 0) {
                 return {
                     response:
                         "📋 Dashboard Secretaría\n\n" +
                         "No hay casos pendientes.\n\n" +
                         "0️⃣ Salir",
                     nextState: "DASHBOARD",
-                    data,
+                    data: { step: "INBOX" },
                 };
             }
 
             let response = "📋 Casos pendientes:\n\n";
 
-            cases.forEach((c, i) => {
+            cases.slice(0, 10).forEach((c, i) => {
+                let formattedDate = "Sin fecha";
+
+                if (c.last_update) {
+                    const d = new Date(c.last_update);
+                    if (!isNaN(d)) {
+                        formattedDate = d.toLocaleString();
+                    }
+                }
+
                 response +=
                     `${i + 1}️⃣ ${c.full_name || "Paciente"}\n` +
-                    `📞 ${c.phone}\n` +
-                    `🕒 ${new Date(c.last_update).toLocaleString()}\n\n`;
+                    `📞 ${c.phone || "Sin teléfono"}\n` +
+                    `🕒 ${formattedDate}\n\n`;
             });
 
-            response += "Selecciona un caso o escribe 0️⃣ para salir";
+            if (cases.length > 10) {
+                response += "\n... Mostrando primeros 10 casos\n";
+            }
 
-            data.cases = cases;
-            data.step = "SELECT_CASE";
+            response += "\nSelecciona un caso o escribe 0️⃣ para salir";
 
-            return { response, nextState: "DASHBOARD", data };
+            return {
+                response,
+                nextState: "DASHBOARD",
+                data: {
+                    step: "SELECT_CASE",
+                    cases,
+                },
+            };
         }
 
         /* =========================
@@ -89,6 +124,7 @@ export default async function dashboardState(msg, data, context) {
             }
 
             const index = parseInt(msg, 10) - 1;
+
             if (!Number.isInteger(index) || !data.cases?.[index]) {
                 return {
                     response: "❌ Opción inválida",
@@ -97,19 +133,21 @@ export default async function dashboardState(msg, data, context) {
                 };
             }
 
-            data.selectedCase = data.cases[index];
-            data.step = "CASE_ACTIONS";
+            const selectedCase = data.cases[index];
 
             return {
                 response:
                     `🔔 Caso seleccionado\n\n` +
-                    `Paciente: ${data.selectedCase.full_name}\n` +
-                    `Tel: ${data.selectedCase.phone}\n\n` +
+                    `Paciente: ${selectedCase.full_name}\n` +
+                    `Tel: ${selectedCase.phone}\n\n` +
                     `1️⃣ Reagendar\n` +
                     `2️⃣ Cancelar\n` +
                     `0️⃣ Volver`,
                 nextState: "DASHBOARD",
-                data,
+                data: {
+                    step: "CASE_ACTIONS",
+                    selectedCase,
+                },
             };
         }
 
@@ -126,26 +164,27 @@ export default async function dashboardState(msg, data, context) {
             }
 
             if (msg === "1") {
-                data.step = "ASK_DATE";
                 return {
                     response:
                         "🔄 Reagendar cita\n\n" +
                         "Ingresa la nueva fecha (DD/MM):",
                     nextState: "DASHBOARD",
-                    data,
+                    data: { ...data, step: "ASK_DATE" },
                 };
             }
 
             if (msg === "2") {
-                await markCancelled(data.selectedCase.appointment_id);
+                try {
+                    await markCancelled(data.selectedCase.appointment_id);
 
-                await registerChatbotInteraction({
-                    phone: from,
-                    appointmentId: data.selectedCase.appointment_id,
-                    appointmentData: { newStatus: "CANCELLED" },
-                });
-
-                data.step = "AFTER_ACTION";
+                    await registerChatbotInteraction({
+                        phone: from,
+                        appointmentId: data.selectedCase.appointment_id,
+                        appointmentData: { newStatus: "CANCELLED" },
+                    });
+                } catch (err) {
+                    console.error("❌ Error cancelando:", err);
+                }
 
                 return {
                     response:
@@ -153,105 +192,12 @@ export default async function dashboardState(msg, data, context) {
                         "1️⃣ Terminar\n" +
                         "2️⃣ Volver al dashboard",
                     nextState: "DASHBOARD",
-                    data,
+                    data: { step: "AFTER_ACTION" },
                 };
             }
 
             return {
                 response: "❌ Opción inválida",
-                nextState: "DASHBOARD",
-                data,
-            };
-
-        /* =========================
-           REAGENDAR – FECHA
-        ========================= */
-        case "ASK_DATE":
-            if (!isValidDateDDMM(msg)) {
-                return {
-                    response:
-                        "❌ Fecha inválida. Usa formato DD/MM y fecha futura.",
-                    nextState: "DASHBOARD",
-                    data,
-                };
-            }
-
-            data.date = msg;
-            data.page = 0;
-            data.step = "ASK_TIME";
-            return buildTimeResponse(data);
-
-        /* =========================
-           REAGENDAR – HORA
-        ========================= */
-        case "ASK_TIME":
-            if (msg === "7") {
-                data.page++;
-                return buildTimeResponse(data);
-            }
-
-            const slots = getTimeSlots(data.page);
-            const indexTime = parseInt(msg, 10) - 1;
-            const hour = slots[indexTime];
-
-            if (!hour) {
-                return {
-                    response: "❌ Opción inválida.",
-                    nextState: "DASHBOARD",
-                    data,
-                };
-            }
-
-            data.time = hour;
-            data.step = "ASK_TYPE";
-
-            return {
-                response: "¿Qué tipo de atención?\n\n1️⃣ Visita\n2️⃣ Consulta",
-                nextState: "DASHBOARD",
-                data,
-            };
-
-        /* =========================
-           REAGENDAR – TIPO
-        ========================= */
-        case "ASK_TYPE":
-            if (msg === "1") {
-                data.slotId = SLOT_IDS.VISITA;
-                data.attentionType = "Visita";
-            } else if (msg === "2") {
-                data.slotId = SLOT_IDS.CONSULTA;
-                data.attentionType = "Consulta";
-            } else {
-                return {
-                    response: "Selecciona 1️⃣ o 2️⃣",
-                    nextState: "DASHBOARD",
-                    data,
-                };
-            }
-
-            data.redirectUrl = buildDoctoraliaUrl(
-                data.date,
-                data.time,
-                data.slotId,
-            );
-
-            await markReScheduled(data.selectedCase.appointment_id);
-
-            await registerChatbotInteraction({
-                phone: from,
-                appointmentId: data.selectedCase.appointment_id,
-                appointmentData: { newStatus: "RESCHEDULED" },
-            });
-
-            data.step = "AFTER_ACTION";
-
-            return {
-                response:
-                    `🗓️ Reagendación lista\n\n` +
-                    `Paciente: ${data.selectedCase.full_name}\n` +
-                    `Tipo: *${data.attentionType}*\n\n` +
-                    `Link para el paciente:\n\n${data.redirectUrl}\n\n` +
-                    `1️⃣ Terminar\n2️⃣ Volver al dashboard`,
                 nextState: "DASHBOARD",
                 data,
             };
@@ -270,7 +216,7 @@ export default async function dashboardState(msg, data, context) {
 
             if (msg === "2") {
                 return {
-                    response: null,
+                    response: "📋 Volviendo al dashboard...\n",
                     nextState: "DASHBOARD",
                     data: { step: "INBOX" },
                 };
@@ -281,20 +227,12 @@ export default async function dashboardState(msg, data, context) {
                 nextState: "DASHBOARD",
                 data,
             };
+
+        default:
+            return {
+                response: "⚠️ Reiniciando dashboard...",
+                nextState: "DASHBOARD",
+                data: { step: "INBOX" },
+            };
     }
-}
-
-function buildTimeResponse(data) {
-    const slots = getTimeSlots(data.page);
-    let response = "Horas disponibles:\n\n";
-
-    slots.forEach((h, i) => {
-        response += `${i + 1}️⃣ ${h}\n`;
-    });
-
-    if (getTimeSlots(data.page + 1).length) {
-        response += "\n7️⃣ Más horarios";
-    }
-
-    return { response, nextState: "DASHBOARD", data };
 }

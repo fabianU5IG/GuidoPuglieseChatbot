@@ -154,6 +154,32 @@ export async function markReScheduled(appointmentId) {
     );
 }
 
+export async function confirmAppointment(appointmentId) {
+    // 1️⃣ Obtener estado actual
+    const [rows] = await db.query(
+        "SELECT status FROM appointments WHERE id = ?",
+        [appointmentId],
+    );
+
+    if (!rows.length) return;
+
+    const previousStatus = rows[0].status;
+
+    // 2️⃣ Actualizar status
+    await db.query(
+        "UPDATE appointments SET status = 'CONFIRMED' WHERE id = ?",
+        [appointmentId],
+    );
+
+    // 3️⃣ Guardar en historial
+    await db.query(
+        `INSERT INTO appointment_status_history
+         (appointment_id, previous_status, new_status, changed_by)
+         VALUES (?, ?, 'CONFIRMED', 'SYSTEM')`,
+        [appointmentId, previousStatus],
+    );
+}
+
 export async function markCancelled(appointmentId) {
     await db.query(
         "UPDATE appointments SET status = 'CANCELLED' WHERE id = ?",
@@ -163,10 +189,10 @@ export async function markCancelled(appointmentId) {
 export async function createProposedAppointment({
     phone,
     fullName,
-    date, // DD/MM
-    time, // HH:mm
+    date,
+    time,
 }) {
-    // 1. Buscar o crear paciente
+    // 1️⃣ Buscar o crear paciente
     const [patient] = await db.query(
         `SELECT id FROM patients WHERE phone = ?`,
         [phone],
@@ -177,20 +203,20 @@ export async function createProposedAppointment({
     if (patient.length) {
         patientId = patient[0].id;
     } else {
-        const result = await db.query(
+        const [result] = await db.query(
             `INSERT INTO patients (full_name, phone) VALUES (?, ?)`,
             [fullName, phone],
         );
         patientId = result.insertId;
     }
 
-    // 2. Convertir fecha
+    // 2️⃣ Convertir fecha
     const [day, month] = date.split("/");
     const year = new Date().getFullYear();
     const scheduledDate = `${year}-${month}-${day}`;
 
-    // 3. Crear appointment
-    const appointmentResult = await db.query(
+    // 3️⃣ Crear appointment (AQUÍ ESTÁ LA CORRECCIÓN)
+    const [appointmentResult] = await db.query(
         `INSERT INTO appointments
          (patient_id, scheduled_date, scheduled_time, status, source)
          VALUES (?, ?, ?, 'PROPOSED', 'BOT')`,
@@ -199,7 +225,7 @@ export async function createProposedAppointment({
 
     const appointmentId = appointmentResult.insertId;
 
-    // 4. Status history
+    // 4️⃣ Status history
     await db.query(
         `INSERT INTO appointment_status_history
          (appointment_id, previous_status, new_status, changed_by)
@@ -209,6 +235,7 @@ export async function createProposedAppointment({
 
     return appointmentId;
 }
+
 export async function logAppointmentMessage(appointmentId, message) {
     await db.query(
         `INSERT INTO appointment_messages

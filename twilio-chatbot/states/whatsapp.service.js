@@ -26,8 +26,8 @@ export async function notifySecretaryNewAppointment({
         `🔗 Doctoralia:\n${redirectUrl}`;
 
     await client.messages.create({
-        from: FROM_WHATSAPP,
-        to: SECRETARY_WHATSAPP,
+        from: "whatsapp:+14155238886",
+        to: "whatsapp:+573153573131",
         body: message,
     });
 }
