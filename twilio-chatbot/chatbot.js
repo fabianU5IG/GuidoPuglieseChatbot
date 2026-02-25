@@ -5,7 +5,8 @@ import agendarState from "./states/agendar.state.js";
 import secretariaState from "./states/secretaria.state.js";
 import postDoctoraliaState from "./states/postDoctoralia.state.js";
 import dashboardState from "./states/dashboard.state.js";
-
+import gestionCitasState from "./states/gestionCitas.state.js";
+import soporteCitaState from "./states/soporteCita.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 
 // 📌 Números autorizados como secretaría
@@ -67,6 +68,13 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     if (state === "SECRETARIA") {
         return secretariaState(msg, data, context);
+    }
+    if (state === "GESTION_CITAS") {
+        return gestionCitasState(msg, data, context);
+    }
+
+    if (state === "SOPORTE_CITA") {
+        return soporteCitaState(msg, data, context);
     }
 
     // 🔁 Fallback seguro
