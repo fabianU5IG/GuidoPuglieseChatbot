@@ -5,7 +5,10 @@ import {
     logAppointmentMessage,
 } from "../services/chatbot-db.service.js";
 import { notifySecretaryNewAppointment } from "./whatsapp.service.js";
-
+import {
+    enqueueSaludtoolsRequest,
+    getSaludtoolsQueueSize,
+} from "../services/saludtools-rate-limit.service.js";
 const { getTimeSlots } = timeUtils;
 
 /**
@@ -191,14 +194,16 @@ async function authenticateSaludtools(appointmentId = null, meta = {}) {
             body: { key: "[provided]", secret: "[hidden]" },
         });
 
-        const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                key: SALUDTOOLS_APIKEY,
-                secret: SALUDTOOLS_APISECRET,
+        const res = await enqueueSaludtoolsRequest(() =>
+            fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    key: SALUDTOOLS_APIKEY,
+                    secret: SALUDTOOLS_APISECRET,
+                }),
             }),
-        });
+        );
 
         await logSaludtools(appointmentId, "AUTH_RESPONSE_HEADERS", {
             reqId,
@@ -371,6 +376,139 @@ function normalizeEmail(value) {
     return ok ? s : null;
 }
 
+// ====== VALIDACIONES: Patient Create ======
+const ALLOWED_DOC_TYPES = new Set([1, 2]); // 1=CC, 2=CE
+const ALLOWED_GENDERS = new Set([1, 2]);
+
+function collapseSpaces(s) {
+    return String(s || "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+// Permite letras (incluye acentos), espacios, guion y apóstrofe. Quita caracteres raros.
+function sanitizeName(s) {
+    const v = collapseSpaces(s);
+    const cleaned = v.replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s'-]/g, "");
+    return collapseSpaces(cleaned);
+}
+
+function isValidDigits(str, min, max) {
+    const v = String(str || "");
+    if (!/^\d+$/.test(v)) return false;
+    return v.length >= min && v.length <= max;
+}
+
+// Tel: aceptamos 7-15 dígitos (E.164 sin '+')
+function isValidPhoneDigits(v) {
+    return isValidDigits(v, 7, 15);
+}
+
+function validateAndNormalizePatientBody(patientBody) {
+    const b = { ...patientBody };
+
+    // Sanitizar nombres
+    b.firstName = sanitizeName(b.firstName);
+    b.secondName = sanitizeName(b.secondName);
+    b.firstLastName = sanitizeName(b.firstLastName);
+    b.secondLastName = sanitizeName(b.secondLastName);
+
+    // Normalizar tipos numéricos
+    b.gender = Number(b.gender);
+    b.documentType = Number(b.documentType);
+
+    // Normalizar strings
+    b.documentNumber = String(b.documentNumber || "").trim();
+    b.birthDate = String(b.birthDate || "").trim();
+    b.email = String(b.email || "").trim();
+
+    // Phone digits
+    b.phone = String(b.phone || "").trim();
+    b.cellPhone = String(b.cellPhone || "").trim();
+
+    // EPS: si viene vacío o 0 -> 0
+    const epsNum = Number(b.eps || 0);
+    b.eps = Number.isFinite(epsNum) && epsNum > 0 ? epsNum : 0;
+
+    // habeasData boolean
+    b.habeasData = Boolean(b.habeasData);
+
+    // ====== Validaciones requeridas ======
+    if (!b.firstName || b.firstName.length < 2) {
+        return {
+            ok: false,
+            step: "REG_FIRSTNAME",
+            message: "Primer nombre inválido. Escríbelo nuevamente:",
+        };
+    }
+    if (!b.firstLastName || b.firstLastName.length < 2) {
+        return {
+            ok: false,
+            step: "REG_FIRSTLASTNAME",
+            message: "Primer apellido inválido. Escríbelo nuevamente:",
+        };
+    }
+
+    if (!isValidBirthDateYmd(b.birthDate)) {
+        return {
+            ok: false,
+            step: "REG_BIRTHDATE",
+            message: "Fecha inválida. Usa YYYY-MM-DD. Ej: 1967-12-05",
+        };
+    }
+
+    if (!ALLOWED_GENDERS.has(b.gender)) {
+        return {
+            ok: false,
+            step: "REG_GENDER",
+            message: "Elige 1 o 2, o 0 para volver al menú.",
+        };
+    }
+
+    if (!ALLOWED_DOC_TYPES.has(b.documentType)) {
+        return {
+            ok: false,
+            step: "ASK_DOC_TYPE",
+            message:
+                "Selecciona tu tipo de documento:\n\n1️⃣ CC\n2️⃣ CE\n\n0️⃣ Volver al menú",
+        };
+    }
+    if (!isValidDigits(b.documentNumber, 5, 20)) {
+        return {
+            ok: false,
+            step: "ASK_DOC_NUMBER",
+            message:
+                "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):",
+        };
+    }
+
+    if (!isValidPhoneDigits(b.phone) || !isValidPhoneDigits(b.cellPhone)) {
+        return {
+            ok: false,
+            step: "REG_HABEAS",
+            message:
+                "No pude validar el número de contacto. Intentemos nuevamente la confirmación de datos (Habeas Data):\n\n1️⃣ Sí, autorizo\n2️⃣ No autorizo\n\n0️⃣ Volver al menú",
+        };
+    }
+
+    // Email: opcional, pero si viene debe ser válido
+    if (b.email) {
+        const em = normalizeEmail(b.email);
+        if (em === null) {
+            return {
+                ok: false,
+                step: "REG_EMAIL",
+                message: "Correo inválido. Intenta de nuevo o escribe 0:",
+            };
+        }
+        b.email = em;
+    } else {
+        b.email = "";
+    }
+
+    return { ok: true, body: b };
+}
+
 function extractPatientItems(searchJson) {
     const content =
         searchJson?.body?.content ??
@@ -441,14 +579,16 @@ async function saludtoolsSearchPatient({
         payload,
     });
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${auth.token}`,
-        },
-        body: JSON.stringify(payload),
-    });
+    const res = await enqueueSaludtoolsRequest(() =>
+        fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${auth.token}`,
+            },
+            body: JSON.stringify(payload),
+        }),
+    );
 
     const raw = await res.text().catch(() => "");
     let json = null;
@@ -502,14 +642,16 @@ async function saludtoolsCreatePatient({
         payload,
     });
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${auth.token}`,
-        },
-        body: JSON.stringify(payload),
-    });
+    const res = await enqueueSaludtoolsRequest(() =>
+        fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${auth.token}`,
+            },
+            body: JSON.stringify(payload),
+        }),
+    );
 
     const raw = await res.text().catch(() => "");
     let json = null;
@@ -586,14 +728,16 @@ async function saludtoolsCreateAppointment({
         clinic: CLINIC_ID,
     });
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${auth.token}`,
-        },
-        body: JSON.stringify(payload),
-    });
+    const res = await enqueueSaludtoolsRequest(() =>
+        fetch(url, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${auth.token}`,
+            },
+            body: JSON.stringify(payload),
+        }),
+    );
 
     const raw = await res.text().catch(() => "");
     let json = null;
@@ -744,7 +888,9 @@ export default async function agendarState(msg, data, context = {}) {
             // ✅ Si AUTH bloqueado/429: NO paramos el flujo. Diferimos verificación.
             if (
                 !search.ok &&
-                (search.code === 429 || search.authError === "AUTH_BLOCKED")
+                (search.status === 429 ||
+                    search.code === 429 ||
+                    search.authError === "AUTH_BLOCKED")
             ) {
                 data.deferPatientVerification = true;
                 data.step = "FILTRO_COLUMNA";
@@ -1052,7 +1198,7 @@ export default async function agendarState(msg, data, context = {}) {
             }
             const checkId = data.patientCheckId;
 
-            const patientBody = {
+            const patientBodyRaw = {
                 firstName: data.regPatient.firstName,
                 secondName: data.regPatient.secondName || "",
                 firstLastName: data.regPatient.firstLastName,
@@ -1068,6 +1214,18 @@ export default async function agendarState(msg, data, context = {}) {
                 habeasData: Boolean(data.regPatient.habeasData),
             };
 
+            const checked = validateAndNormalizePatientBody(patientBodyRaw);
+            if (!checked.ok) {
+                data.step = checked.step;
+                return {
+                    response: checked.message,
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            const patientBody = checked.body;
+
             await logAppointmentMessage(
                 checkId,
                 "[DEBUG] Registro paciente: intentando CREATE",
@@ -1082,6 +1240,7 @@ export default async function agendarState(msg, data, context = {}) {
             if (!created.ok) {
                 // si fue 429, bloqueamos y seguimos el agendamiento sin SaludTools
                 if (
+                    created.status === 429 ||
                     created.code === 429 ||
                     created.authError === "AUTH_BLOCKED"
                 ) {
@@ -1376,7 +1535,9 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (
                 !st.ok &&
-                (st.code === 429 || st.authError === "AUTH_BLOCKED")
+                (st.status === 429 ||
+                    st.code === 429 ||
+                    st.authError === "AUTH_BLOCKED")
             ) {
                 // si se volvió a bloquear, lo dejamos a secretaria
                 await notifySecretaryNewAppointment({
