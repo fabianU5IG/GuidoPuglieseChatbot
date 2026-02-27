@@ -3,6 +3,7 @@ import {
     createProposedAppointment,
     confirmAppointment,
     logAppointmentMessage,
+    upsertPatientName,
 } from "../services/chatbot-db.service.js";
 import { notifySecretaryNewAppointment } from "./whatsapp.service.js";
 import {
@@ -794,6 +795,14 @@ export default async function agendarState(msg, data, context = {}) {
             }
             data.fullName = msg.trim();
             data.firstName = data.fullName.split(" ")[0];
+
+            // ✅ Guardar nombre en BD para evitar INSERT con NULL en pacientes nuevos
+            try {
+                await upsertPatientName(phone, data.fullName);
+            } catch {
+                // No bloqueamos la UX si falla el guardado del nombre
+            }
+
             data.step = "ASK_DOC_TYPE";
             return {
                 response:

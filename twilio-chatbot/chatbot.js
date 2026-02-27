@@ -29,7 +29,7 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     if (SECRETARY_PHONES.includes(userPhone)) {
         state = "DASHBOARD";
-        data = data || {}; // siempre limpio
+        data = session.data || {}; // ✅ NO reiniciar
     } else {
         state = session.state || "MENU";
         data = session.data || {};

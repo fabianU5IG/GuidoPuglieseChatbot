@@ -1,21 +1,72 @@
 import { db } from "../db/mysql.js";
 
-/* ======================================================
-   UTILIDAD BASE – Paciente
-====================================================== */
 async function getOrCreatePatient(phone, fullName = null) {
-    const [p] = await db.query("SELECT id FROM patients WHERE phone = ?", [
-        phone,
-    ]);
+    const safeName =
+        typeof fullName === "string" && fullName.trim()
+            ? fullName.trim()
+            : "Paciente WhatsApp";
 
-    if (p.length) return p[0].id;
+    // Traer también el nombre actual para poder actualizarlo si llega después
+    const [p] = await db.query(
+        "SELECT id, full_name FROM patients WHERE phone = ?",
+        [phone],
+    );
+
+    if (p.length) {
+        const currentName = p[0].full_name;
+
+        // Si el paciente existe y ahora llega un nombre "real", lo guardamos
+        const isPlaceholder =
+            !currentName ||
+            String(currentName).trim().toLowerCase() ===
+                "paciente whatsapp".toLowerCase();
+
+        const incomingIsReal =
+            typeof fullName === "string" && fullName.trim().length >= 3;
+
+        if (incomingIsReal && isPlaceholder) {
+            await db.query("UPDATE patients SET full_name = ? WHERE id = ?", [
+                safeName,
+                p[0].id,
+            ]);
+        }
+
+        return p[0].id;
+    }
 
     const [r] = await db.query(
         "INSERT INTO patients (phone, full_name) VALUES (?, ?)",
-        [phone, fullName],
+        [phone, safeName],
     );
 
     return r.insertId;
+}
+
+/* ======================================================
+   UPSERT – actualizar/crear nombre del paciente
+====================================================== */
+export async function upsertPatientName(phone, fullName) {
+    const safeName =
+        typeof fullName === "string" && fullName.trim()
+            ? fullName.trim()
+            : null;
+
+    if (!safeName) return false;
+
+    const [u] = await db.query(
+        "UPDATE patients SET full_name = ? WHERE phone = ?",
+        [safeName, phone],
+    );
+
+    if (u.affectedRows && u.affectedRows > 0) return true;
+
+    // Si no existe aún, lo creamos con nombre (evita NULL)
+    await db.query("INSERT INTO patients (phone, full_name) VALUES (?, ?)", [
+        phone,
+        safeName,
+    ]);
+
+    return true;
 }
 
 /* ======================================================
@@ -193,8 +244,13 @@ export async function createProposedAppointment({
     time,
 }) {
     // 1️⃣ Buscar o crear paciente
+    const safeName =
+        typeof fullName === "string" && fullName.trim()
+            ? fullName.trim()
+            : "Paciente WhatsApp";
+
     const [patient] = await db.query(
-        `SELECT id FROM patients WHERE phone = ?`,
+        `SELECT id, full_name FROM patients WHERE phone = ?`,
         [phone],
     );
 
@@ -202,10 +258,27 @@ export async function createProposedAppointment({
 
     if (patient.length) {
         patientId = patient[0].id;
+
+        // Si llega un nombre real y en BD está vacío/placeholder, actualizamos
+        const currentName = patient[0].full_name;
+        const isPlaceholder =
+            !currentName ||
+            String(currentName).trim().toLowerCase() ===
+                "paciente whatsapp".toLowerCase();
+
+        const incomingIsReal =
+            typeof fullName === "string" && fullName.trim().length >= 3;
+
+        if (incomingIsReal && isPlaceholder) {
+            await db.query("UPDATE patients SET full_name = ? WHERE id = ?", [
+                safeName,
+                patientId,
+            ]);
+        }
     } else {
         const [result] = await db.query(
             `INSERT INTO patients (full_name, phone) VALUES (?, ?)`,
-            [fullName, phone],
+            [safeName, phone],
         );
         patientId = result.insertId;
     }
