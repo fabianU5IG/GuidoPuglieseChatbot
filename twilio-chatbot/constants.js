@@ -22,10 +22,10 @@ export const EPS_CONVENIO = {
   // clave normalizada -> { id: <id_saludtools>, label: "..." }
   "colsanitas": { id: 165, label: "COLSANITAS" },
   "allianz": { id: 169, label: "ALLIANZ" },
-  "coomeva": { id: 3, label: "SURA" },
-  "medplus": { id: 3, label: "SURA" },
-  "medisanitas": { id: 3, label: "SURA" },
-  "suramericana": { id: 3, label: "SURA" },
+  "coomeva": { id: 171, label: "COOMEVA" },
+  "medplus": { id: 3, label: "MEDPLUS" },
+  "medisanitas": { id: 3, label: "MEDISANITAS" },
+  "suramericana": { id: 3, label: "SURAMERICANA" },
 };
 
 // si Saludtools NO tiene EPS “Particular”, entonces usamos 0
