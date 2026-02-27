@@ -11,6 +11,7 @@ import {
     getSaludtoolsQueueSize,
 } from "../services/saludtools-rate-limit.service.js";
 const { getTimeSlots } = timeUtils;
+import { EPS_CONVENIO } from "../constants.js";
 
 /**
  * SALUDTOOLS
@@ -91,6 +92,10 @@ async function logSaludtools(appointmentId, label, payload) {
     if (SALUDTOOLS_DEBUG) console.log(line);
     if (appointmentId)
         await logAppointmentMessage(appointmentId, line.slice(0, 1800));
+}
+
+function normKey(s) {
+  return String(s || "").trim().toLowerCase();
 }
 
 // ====== Token cache (memory + data) ======
@@ -1134,35 +1139,50 @@ export default async function agendarState(msg, data, context = {}) {
             data.step = "REG_EPS";
             return {
                 response:
-                    "EPS (número). Si no aplica o no sabes, escribe 0. Ej: 3",
-                nextState: "AGENDAR",
-                data,
-            };
-        }
-
-        case "REG_EPS": {
-            const v = String(msg || "").trim();
-            if (v === "0") data.regPatient.eps = "";
-            else if (!/^\d+$/.test(v))
-                return {
-                    response: "EPS inválida. Escribe un número o 0:",
-                    nextState: "AGENDAR",
-                    data,
-                };
-            else data.regPatient.eps = v;
-
-            data.step = "REG_HABEAS";
-            return {
-                response:
-                    "Autorización de tratamiento de datos (Habeas Data):\n\n" +
-                    "1️⃣ Sí, autorizo\n" +
-                    "2️⃣ No autorizo\n\n" +
+                    "¿Cuál es tu EPS?\n\n" +
+                    "Escribe el nombre (ej: Suramericana, Colsanitas).\n" +
+                    "Si es particular, escribe PARTICULAR.\n\n" +
                     "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
                 data,
             };
         }
 
+        case "REG_EPS": {
+            const v = normKey(msg);
+
+            if (v === "0") {
+                data.regPatient.eps = 0;
+                data.regPatient.epsName = "";
+                data.regPatient.isParticular = true;
+            } else if (v === "particular" || v === "no aplica") {
+                data.regPatient.eps = 0;
+                data.regPatient.epsName = "PARTICULAR";
+                data.regPatient.isParticular = true;
+            } else if (EPS_CONVENIO[v]) {
+                data.regPatient.eps = EPS_CONVENIO[v].id;
+                data.regPatient.epsName = EPS_CONVENIO[v].label;
+                data.regPatient.isParticular = false;
+            } else {
+                // No es convenio -> particular (tu regla de negocio)
+                data.regPatient.eps = 0;
+                data.regPatient.epsName = msg;
+                data.regPatient.isParticular = true;
+            }
+
+            data.step = "REG_HABEAS";
+                return {
+                    response:
+                        "Autorización de tratamiento de datos (Habeas Data):\n\n" +
+                        "1️⃣ Sí, autorizo\n" +
+                        "2️⃣ No autorizo\n\n" +
+                        "0️⃣ Volver al menú",
+                    nextState: "AGENDAR",
+                    data,
+                };
+        }
+
+        
         case "REG_HABEAS": {
             if (msg === "0") return returnToMenu();
             if (msg !== "1" && msg !== "2")
