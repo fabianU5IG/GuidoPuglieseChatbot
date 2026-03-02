@@ -17,16 +17,7 @@ export default function menuState(msg, data) {
     switch (msg) {
         case "1":
             return {
-                response:
-                    "Antes de continuar, ten en cuenta:\n\n" +
-                    "• El Dr. no es ortopedista pediátrico.\n" +
-                    "• No realizamos consultas domiciliarias.\n" +
-                    "• Nos enfocamos principalmente en problemas de columna.\n" +
-                    "• No prestamos servicio de urgencias.\n\n" +
-                    "1️⃣ Agendar nueva consulta\n" +
-                    "2️⃣ Reagendar cita\n" +
-                    "3️⃣ Cancelar cita\n" +
-                    "0️⃣ Volver al menú",
+                response:"",
                 nextState: "GESTION_CITAS",
                 data: {},
             };
