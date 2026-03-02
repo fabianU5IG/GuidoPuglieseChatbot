@@ -1,3 +1,5 @@
+import gestionCitasState from "./gestionCitas.state.js";
+
 export default function menuState(msg, data) {
     const mainMenu =
         "Hola 👋\n\n" +
@@ -16,11 +18,7 @@ export default function menuState(msg, data) {
 
     switch (msg) {
         case "1":
-            return {
-                response:"",
-                nextState: "GESTION_CITAS",
-                data: {},
-            };
+            return gestionCitasState("", {});
 
         case "2":
             return {
