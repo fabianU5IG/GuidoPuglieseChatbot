@@ -763,16 +763,142 @@ async function saludtoolsCreateAppointment({
     return { ok: true, status: res.status, data: json ?? raw };
 }
 
+///DISPONIBILIDAD DE CITAS
+async function saludtoolsAppointmentSearch({
+  appointmentId = null,
+  startAppointment,
+  endAppointment,
+  page = 0,
+  size = 200,
+  context = {},
+  data = {},
+}) {
+  const auth = await authenticateSaludtools(appointmentId, { context, data });
+  if (!auth.ok) return { ok: false, status: auth.code, error: auth.error };
+
+  const url = saludtoolsSyncUrl();
+
+  const payload = {
+    eventType: "APPOINTMENT",
+    actionType: "SEARCH",
+    body: {
+      doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+      doctorDocumentNumber: String(DOCTOR_DOCUMENT_NUMBER),
+      //clinic: CLINIC_ID, // recomendado para que filtre por sede
+      startAppointment,
+      endAppointment,
+      pageable: { page, size },
+    },
+  };
+
+  const res = await enqueueSaludtoolsRequest(() =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify(payload),
+    })
+  );
+
+  const raw = await res.text().catch(() => "");
+  let json = null;
+  try {
+    json = raw ? JSON.parse(raw) : null;
+  } catch {}
+
+  if (!res.ok) return { ok: false, status: res.status, error: json || raw };
+
+  return { ok: true, body: json?.body };
+}
+///
+
+///HORARIOS DISPONIBLES DEL DR
+const SLOT_MIN = 30; // por ahora: 30 min fijo
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
+  const [sh, sm] = startHm.split(":").map(Number);
+  const [eh, em] = endHm.split(":").map(Number);
+
+  const startTotal = sh * 60 + sm;
+  const endTotal = eh * 60 + em;
+
+  const lastStart = endTotal - slotMin;
+  const slots = [];
+
+  for (let t = startTotal; t <= lastStart; t += slotMin) {
+    const h = Math.floor(t / 60);
+    const m = t % 60;
+    slots.push(`${pad2(h)}:${pad2(m)}`);
+  }
+  return slots;
+}
+
+function getScheduleForYmd(ymd) {
+  // ymd: "YYYY-MM-DD"
+  const d = new Date(`${ymd}T00:00:00`);
+  const dow = d.getDay(); // 0=Dom,1=Lun,...6=Sáb
+
+  // Dr: Lun, Mar, Jue 8:00-17:30 | Vie 8:30-11:30
+  if (dow === 1 || dow === 2 || dow === 4) return { start: "08:00", end: "17:30" };
+  if (dow === 5) return { start: "08:30", end: "11:30" };
+
+  return null; // no atiende (Mié, Sáb, Dom)
+}
+
+function getSlotsForDate(ymd, page = 0) {
+  const schedule = getScheduleForYmd(ymd);
+  if (!schedule) return [];
+
+  const all = buildSlots(schedule.start, schedule.end, SLOT_MIN);
+
+  // paginación: 6 por página (ajusta si quieres)
+  const pageSize = 6;
+  const from = page * pageSize;
+  return all.slice(from, from + pageSize);
+}
+///
+
 // ====== UI: horarios ======
 function buildTimeResponse(data) {
-    const slots = getTimeSlots(data.page);
-    let response = "Horas disponibles:\n\n";
-    slots.forEach((h, i) => {
-        response += `${i + 1}️⃣ ${h}\n`;
-    });
-    if (getTimeSlots(data.page + 1).length) response += "\n7️⃣ Más horarios";
-    response += "\n\n0️⃣ Volver al menú";
-    return { response, nextState: "AGENDAR", data };
+  const booked = new Set(data.bookedHm || []);
+  const ymd = data.ymd; // <-- NUEVO: guardamos YYYY-MM-DD en data
+  const slotsAll = getSlotsForDate(ymd, data.page || 0);
+
+  const slots = slotsAll.filter((h) => !booked.has(h));
+  data.visibleSlots = slots;
+
+  if (!slotsAll.length) {
+    return {
+      response:
+        "Ese día el Dr. no tiene atención.\n\n" +
+        "Escribe otra fecha (DD/MM) o 0 para volver al menú.",
+      nextState: "AGENDAR",
+      data,
+    };
+  }
+
+  if (!slots.length) {
+    return {
+      response:
+        "No veo horarios disponibles en esta página.\n\n" +
+        "7️⃣ Ver más horarios\n" +
+        "0️⃣ Volver al menú",
+      nextState: "AGENDAR",
+      data,
+    };
+  }
+
+  let response = "Horas disponibles:\n\n";
+  slots.forEach((h, i) => (response += `${i + 1}️⃣ ${h}\n`));
+  response += "\n7️⃣ Más horarios\n0️⃣ Volver al menú";
+
+  return { response, nextState: "AGENDAR", data };
 }
 
 // ====== MAIN STATE ======
@@ -1392,16 +1518,18 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_DATE": {
             if (!isValidDateDDMM(msg)) {
                 return {
-                    response:
-                        "Fecha inválida. Debe ser DD/MM y una fecha futura.",
-                    nextState: "AGENDAR",
-                    data,
+                response: "Fecha inválida. Debe ser DD/MM y una fecha futura.",
+                nextState: "AGENDAR",
+                data,
                 };
             }
+
             data.date = msg;
+            data.ymd = ddmmToYmd(msg);   
             data.page = 0;
+            data.bookedHm = [];          
             data.step = "ASK_TIME";
-            return buildTimeResponse(data);
+        return buildTimeResponse(data);
         }
 
         case "ASK_TIME": {
@@ -1412,26 +1540,88 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
-            const index = parseInt(msg, 10) - 1;
-            const slots = getTimeSlots(data.page);
-            const hour = slots[index];
-            if (!hour)
-                return {
-                    response: "Opción inválida. Elige un número del listado.",
-                    nextState: "AGENDAR",
-                    data,
-                };
+            // ===== Validar horario elegido =====
+            const slots = Array.isArray(data.visibleSlots)
+            ? data.visibleSlots
+            : getSlotsForDate(data.ymd, data.page || 0);
 
-            data.time = hour;
-            data.step = "ASK_TYPE";
+            const index = Number(msg) - 1;
+
+            // ✅ Validación de índice
+            if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
             return {
                 response:
-                    "¿Qué tipo de atención deseas?\n\n" +
+                `Elige una opción válida (1 a ${slots.length}).\n\n` +
+                "7️⃣ Ver más horarios\n" +
+                "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
+            };
+            }
+
+            const hour = slots[index];
+
+            const ymd = data.ymd;
+            const start = `${ymd} ${hour}`;
+
+            // 🟢 Solo 30 minutos
+            const end30 = addMinutesToYmdHm(ymd, hour, 30);
+            const end30Str = `${end30.ymd} ${end30.hm}`;
+
+            const checkId = data.patientCheckId || data.appointmentId || null;
+
+            const s30 = await saludtoolsAppointmentSearch({
+            appointmentId: checkId,
+            startAppointment: start,
+            endAppointment: end30Str,
+            page: 0,
+            size: 20,
+            context,
+            data,
+            });
+
+            const content30 = s30.ok ? (s30.body?.content || []) : [];
+
+            // Bloquea si hay cita que no esté CANCELLED
+            const isBlocked = content30.some(
+            (a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED"
+            );
+
+            if (isBlocked) {
+                // Guardar el slot ocupado para no volver a mostrarlo en esta pantalla
+                data.bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
+                if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
+
+                // Mantenerse en selección de hora
+                data.step = "ASK_TIME";
+
+                // Mensaje más pro + re-mostrar lista
+                const ui = buildTimeResponse(data);
+                return {
+                    ...ui,
+                    response:
+                    "El horario seleccionado ya no se encuentra disponible.\n" +
+                    "Por favor elige otro horario:\n\n" +
+                    ui.response,
+                };
+            }
+
+            // ✅ Si no está bloqueado, seguimos flujo
+            data.time = hour;
+            data.step = "ASK_TYPE";
+
+            return {
+            response:
+                `Perfecto ✅\n\n` +
+                `Fecha: ${data.date}\n` +
+                `Hora: ${hour}\n\n` +
+                "Ahora selecciona\n\n" +
+                "¿Qué tipo de atención deseas?\n\n" +
                     "1️⃣ Consulta particular\n" +
                     "2️⃣ Consulta con póliza / prepagada\n\n" +
                     "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
+            nextState: "AGENDAR",
+            data,
             };
         }
 

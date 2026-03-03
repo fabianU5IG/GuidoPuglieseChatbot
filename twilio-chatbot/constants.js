@@ -23,7 +23,7 @@ export const EPS_CONVENIO = {
   "colsanitas": { id: 165, label: "COLSANITAS" },
   "allianz": { id: 169, label: "ALLIANZ" },
   "coomeva": { id: 171, label: "COOMEVA" },
-  "medplus": { id: 3, label: "MEDPLUS" },
+  "medplus": { id: 162, label: "MEDPLUS" },
   "medisanitas": { id: 3, label: "MEDISANITAS" },
   "suramericana": { id: 3, label: "SURAMERICANA" },
 };
