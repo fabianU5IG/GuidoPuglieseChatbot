@@ -763,16 +763,83 @@ async function saludtoolsCreateAppointment({
     return { ok: true, status: res.status, data: json ?? raw };
 }
 
+///DISPONIBILIDAD DE CITAS
+async function saludtoolsAppointmentSearch({
+  appointmentId = null,
+  startAppointment,
+  endAppointment,
+  page = 0,
+  size = 200,
+  context = {},
+  data = {},
+}) {
+  const auth = await authenticateSaludtools(appointmentId, { context, data });
+  if (!auth.ok) return { ok: false, status: auth.code, error: auth.error };
+
+  const url = saludtoolsSyncUrl();
+
+  const payload = {
+    eventType: "APPOINTMENT",
+    actionType: "SEARCH",
+    body: {
+      doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+      doctorDocumentNumber: String(DOCTOR_DOCUMENT_NUMBER),
+      clinic: CLINIC_ID, // recomendado para que filtre por sede
+      startAppointment,
+      endAppointment,
+      pageable: { page, size },
+    },
+  };
+
+  const res = await enqueueSaludtoolsRequest(() =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify(payload),
+    })
+  );
+
+  const raw = await res.text().catch(() => "");
+  let json = null;
+  try {
+    json = raw ? JSON.parse(raw) : null;
+  } catch {}
+
+  if (!res.ok) return { ok: false, status: res.status, error: json || raw };
+
+  return { ok: true, body: json?.body };
+}
+///
+
 // ====== UI: horarios ======
 function buildTimeResponse(data) {
-    const slots = getTimeSlots(data.page);
-    let response = "Horas disponibles:\n\n";
-    slots.forEach((h, i) => {
-        response += `${i + 1}️⃣ ${h}\n`;
-    });
-    if (getTimeSlots(data.page + 1).length) response += "\n7️⃣ Más horarios";
-    response += "\n\n0️⃣ Volver al menú";
-    return { response, nextState: "AGENDAR", data };
+  const booked = new Set(data.bookedHm || []);
+  const slotsAll = getTimeSlots(data.page);
+
+  const slots = slotsAll.filter((h) => !booked.has(h));
+
+  data.visibleSlots = slots; // IMPORTANTÍSIMO para validar en ASK_TIME
+
+  if (!slots.length) {
+    return {
+      response:
+        "No veo horarios disponibles en esta página.\n\n" +
+        "7️⃣ Ver más horarios\n" +
+        "0️⃣ Volver al menú",
+      nextState: "AGENDAR",
+      data,
+    };
+  }
+
+  let response = "Horas disponibles:\n\n";
+  slots.forEach((h, i) => (response += `${i + 1}️⃣ ${h}\n`));
+
+  response += "\n7️⃣ Más horarios\n0️⃣ Volver al menú";
+
+  return { response, nextState: "AGENDAR", data };
 }
 
 // ====== MAIN STATE ======
@@ -1400,8 +1467,48 @@ export default async function agendarState(msg, data, context = {}) {
             }
             data.date = msg;
             data.page = 0;
-            data.step = "ASK_TIME";
-            return buildTimeResponse(data);
+            // Convierte DD/MM a YYYY-MM-DD (tu helper ddmmToYmd o el que uses)
+                const ymd = ddmmToYmd(msg);
+
+                // Rango del día completo (formato confirmado)
+                const start = `${ymd} 00:00`;
+                const end = `${ymd} 23:59`;
+
+                const checkId = data.patientCheckId || null;
+                const search = await saludtoolsAppointmentSearch({
+                appointmentId: checkId,
+                startAppointment: start,
+                endAppointment: end,
+                page: 0,
+                size: 200,
+                context,
+                data,
+                });
+
+                // Si cae 429, no frenamos UX: mostramos genérico (y luego validamos al crear)
+                if (!search.ok && search.status === 429) {
+                data.bookedHm = [];
+                } else if (search.ok) {
+                const content = search.body?.content || [];
+                const booked = new Set();
+
+                for (const appt of content) {
+                    const state = String(appt.stateAppointment || "").toUpperCase();
+                    if (state === "CANCELLED") continue; // cancelada = no bloquea
+
+                    const s = String(appt.startAppointment || "");
+                    const hm = s.slice(11, 16); // "HH:mm"
+                    if (hm) booked.add(hm);
+                }
+
+                data.bookedHm = Array.from(booked);
+                } else {
+                data.bookedHm = [];
+                }
+
+                data.page = 0;
+                data.step = "ASK_TIME";
+                return buildTimeResponse(data);
         }
 
         case "ASK_TIME": {
@@ -1413,7 +1520,7 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             const index = parseInt(msg, 10) - 1;
-            const slots = getTimeSlots(data.page);
+            const slots = Array.isArray(data.visibleSlots) ? data.visibleSlots : getTimeSlots(data.page);
             const hour = slots[index];
             if (!hour)
                 return {
