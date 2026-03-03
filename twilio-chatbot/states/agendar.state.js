@@ -1540,49 +1540,35 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
+            // ===== Validar horario elegido =====
             const slots = Array.isArray(data.visibleSlots)
-                ? data.visibleSlots
-                : getSlotsForDate(data.ymd, data.page || 0);
+            ? data.visibleSlots
+            : getSlotsForDate(data.ymd, data.page || 0);
 
-                const index = Number(msg) - 1;
+            const index = Number(msg) - 1;
 
-                // 👇 VALIDACIÓN AQUÍ
-                if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
-                return {
-                    response:
-                    `Elige una opción válida (1 a ${slots.length}),\n\n` +
-                    "7️⃣ Ver más horarios\n" +
-                    "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
-                };
+            // ✅ Validación de índice
+            if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
+            return {
+                response:
+                `Elige una opción válida (1 a ${slots.length}).\n\n` +
+                "7️⃣ Ver más horarios\n" +
+                "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
+            };
             }
 
             const hour = slots[index];
-            
+
             const ymd = data.ymd;
             const start = `${ymd} ${hour}`;
 
-            // end para 30 min
+            // 🟢 Solo 30 minutos
             const end30 = addMinutesToYmdHm(ymd, hour, 30);
             const end30Str = `${end30.ymd} ${end30.hm}`;
 
-            // end para 20 min (por si el calendario tiene citas de 20)
-            const end20 = addMinutesToYmdHm(ymd, hour, 20);
-            const end20Str = `${end20.ymd} ${end20.hm}`;
-
-            // validamos “ocupado” si existe una cita exacta (20 o 30)
             const checkId = data.patientCheckId || data.appointmentId || null;
-
-            const s20 = await saludtoolsAppointmentSearch({
-            appointmentId: checkId,
-            startAppointment: start,
-            endAppointment: end20Str,
-            page: 0,
-            size: 20,
-            context,
-            data,
-            });
 
             const s30 = await saludtoolsAppointmentSearch({
             appointmentId: checkId,
@@ -1594,13 +1580,14 @@ export default async function agendarState(msg, data, context = {}) {
             data,
             });
 
-            const content20 = s20.ok ? (s20.body?.content || []) : [];
             const content30 = s30.ok ? (s30.body?.content || []) : [];
 
-            const hasBlocking = (arr) =>
-            arr.some((a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED");
+            // Bloquea si hay cita que no esté CANCELLED
+            const isBlocked = content30.some(
+            (a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED"
+            );
 
-            if (hasBlocking(content20) || hasBlocking(content30)) {
+            if (isBlocked) {
             return {
                 response:
                 "Ese horario ya está ocupado 😅\n\n" +
@@ -1612,16 +1599,22 @@ export default async function agendarState(msg, data, context = {}) {
             };
             }
 
+            // ✅ Si no está bloqueado, seguimos flujo
             data.time = hour;
             data.step = "ASK_TYPE";
+
             return {
-                response:
-                    "¿Qué tipo de atención deseas?\n\n" +
+            response:
+                `Perfecto ✅\n\n` +
+                `Fecha: ${data.date}\n` +
+                `Hora: ${hour}\n\n` +
+                "Ahora selecciona\n\n" +
+                "¿Qué tipo de atención deseas?\n\n" +
                     "1️⃣ Consulta particular\n" +
                     "2️⃣ Consulta con póliza / prepagada\n\n" +
                     "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
+            nextState: "AGENDAR",
+            data,
             };
         }
 
