@@ -814,14 +814,74 @@ async function saludtoolsAppointmentSearch({
 }
 ///
 
+///HORARIOS DISPONIBLES DEL DR
+const SLOT_MIN = 30; // por ahora: 30 min fijo
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
+  const [sh, sm] = startHm.split(":").map(Number);
+  const [eh, em] = endHm.split(":").map(Number);
+
+  const startTotal = sh * 60 + sm;
+  const endTotal = eh * 60 + em;
+
+  const lastStart = endTotal - slotMin;
+  const slots = [];
+
+  for (let t = startTotal; t <= lastStart; t += slotMin) {
+    const h = Math.floor(t / 60);
+    const m = t % 60;
+    slots.push(`${pad2(h)}:${pad2(m)}`);
+  }
+  return slots;
+}
+
+function getScheduleForYmd(ymd) {
+  // ymd: "YYYY-MM-DD"
+  const d = new Date(`${ymd}T00:00:00`);
+  const dow = d.getDay(); // 0=Dom,1=Lun,...6=Sáb
+
+  // Dr: Lun, Mar, Jue 8:00-17:30 | Vie 8:30-11:30
+  if (dow === 1 || dow === 2 || dow === 4) return { start: "08:00", end: "17:30" };
+  if (dow === 5) return { start: "08:30", end: "11:30" };
+
+  return null; // no atiende (Mié, Sáb, Dom)
+}
+
+function getSlotsForDate(ymd, page = 0) {
+  const schedule = getScheduleForYmd(ymd);
+  if (!schedule) return [];
+
+  const all = buildSlots(schedule.start, schedule.end, SLOT_MIN);
+
+  // paginación: 6 por página (ajusta si quieres)
+  const pageSize = 6;
+  const from = page * pageSize;
+  return all.slice(from, from + pageSize);
+}
+///
+
 // ====== UI: horarios ======
 function buildTimeResponse(data) {
   const booked = new Set(data.bookedHm || []);
-  const slotsAll = getTimeSlots(data.page);
+  const ymd = data.ymd; // <-- NUEVO: guardamos YYYY-MM-DD en data
+  const slotsAll = getSlotsForDate(ymd, data.page || 0);
 
   const slots = slotsAll.filter((h) => !booked.has(h));
+  data.visibleSlots = slots;
 
-  data.visibleSlots = slots; // IMPORTANTÍSIMO para validar en ASK_TIME
+  if (!slotsAll.length) {
+    return {
+      response:
+        "Ese día el Dr. no tiene atención.\n\n" +
+        "Escribe otra fecha (DD/MM) o 0 para volver al menú.",
+      nextState: "AGENDAR",
+      data,
+    };
+  }
 
   if (!slots.length) {
     return {
@@ -836,7 +896,6 @@ function buildTimeResponse(data) {
 
   let response = "Horas disponibles:\n\n";
   slots.forEach((h, i) => (response += `${i + 1}️⃣ ${h}\n`));
-
   response += "\n7️⃣ Más horarios\n0️⃣ Volver al menú";
 
   return { response, nextState: "AGENDAR", data };
@@ -1459,56 +1518,18 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_DATE": {
             if (!isValidDateDDMM(msg)) {
                 return {
-                    response:
-                        "Fecha inválida. Debe ser DD/MM y una fecha futura.",
-                    nextState: "AGENDAR",
-                    data,
+                response: "Fecha inválida. Debe ser DD/MM y una fecha futura.",
+                nextState: "AGENDAR",
+                data,
                 };
             }
+
             data.date = msg;
+            data.ymd = ddmmToYmd(msg);   
             data.page = 0;
-            // Convierte DD/MM a YYYY-MM-DD (tu helper ddmmToYmd o el que uses)
-                const ymd = ddmmToYmd(msg);
-
-                // Rango del día completo (formato confirmado)
-                const start = `${ymd} 00:00`;
-                const end = `${ymd} 23:59`;
-
-                const checkId = data.patientCheckId || null;
-                const search = await saludtoolsAppointmentSearch({
-                appointmentId: checkId,
-                startAppointment: start,
-                endAppointment: end,
-                page: 0,
-                size: 200,
-                context,
-                data,
-                });
-
-                // Si cae 429, no frenamos UX: mostramos genérico (y luego validamos al crear)
-                if (!search.ok && search.status === 429) {
-                data.bookedHm = [];
-                } else if (search.ok) {
-                const content = search.body?.content || [];
-                const booked = new Set();
-
-                for (const appt of content) {
-                    const state = String(appt.stateAppointment || "").toUpperCase();
-                    if (state === "CANCELLED") continue; // cancelada = no bloquea
-
-                    const s = String(appt.startAppointment || "");
-                    const hm = s.slice(11, 16); // "HH:mm"
-                    if (hm) booked.add(hm);
-                }
-
-                data.bookedHm = Array.from(booked);
-                } else {
-                data.bookedHm = [];
-                }
-
-                data.page = 0;
-                data.step = "ASK_TIME";
-                return buildTimeResponse(data);
+            data.bookedHm = [];          
+            data.step = "ASK_TIME";
+        return buildTimeResponse(data);
         }
 
         case "ASK_TIME": {
@@ -1519,15 +1540,77 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
-            const index = parseInt(msg, 10) - 1;
-            const slots = Array.isArray(data.visibleSlots) ? data.visibleSlots : getTimeSlots(data.page);
-            const hour = slots[index];
-            if (!hour)
+            const slots = Array.isArray(data.visibleSlots)
+                ? data.visibleSlots
+                : getSlotsForDate(data.ymd, data.page || 0);
+
+                const index = Number(msg) - 1;
+
+                // 👇 VALIDACIÓN AQUÍ
+                if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
                 return {
-                    response: "Opción inválida. Elige un número del listado.",
+                    response:
+                    `Elige una opción válida (1 a ${slots.length}),\n\n` +
+                    "7️⃣ Ver más horarios\n" +
+                    "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
                 };
+            }
+
+            const hour = slots[index];
+            
+            const ymd = data.ymd;
+            const start = `${ymd} ${hour}`;
+
+            // end para 30 min
+            const end30 = addMinutesToYmdHm(ymd, hour, 30);
+            const end30Str = `${end30.ymd} ${end30.hm}`;
+
+            // end para 20 min (por si el calendario tiene citas de 20)
+            const end20 = addMinutesToYmdHm(ymd, hour, 20);
+            const end20Str = `${end20.ymd} ${end20.hm}`;
+
+            // validamos “ocupado” si existe una cita exacta (20 o 30)
+            const checkId = data.patientCheckId || data.appointmentId || null;
+
+            const s20 = await saludtoolsAppointmentSearch({
+            appointmentId: checkId,
+            startAppointment: start,
+            endAppointment: end20Str,
+            page: 0,
+            size: 20,
+            context,
+            data,
+            });
+
+            const s30 = await saludtoolsAppointmentSearch({
+            appointmentId: checkId,
+            startAppointment: start,
+            endAppointment: end30Str,
+            page: 0,
+            size: 20,
+            context,
+            data,
+            });
+
+            const content20 = s20.ok ? (s20.body?.content || []) : [];
+            const content30 = s30.ok ? (s30.body?.content || []) : [];
+
+            const hasBlocking = (arr) =>
+            arr.some((a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED");
+
+            if (hasBlocking(content20) || hasBlocking(content30)) {
+            return {
+                response:
+                "Ese horario ya está ocupado 😅\n\n" +
+                "Elige otro horario:\n\n" +
+                "7️⃣ Ver más horarios\n" +
+                "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
+            };
+            }
 
             data.time = hour;
             data.step = "ASK_TYPE";
