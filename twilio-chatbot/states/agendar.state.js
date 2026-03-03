@@ -1588,15 +1588,22 @@ export default async function agendarState(msg, data, context = {}) {
             );
 
             if (isBlocked) {
-            return {
-                response:
-                "Ese horario ya está ocupado 😅\n\n" +
-                "Elige otro horario:\n\n" +
-                "7️⃣ Ver más horarios\n" +
-                "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+                // Guardar el slot ocupado para no volver a mostrarlo en esta pantalla
+                data.bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
+                if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
+
+                // Mantenerse en selección de hora
+                data.step = "ASK_TIME";
+
+                // Mensaje más pro + re-mostrar lista
+                const ui = buildTimeResponse(data);
+                return {
+                    ...ui,
+                    response:
+                    "El horario seleccionado ya no se encuentra disponible.\n" +
+                    "Por favor elige otro horario:\n\n" +
+                    ui.response,
+                };
             }
 
             // ✅ Si no está bloqueado, seguimos flujo
