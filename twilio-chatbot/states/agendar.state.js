@@ -784,7 +784,7 @@ async function saludtoolsAppointmentSearch({
     body: {
       doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
       doctorDocumentNumber: String(DOCTOR_DOCUMENT_NUMBER),
-      clinic: CLINIC_ID, // recomendado para que filtre por sede
+      //clinic: CLINIC_ID, // recomendado para que filtre por sede
       startAppointment,
       endAppointment,
       pageable: { page, size },
