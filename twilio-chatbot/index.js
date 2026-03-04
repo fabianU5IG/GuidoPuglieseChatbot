@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import bodyParser from "body-parser";
 import chatbotResponse from "./chatbot.js";
+import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,46 +19,8 @@ app.use(bodyParser.json());
 /**
  * Webhook Saludtools
  */
-function logWebhook(label, req) {
-  console.log(`\n========== SALUDTOOLS WEBHOOK: ${label} ==========`);
+app.use("/webhook/saludtools", saludtoolsWebhook);
 
-  console.log("Headers:");
-  console.log({
-    "user-agent": req.headers["user-agent"],
-    "content-type": req.headers["content-type"],
-    "x-forwarded-for": req.headers["x-forwarded-for"],
-    "content-length": req.headers["content-length"],
-  });
-
-  console.log("Body:");
-  console.log(JSON.stringify(req.body, null, 2));
-
-  console.log("=================================================\n");
-}
-
-/** APPOINTMENT CREATE */
-app.post("/webhook/saludtools/appointment/create", (req, res) => {
-  logWebhook("APPOINTMENT_CREATE", req);
-  res.sendStatus(200);
-});
-
-/** APPOINTMENT UPDATE (incluye cancel/reagendar normalmente) */
-app.post("/webhook/saludtools/appointment/update", (req, res) => {
-  logWebhook("APPOINTMENT_UPDATE", req);
-  res.sendStatus(200);
-});
-
-/** PATIENT CREATE */
-app.post("/webhook/saludtools/patient/create", (req, res) => {
-  logWebhook("PATIENT_CREATE", req);
-  res.sendStatus(200);
-});
-
-/** PATIENT UPDATE */
-app.post("/webhook/saludtools/patient/update", (req, res) => {
-  logWebhook("PATIENT_UPDATE", req);
-  res.sendStatus(200);
-});
 
 /**
  * Webhook Twilio WhatsApp
