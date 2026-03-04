@@ -16,6 +16,27 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 /**
+ * Webhook Saludtools
+ */
+app.post("/webhook/saludtools", (req, res) => {
+
+    console.log("========== WEBHOOK SALUDTOOLS ==========");
+
+    console.log("Headers:");
+    console.log(req.headers);
+
+    console.log("Body:");
+    console.log(JSON.stringify(req.body, null, 2));
+
+    console.log("========================================");
+
+    res.status(200).json({
+        received: true
+    });
+
+});
+
+/**
  * Webhook Twilio WhatsApp
  */
 app.post("/webhook", async (req, res) => {
