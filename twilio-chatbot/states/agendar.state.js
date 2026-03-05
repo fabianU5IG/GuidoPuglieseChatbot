@@ -12,6 +12,7 @@ import {
 } from "../services/saludtools-rate-limit.service.js";
 const { getTimeSlots } = timeUtils;
 import { EPS_CONVENIO } from "../constants.js";
+import { db } from "../db/mysql.js";
 
 /**
  * SALUDTOOLS
@@ -380,6 +381,53 @@ function normalizeEmail(value) {
     if (!s) return "";
     const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
     return ok ? s : null;
+}
+
+function isCancelledStatus(status) {
+  const s = String(status || "").toUpperCase();
+  return s === "CANCELLED" || s === "CANCELED";
+}
+
+/**
+ * Trae horas ocupadas desde BD (tabla espejo saludtools_appointments)
+ * - ymd: "YYYY-MM-DD"
+ * - doctorDoc: "72134079"
+ */
+async function getBookedHmFromDb({ ymd, doctorDoc }) {
+  const [rows] = await db.query(
+    `
+    SELECT start_time, status
+    FROM saludtools_appointments
+    WHERE start_date = ?
+      AND doctor_document_number = ?
+    `,
+    [ymd, String(doctorDoc)]
+  );
+
+  // Filtra CANCELLED
+  return rows
+    .filter((r) => !isCancelledStatus(r.status))
+    .map((r) => String(r.start_time).slice(0, 5)); // "10:00:00" -> "10:00"
+}
+
+/**
+ * Re-check puntual para un slot (por si cambió mientras el usuario elegía)
+ */
+async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
+  const [rows] = await db.query(
+    `
+    SELECT status
+    FROM saludtools_appointments
+    WHERE start_date = ?
+      AND start_time = ?
+      AND doctor_document_number = ?
+    LIMIT 1
+    `,
+    [ymd, `${hm}:00`, String(doctorDoc)]
+  );
+
+  if (!rows.length) return false;
+  return !isCancelledStatus(rows[0].status);
 }
 
 // ====== VALIDACIONES: Patient Create ======
@@ -1525,11 +1573,24 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.date = msg;
-            data.ymd = ddmmToYmd(msg);   
+            data.ymd = ddmmToYmd(msg);
             data.page = 0;
-            data.bookedHm = [];          
+
+            // ✅ Traer ocupados desde BD (1 query)
+            try {
+                const booked = await getBookedHmFromDb({
+                ymd: data.ymd,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                });
+                data.bookedHm = booked;
+            } catch (e) {
+                // Si falla BD, no bloquees UX: sigue sin bookedHm (mostrará todo)
+                data.bookedHm = [];
+                if (SALUDTOOLS_DEBUG) console.error("DB booked slots error:", e);
+            }
+
             data.step = "ASK_TIME";
-        return buildTimeResponse(data);
+            return buildTimeResponse(data);
         }
 
         case "ASK_TIME": {
@@ -1540,88 +1601,68 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
-            // ===== Validar horario elegido =====
             const slots = Array.isArray(data.visibleSlots)
-            ? data.visibleSlots
-            : getSlotsForDate(data.ymd, data.page || 0);
+                ? data.visibleSlots
+                : getSlotsForDate(data.ymd, data.page || 0);
 
             const index = Number(msg) - 1;
 
-            // ✅ Validación de índice
             if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
-            return {
+                return {
                 response:
-                `Elige una opción válida (1 a ${slots.length}).\n\n` +
-                "7️⃣ Ver más horarios\n" +
-                "0️⃣ Volver al menú",
+                    `Elige una opción válida (1 a ${slots.length}).\n\n` +
+                    "7️⃣ Ver más horarios\n" +
+                    "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
                 data,
-            };
+                };
             }
 
             const hour = slots[index];
 
-            const ymd = data.ymd;
-            const start = `${ymd} ${hour}`;
+            // ✅ Re-check puntual en BD (1 query) para evitar “stale data”
+            let bookedNow = false;
+            try {
+                bookedNow = await isSlotBookedInDb({
+                ymd: data.ymd,
+                hm: hour,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                });
+            } catch (e) {
+                bookedNow = false; // si BD falla, no bloquees, solo avanza
+                if (SALUDTOOLS_DEBUG) console.error("DB slot check error:", e);
+            }
 
-            // 🟢 Solo 30 minutos
-            const end30 = addMinutesToYmdHm(ymd, hour, 30);
-            const end30Str = `${end30.ymd} ${end30.hm}`;
-
-            const checkId = data.patientCheckId || data.appointmentId || null;
-
-            const s30 = await saludtoolsAppointmentSearch({
-            appointmentId: checkId,
-            startAppointment: start,
-            endAppointment: end30Str,
-            page: 0,
-            size: 20,
-            context,
-            data,
-            });
-
-            const content30 = s30.ok ? (s30.body?.content || []) : [];
-
-            // Bloquea si hay cita que no esté CANCELLED
-            const isBlocked = content30.some(
-            (a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED"
-            );
-
-            if (isBlocked) {
-                // Guardar el slot ocupado para no volver a mostrarlo en esta pantalla
+            if (bookedNow) {
                 data.bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
                 if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
 
-                // Mantenerse en selección de hora
-                data.step = "ASK_TIME";
-
-                // Mensaje más pro + re-mostrar lista
                 const ui = buildTimeResponse(data);
                 return {
-                    ...ui,
-                    response:
+                ...ui,
+                response:
                     "El horario seleccionado ya no se encuentra disponible.\n" +
                     "Por favor elige otro horario:\n\n" +
                     ui.response,
                 };
             }
 
-            // ✅ Si no está bloqueado, seguimos flujo
+            // ✅ Si está libre en BD, seguimos flujo
             data.time = hour;
             data.step = "ASK_TYPE";
 
             return {
-            response:
+                response:
                 `Perfecto ✅\n\n` +
                 `Fecha: ${data.date}\n` +
                 `Hora: ${hour}\n\n` +
                 "Ahora selecciona\n\n" +
                 "¿Qué tipo de atención deseas?\n\n" +
-                    "1️⃣ Consulta particular\n" +
-                    "2️⃣ Consulta con póliza / prepagada\n\n" +
-                    "0️⃣ Volver al menú",
-            nextState: "AGENDAR",
-            data,
+                "1️⃣ Consulta particular\n" +
+                "2️⃣ Consulta con póliza / prepagada\n\n" +
+                "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
             };
         }
 
