@@ -863,7 +863,7 @@ async function saludtoolsAppointmentSearch({
 ///
 
 ///HORARIOS DISPONIBLES DEL DR
-const SLOT_MIN = 30; // por ahora: 30 min fijo
+const SLOT_MIN = 20; // por ahora: 20 min fijo
 
 function pad2(n) {
   return String(n).padStart(2, "0");
