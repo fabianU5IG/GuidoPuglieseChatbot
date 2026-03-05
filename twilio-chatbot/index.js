@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import bodyParser from "body-parser";
 import chatbotResponse from "./chatbot.js";
+import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,6 +15,12 @@ const sessions = {};
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+
+/**
+ * Webhook Saludtools
+ */
+app.use("/webhook/saludtools", saludtoolsWebhook);
+
 
 /**
  * Webhook Twilio WhatsApp

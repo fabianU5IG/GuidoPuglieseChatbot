@@ -12,6 +12,7 @@ import {
 } from "../services/saludtools-rate-limit.service.js";
 const { getTimeSlots } = timeUtils;
 import { EPS_CONVENIO } from "../constants.js";
+import { db } from "../db/mysql.js";
 
 /**
  * SALUDTOOLS
@@ -380,6 +381,69 @@ function normalizeEmail(value) {
     if (!s) return "";
     const ok = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
     return ok ? s : null;
+}
+
+function isCancelledStatus(status) {
+  const s = String(status || "").toUpperCase();
+  return s === "CANCELLED" || s === "CANCELED";
+}
+
+async function findSaludtoolsPatientInDb({ docType, docNum }) {
+  const [rows] = await db.query(
+    `
+    SELECT saludtools_id, full_name, document_type, document_number
+    FROM saludtools_patients
+    WHERE document_type = ?
+      AND document_number = ?
+    LIMIT 1
+    `,
+    [Number(docType), String(docNum)]
+  );
+
+  return rows?.[0] || null;
+}
+
+
+/**
+ * Trae horas ocupadas desde BD (tabla espejo saludtools_appointments)
+ * - ymd: "YYYY-MM-DD"
+ * - doctorDoc: "72134079"
+ */
+async function getBookedHmFromDb({ ymd, doctorDoc }) {
+  const [rows] = await db.query(
+    `
+    SELECT start_time, status
+    FROM saludtools_appointments
+    WHERE start_date = ?
+      AND doctor_document_number = ?
+    `,
+    [ymd, String(doctorDoc)]
+  );
+
+  // Filtra CANCELLED
+  return rows
+    .filter((r) => !isCancelledStatus(r.status))
+    .map((r) => String(r.start_time).slice(0, 5)); // "10:00:00" -> "10:00"
+}
+
+/**
+ * Re-check puntual para un slot (por si cambió mientras el usuario elegía)
+ */
+async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
+  const [rows] = await db.query(
+    `
+    SELECT status
+    FROM saludtools_appointments
+    WHERE start_date = ?
+      AND start_time = ?
+      AND doctor_document_number = ?
+    LIMIT 1
+    `,
+    [ymd, `${hm}:00`, String(doctorDoc)]
+  );
+
+  if (!rows.length) return false;
+  return !isCancelledStatus(rows[0].status);
 }
 
 // ====== VALIDACIONES: Patient Create ======
@@ -815,7 +879,7 @@ async function saludtoolsAppointmentSearch({
 ///
 
 ///HORARIOS DISPONIBLES DEL DR
-const SLOT_MIN = 30; // por ahora: 30 min fijo
+const SLOT_MIN = 20; // por ahora: 20 min fijo
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -978,10 +1042,10 @@ export default async function agendarState(msg, data, context = {}) {
             const doc = String(msg || "").trim();
             if (!/^\d{5,20}$/.test(doc)) {
                 return {
-                    response:
-                        "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):",
-                    nextState: "AGENDAR",
-                    data,
+                response:
+                    "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):",
+                nextState: "AGENDAR",
+                data,
                 };
             }
 
@@ -990,33 +1054,62 @@ export default async function agendarState(msg, data, context = {}) {
             // registro técnico para logs del check
             if (!data.patientCheckId) {
                 data.patientCheckId = await createProposedAppointment({
-                    phone,
-                    fullName: data.fullName,
-                    date: "N/A",
-                    time: "N/A",
-                    attentionType: "PATIENT_CHECK",
-                    status: "PATIENT_CHECK",
+                phone,
+                fullName: data.fullName,
+                date: "N/A",
+                time: "N/A",
+                attentionType: "PATIENT_CHECK",
+                status: "PATIENT_CHECK",
                 });
             }
             const checkId = data.patientCheckId;
 
-            await logAppointmentMessage(
-                checkId,
-                "[DEBUG] Check paciente (inicio)",
-            );
-            await logAppointmentMessage(
-                checkId,
-                `Documento tipo: ${data.patientDocumentType}`,
-            );
-            await logAppointmentMessage(
-                checkId,
-                `Documento número: ${data.patientDocumentNumber}`,
-            );
+            await logAppointmentMessage(checkId, "[DEBUG] Check paciente (inicio)");
+            await logAppointmentMessage(checkId, `Documento tipo: ${data.patientDocumentType}`);
+            await logAppointmentMessage(checkId, `Documento número: ${data.patientDocumentNumber}`);
 
+            // ✅ 1) PRIMERO buscar en BD (tabla espejo saludtools_patients)
+            try {
+                const local = await findSaludtoolsPatientInDb({
+                docType: data.patientDocumentType,
+                docNum: data.patientDocumentNumber,
+                });
+
+                if (local) {
+                data.patientStatus = "ACTIVE";
+                data.deferPatientVerification = false;
+
+                await logAppointmentMessage(
+                    checkId,
+                    `Paciente encontrado en BD (sin API). saludtools_id=${local.saludtools_id || "N/A"}`
+                );
+
+                data.step = "FILTRO_COLUMNA";
+                return {
+                    response:
+                    "Perfecto, ya encontré tu registro.\n\n" +
+                    "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
+                    "1️⃣ Sí\n" +
+                    "2️⃣ No\n\n" +
+                    "0️⃣ Volver al menú",
+                    nextState: "AGENDAR",
+                    data,
+                };
+                }
+            } catch (e) {
+                // Si falla BD, seguimos con API para no romper la UX
+                await logAppointmentMessage(
+                checkId,
+                `Lookup BD falló, sigo con API. Error: ${String(e?.message || e).slice(0, 200)}`
+                );
+            }
+
+            // ✅ 2) SI NO ESTÁ EN BD → usar API (como ya lo tenías)
             const fn =
                 String(data.fullName || "")
-                    .trim()
-                    .split(/\s+/)[0] || "";
+                .trim()
+                .split(/\s+/)[0] || "";
+
             const search = await saludtoolsSearchPatient({
                 appointmentId: checkId,
                 documentNumber: data.patientDocumentNumber,
@@ -1029,22 +1122,22 @@ export default async function agendarState(msg, data, context = {}) {
             if (
                 !search.ok &&
                 (search.status === 429 ||
-                    search.code === 429 ||
-                    search.authError === "AUTH_BLOCKED")
+                search.code === 429 ||
+                search.authError === "AUTH_BLOCKED")
             ) {
                 data.deferPatientVerification = true;
                 data.step = "FILTRO_COLUMNA";
 
                 return {
-                    response:
-                        "Gracias. En este momento el sistema está con alta demanda para validar tu documento.\n\n" +
-                        "Podemos continuar con el agendamiento y la validación/registro se hará antes de confirmar la cita.\n\n" +
-                        "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
-                        "1️⃣ Sí\n" +
-                        "2️⃣ No\n\n" +
-                        "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
+                response:
+                    "Gracias. En este momento el sistema está con alta demanda para validar tu documento.\n\n" +
+                    "Podemos continuar con el agendamiento y la validación/registro se hará antes de confirmar la cita.\n\n" +
+                    "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
+                    "1️⃣ Sí\n" +
+                    "2️⃣ No\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
                 };
             }
 
@@ -1052,19 +1145,19 @@ export default async function agendarState(msg, data, context = {}) {
             if (!search.ok) {
                 data.deferPatientVerification = true;
                 await logAppointmentMessage(
-                    checkId,
-                    `PATIENT_SEARCH falló: ${String(search.error || search.raw || "").slice(0, 400)}`,
+                checkId,
+                `PATIENT_SEARCH falló: ${String(search.error || search.raw || "").slice(0, 400)}`
                 );
                 data.step = "FILTRO_COLUMNA";
                 return {
-                    response:
-                        "Gracias. Continuemos con tu solicitud.\n\n" +
-                        "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
-                        "1️⃣ Sí\n" +
-                        "2️⃣ No\n\n" +
-                        "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
+                response:
+                    "Gracias. Continuemos con tu solicitud.\n\n" +
+                    "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
+                    "1️⃣ Sí\n" +
+                    "2️⃣ No\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
                 };
             }
 
@@ -1072,28 +1165,23 @@ export default async function agendarState(msg, data, context = {}) {
             if (search.exists && search.active) {
                 data.patientStatus = "ACTIVE";
                 data.deferPatientVerification = false;
-                await logAppointmentMessage(
-                    checkId,
-                    "Paciente encontrado y activo (OK)",
-                );
+                await logAppointmentMessage(checkId, "Paciente encontrado y activo (OK)");
 
                 data.step = "FILTRO_COLUMNA";
                 return {
-                    response:
-                        "Perfecto, ya encontré tu registro.\n\n" +
-                        "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
-                        "1️⃣ Sí\n" +
-                        "2️⃣ No\n\n" +
-                        "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
+                response:
+                    "Perfecto, ya encontré tu registro.\n\n" +
+                    "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
+                    "1️⃣ Sí\n" +
+                    "2️⃣ No\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
                 };
             }
 
             // No existe o no activo -> pedir datos y registrar
-            data.patientStatus = search.exists
-                ? "INACTIVE_OR_UNKNOWN"
-                : "NOT_FOUND";
+            data.patientStatus = search.exists ? "INACTIVE_OR_UNKNOWN" : "NOT_FOUND";
             const parts = splitName(data.fullName || "");
             data.regPatient = {
                 firstName: parts.firstName || "",
@@ -1110,16 +1198,16 @@ export default async function agendarState(msg, data, context = {}) {
             data.step = "REG_CONFIRM_NAMES";
             return {
                 response:
-                    "No encontré tu registro activo en SaludTools. Vamos a registrarte antes de agendar.\n\n" +
-                    `Tengo estos datos de tu nombre:\n` +
-                    `• Primer nombre: ${data.regPatient.firstName || "(vacío)"}\n` +
-                    `• Segundo nombre: ${data.regPatient.secondName || "(vacío)"}\n` +
-                    `• Primer apellido: ${data.regPatient.firstLastName || "(vacío)"}\n` +
-                    `• Segundo apellido: ${data.regPatient.secondLastName || "(vacío)"}\n\n` +
-                    "¿Están correctos?\n\n" +
-                    "1️⃣ Sí\n" +
-                    "2️⃣ No, quiero editarlos\n\n" +
-                    "0️⃣ Volver al menú",
+                "No encontré tu registro activo en SaludTools. Vamos a registrarte antes de agendar.\n\n" +
+                `Tengo estos datos de tu nombre:\n` +
+                `• Primer nombre: ${data.regPatient.firstName || "(vacío)"}\n` +
+                `• Segundo nombre: ${data.regPatient.secondName || "(vacío)"}\n` +
+                `• Primer apellido: ${data.regPatient.firstLastName || "(vacío)"}\n` +
+                `• Segundo apellido: ${data.regPatient.secondLastName || "(vacío)"}\n\n` +
+                "¿Están correctos?\n\n" +
+                "1️⃣ Sí\n" +
+                "2️⃣ No, quiero editarlos\n\n" +
+                "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
                 data,
             };
@@ -1525,11 +1613,24 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.date = msg;
-            data.ymd = ddmmToYmd(msg);   
+            data.ymd = ddmmToYmd(msg);
             data.page = 0;
-            data.bookedHm = [];          
+
+            // ✅ Traer ocupados desde BD (1 query)
+            try {
+                const booked = await getBookedHmFromDb({
+                ymd: data.ymd,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                });
+                data.bookedHm = booked;
+            } catch (e) {
+                // Si falla BD, no bloquees UX: sigue sin bookedHm (mostrará todo)
+                data.bookedHm = [];
+                if (SALUDTOOLS_DEBUG) console.error("DB booked slots error:", e);
+            }
+
             data.step = "ASK_TIME";
-        return buildTimeResponse(data);
+            return buildTimeResponse(data);
         }
 
         case "ASK_TIME": {
@@ -1540,88 +1641,68 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
-            // ===== Validar horario elegido =====
             const slots = Array.isArray(data.visibleSlots)
-            ? data.visibleSlots
-            : getSlotsForDate(data.ymd, data.page || 0);
+                ? data.visibleSlots
+                : getSlotsForDate(data.ymd, data.page || 0);
 
             const index = Number(msg) - 1;
 
-            // ✅ Validación de índice
             if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
-            return {
+                return {
                 response:
-                `Elige una opción válida (1 a ${slots.length}).\n\n` +
-                "7️⃣ Ver más horarios\n" +
-                "0️⃣ Volver al menú",
+                    `Elige una opción válida (1 a ${slots.length}).\n\n` +
+                    "7️⃣ Ver más horarios\n" +
+                    "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
                 data,
-            };
+                };
             }
 
             const hour = slots[index];
 
-            const ymd = data.ymd;
-            const start = `${ymd} ${hour}`;
+            // ✅ Re-check puntual en BD (1 query) para evitar “stale data”
+            let bookedNow = false;
+            try {
+                bookedNow = await isSlotBookedInDb({
+                ymd: data.ymd,
+                hm: hour,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                });
+            } catch (e) {
+                bookedNow = false; // si BD falla, no bloquees, solo avanza
+                if (SALUDTOOLS_DEBUG) console.error("DB slot check error:", e);
+            }
 
-            // 🟢 Solo 30 minutos
-            const end30 = addMinutesToYmdHm(ymd, hour, 30);
-            const end30Str = `${end30.ymd} ${end30.hm}`;
-
-            const checkId = data.patientCheckId || data.appointmentId || null;
-
-            const s30 = await saludtoolsAppointmentSearch({
-            appointmentId: checkId,
-            startAppointment: start,
-            endAppointment: end30Str,
-            page: 0,
-            size: 20,
-            context,
-            data,
-            });
-
-            const content30 = s30.ok ? (s30.body?.content || []) : [];
-
-            // Bloquea si hay cita que no esté CANCELLED
-            const isBlocked = content30.some(
-            (a) => String(a.stateAppointment || "").toUpperCase() !== "CANCELLED"
-            );
-
-            if (isBlocked) {
-                // Guardar el slot ocupado para no volver a mostrarlo en esta pantalla
+            if (bookedNow) {
                 data.bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
                 if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
 
-                // Mantenerse en selección de hora
-                data.step = "ASK_TIME";
-
-                // Mensaje más pro + re-mostrar lista
                 const ui = buildTimeResponse(data);
                 return {
-                    ...ui,
-                    response:
+                ...ui,
+                response:
                     "El horario seleccionado ya no se encuentra disponible.\n" +
                     "Por favor elige otro horario:\n\n" +
                     ui.response,
                 };
             }
 
-            // ✅ Si no está bloqueado, seguimos flujo
+            // ✅ Si está libre en BD, seguimos flujo
             data.time = hour;
             data.step = "ASK_TYPE";
 
             return {
-            response:
+                response:
                 `Perfecto ✅\n\n` +
                 `Fecha: ${data.date}\n` +
                 `Hora: ${hour}\n\n` +
                 "Ahora selecciona\n\n" +
                 "¿Qué tipo de atención deseas?\n\n" +
-                    "1️⃣ Consulta particular\n" +
-                    "2️⃣ Consulta con póliza / prepagada\n\n" +
-                    "0️⃣ Volver al menú",
-            nextState: "AGENDAR",
-            data,
+                "1️⃣ Consulta particular\n" +
+                "2️⃣ Consulta con póliza / prepagada\n\n" +
+                "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
             };
         }
 
