@@ -1,20 +1,21 @@
 {
-  "name": "twilio-chatbot",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "dependencies": {
-    "body-parser": "^2.2.1",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "mysql2": "^3.16.2",
-    "twilio": "^5.11.1"
-  }
+    "name": "twilio-chatbot",
+    "version": "1.0.0",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js",
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "worker:saludtools": "node workers/saludtools.worker.js"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "description": "",
+    "dependencies": {
+        "body-parser": "^2.2.1",
+        "dotenv": "^17.2.3",
+        "express": "^5.2.1",
+        "mysql2": "^3.16.2",
+        "twilio": "^5.11.1"
+    }
 }

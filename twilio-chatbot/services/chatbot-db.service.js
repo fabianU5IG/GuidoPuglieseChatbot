@@ -317,3 +317,84 @@ export async function logAppointmentMessage(appointmentId, message) {
         [appointmentId, message],
     );
 }
+export async function updateAppointmentStatusById(appointmentId, newStatus) {
+    const [rows] = await db.query(
+        "SELECT status FROM appointments WHERE id = ? LIMIT 1",
+        [appointmentId],
+    );
+
+    const previousStatus = rows?.[0]?.status || null;
+
+    await db.query("UPDATE appointments SET status = ? WHERE id = ?", [
+        newStatus,
+        appointmentId,
+    ]);
+
+    await db.query(
+        `INSERT INTO appointment_status_history
+         (appointment_id, previous_status, new_status, changed_by)
+         VALUES (?, ?, ?, 'SYSTEM')`,
+        [appointmentId, previousStatus, newStatus],
+    );
+}
+
+export async function saveSaludtoolsPatientEvent({
+    saludtoolsId,
+    eventType,
+    fullName,
+    birthDate = null,
+    gender = null,
+    habeasData = null,
+    rawPayload = null,
+}) {
+    await db.query(
+        `INSERT INTO saludtools_patients
+         (saludtools_id, event_type, full_name, birth_date, gender, habeas_data, raw_payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+            saludtoolsId || 0,
+            eventType,
+            fullName || "Paciente WhatsApp",
+            birthDate,
+            gender,
+            habeasData,
+            rawPayload ? JSON.stringify(rawPayload) : null,
+        ],
+    );
+}
+
+export async function saveSaludtoolsAppointmentEvent({
+    saludtoolsId,
+    eventType,
+    status,
+    startDate,
+    startTime,
+    endDate = null,
+    endTime = null,
+    doctorDocumentNumber,
+    patientDocumentType,
+    patientDocumentNumber,
+    clinic = null,
+    rawPayload = null,
+}) {
+    await db.query(
+        `INSERT INTO saludtools_appointments
+         (saludtools_id, event_type, status, start_date, start_time, end_date, end_time,
+          doctor_document_number, patient_document_type, patient_document_number, clinic, raw_payload)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            saludtoolsId || 0,
+            eventType,
+            status,
+            startDate,
+            startTime,
+            endDate,
+            endTime,
+            doctorDocumentNumber,
+            patientDocumentType,
+            patientDocumentNumber,
+            clinic,
+            rawPayload ? JSON.stringify(rawPayload) : null,
+        ],
+    );
+}
