@@ -8,7 +8,6 @@ import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { EPS_CONVENIO } from "../constants.js";
 import { db } from "../db/mysql.js";
 
-// ====== CONFIG (ENV) ======
 const DOCTOR_DOCUMENT_TYPE = Number(
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE || 1,
 );
@@ -16,9 +15,7 @@ const DOCTOR_DOCUMENT_NUMBER =
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079";
 const CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 18569);
 
-const APPOINTMENT_DURATION_MIN = Number(
-    process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN || 30,
-);
+const APPOINTMENT_DURATION_MIN = 20;
 const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
@@ -29,13 +26,14 @@ const SALUDTOOLS_DEBUG =
     String(process.env.SALUDTOOLS_DEBUG || "").toLowerCase() === "true" ||
     process.env.SALUDTOOLS_DEBUG === "1";
 
-// ====== Utils ======
 function returnToMenu() {
     return { response: null, nextState: "MENU", data: { renderMenu: true } };
 }
 
 function normKey(s) {
-    return String(s || "").trim().toLowerCase();
+    return String(s || "")
+        .trim()
+        .toLowerCase();
 }
 
 function normalizeDocType(msg) {
@@ -123,7 +121,6 @@ function isCancelledStatus(status) {
     return s === "CANCELLED" || s === "CANCELED";
 }
 
-// ====== DB HELPERS ======
 async function findSaludtoolsPatientInDb({ docType, docNum }) {
     const [rows] = await db.query(
         `
@@ -174,7 +171,6 @@ async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
     return !isCancelledStatus(rows[0].status);
 }
 
-// ====== VALIDACIONES: Patient Create ======
 const ALLOWED_DOC_TYPES = new Set([1, 2]);
 const ALLOWED_GENDERS = new Set([1, 2]);
 
@@ -298,7 +294,6 @@ function validateAndNormalizePatientBody(patientBody) {
     return { ok: true, body: b };
 }
 
-// ====== HORARIOS DISPONIBLES DEL DR ======
 const SLOT_MIN = 20;
 
 function pad2(n) {
@@ -325,12 +320,13 @@ function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
 
 function getScheduleForYmd(ymd) {
     const d = new Date(`${ymd}T00:00:00`);
-    const dow = d.getDay(); // 0=Dom,1=Lun,...6=Sáb
+    const dow = d.getDay();
 
-    if (dow === 1 || dow === 2 || dow === 4) return { start: "08:00", end: "17:30" };
+    if (dow === 1 || dow === 2 || dow === 4)
+        return { start: "08:00", end: "17:30" };
     if (dow === 5) return { start: "08:30", end: "11:30" };
 
-    return null; // Mié, Sáb, Dom
+    return null;
 }
 
 function getSlotsForDate(ymd, page = 0) {
@@ -343,7 +339,6 @@ function getSlotsForDate(ymd, page = 0) {
     return all.slice(from, from + pageSize);
 }
 
-// ====== UI: horarios ======
 function buildTimeResponse(data) {
     const ymd = data.ymd;
     const slotsAll = getSlotsForDate(ymd, data.page || 0);
@@ -385,7 +380,6 @@ function buildTimeResponse(data) {
     return { response, nextState: "AGENDAR", data };
 }
 
-// ====== MAIN STATE ======
 export default async function agendarState(msg, data, context = {}) {
     const phone = context.from || "UNKNOWN";
 
@@ -414,9 +408,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             try {
                 await upsertPatientName(phone, data.fullName);
-            } catch {
-                // no bloquea UX
-            }
+            } catch {}
 
             data.step = "ASK_DOC_TYPE";
             return {
@@ -469,26 +461,9 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
+            data.patientDocumentType = Number(data.patientDocumentType);
             data.patientDocumentNumber = doc;
 
-            if (!data.patientCheckId) {
-                data.patientCheckId = await createProposedAppointment({
-                    phone,
-                    fullName: data.fullName,
-                    date: "N/A",
-                    time: "N/A",
-                    attentionType: "PATIENT_CHECK",
-                    status: "PATIENT_CHECK",
-                });
-            }
-
-            const checkId = data.patientCheckId;
-
-            await logAppointmentMessage(checkId, "[DEBUG] Check paciente (inicio)");
-            await logAppointmentMessage(checkId, `Documento tipo: ${data.patientDocumentType}`);
-            await logAppointmentMessage(checkId, `Documento número: ${data.patientDocumentNumber}`);
-
-            // ✅ SOLO buscar en BD local para no congelar el flujo
             try {
                 const local = await findSaludtoolsPatientInDb({
                     docType: data.patientDocumentType,
@@ -496,14 +471,10 @@ export default async function agendarState(msg, data, context = {}) {
                 });
 
                 if (local) {
+                    data.patientExistsLocal = true;
                     data.patientStatus = "ACTIVE";
-
-                    await logAppointmentMessage(
-                        checkId,
-                        `Paciente encontrado en BD local. saludtools_id=${local.saludtools_id || "N/A"}`
-                    );
-
                     data.step = "FILTRO_COLUMNA";
+
                     return {
                         response:
                             "Perfecto, ya encontré tu registro.\n\n" +
@@ -516,14 +487,13 @@ export default async function agendarState(msg, data, context = {}) {
                     };
                 }
             } catch (e) {
-                await logAppointmentMessage(
-                    checkId,
-                    `Lookup BD local falló: ${String(e?.message || e).slice(0, 200)}`
-                );
+                if (SALUDTOOLS_DEBUG) {
+                    console.error("findSaludtoolsPatientInDb error", e);
+                }
             }
 
-            // ✅ Si no está en BD, no bloqueamos con API; seguimos a registro
-            data.patientStatus = "NOT_FOUND";
+            data.patientExistsLocal = false;
+
             const parts = splitName(data.fullName || "");
             data.regPatient = {
                 firstName: parts.firstName || "",
@@ -761,72 +731,11 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.regPatient.habeasData = msg === "1";
-
-            if (!data.patientCheckId) {
-                data.patientCheckId = await createProposedAppointment({
-                    phone,
-                    fullName: data.fullName,
-                    date: "N/A",
-                    time: "N/A",
-                    attentionType: "PATIENT_CHECK",
-                    status: "PATIENT_CHECK",
-                });
-            }
-
-            const checkId = data.patientCheckId;
-
-            const patientBodyRaw = {
-                firstName: data.regPatient.firstName,
-                secondName: data.regPatient.secondName || "",
-                firstLastName: data.regPatient.firstLastName,
-                secondLastName: data.regPatient.secondLastName || "",
-                birthDate: data.regPatient.birthDate,
-                gender: Number(data.regPatient.gender),
-                documentType: Number(data.patientDocumentType),
-                documentNumber: String(data.patientDocumentNumber),
-                phone: parsePhoneE164ToDigits(phone),
-                cellPhone: parsePhoneE164ToDigits(phone),
-                email: data.regPatient.email || "",
-                eps: data.regPatient.eps ? Number(data.regPatient.eps) : 0,
-                habeasData: Boolean(data.regPatient.habeasData),
-            };
-
-            const checked = validateAndNormalizePatientBody(patientBodyRaw);
-            if (!checked.ok) {
-                data.step = checked.step;
-                return {
-                    response: checked.message,
-                    nextState: "AGENDAR",
-                    data,
-                };
-            }
-
-            const patientBody = checked.body;
-
-            await logAppointmentMessage(
-                checkId,
-                "Paciente encolado para creación en SaludTools",
-            );
-
-            await createSaludtoolsJob({
-                jobType: "PATIENT_CREATE",
-                phone,
-                appointmentId: checkId,
-                dedupeKey: `patient:${data.patientDocumentType}:${data.patientDocumentNumber}`,
-                payload: {
-                    fullName: data.fullName,
-                    patientBody,
-                },
-                priority: 100,
-            });
-
-            data.patientStatus = "QUEUED";
             data.step = "FILTRO_COLUMNA";
 
             return {
                 response:
-                    "Gracias. Tu registro está en proceso.\n\n" +
-                    "Continuemos con el agendamiento y te confirmaremos por este medio cuando SaludTools lo procese.\n\n" +
+                    "Gracias. Continuemos con el agendamiento.\n\n" +
                     "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
                     "1️⃣ Sí\n" +
                     "2️⃣ No\n\n" +
@@ -892,7 +801,8 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_DATE": {
             if (!isValidDateDDMM(msg)) {
                 return {
-                    response: "Fecha inválida. Debe ser DD/MM y una fecha futura.",
+                    response:
+                        "Fecha inválida. Debe ser DD/MM y una fecha futura.",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -907,8 +817,6 @@ export default async function agendarState(msg, data, context = {}) {
                     ymd: data.ymd,
                     doctorDoc: DOCTOR_DOCUMENT_NUMBER,
                 });
-
-                // ✅ si no hay citas, esto queda [] y mostrará todos los horarios
                 data.bookedHm = Array.isArray(booked) ? booked : [];
             } catch (e) {
                 data.bookedHm = [];
@@ -924,7 +832,6 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_TIME": {
             if (msg === "0") return returnToMenu();
 
-            // ✅ permitir cambiar fecha directamente desde la selección de hora
             if (isValidDateDDMM(msg)) {
                 data.date = msg;
                 data.ymd = ddmmToYmd(msg);
@@ -986,7 +893,9 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             if (bookedNow) {
-                data.bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
+                data.bookedHm = Array.isArray(data.bookedHm)
+                    ? data.bookedHm
+                    : [];
                 if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
 
                 const ui = buildTimeResponse(data);
@@ -1066,7 +975,7 @@ export default async function agendarState(msg, data, context = {}) {
                 date: data.date,
                 time: data.time,
                 attentionType: data.attentionType,
-                status: "PROPOSED",
+                status: "QUEUED",
             });
             data.appointmentId = appointmentId;
 
@@ -1095,29 +1004,51 @@ export default async function agendarState(msg, data, context = {}) {
                 appointmentId,
                 `Tipo de atención: ${data.attentionType}`,
             );
-
-            const ymd = ddmmToYmd(data.date);
-            const end = addMinutesToYmdHm(ymd, data.time, APPOINTMENT_DURATION_MIN);
-
-            const appointmentBody = {
-                patientDocumentType: Number(data.patientDocumentType),
-                patientDocumentNumber: String(data.patientDocumentNumber),
-                doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
-                doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                clinic: CLINIC_ID,
-                modality: APPOINTMENT_MODALITY,
-                stateAppointment: APPOINTMENT_STATE,
-                appointmentType: APPOINTMENT_TYPE_DEFAULT,
-                startAppointment: `${ymd}T${data.time}:00`,
-                endAppointment: `${end.ymd}T${end.hm}:00`,
-                comment: `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}`,
-            };
-
-            await updateAppointmentStatusById(appointmentId, "QUEUED");
             await logAppointmentMessage(
                 appointmentId,
-                "Cita encolada para creación en SaludTools",
+                "Solicitud encolada para procesamiento completo en worker",
             );
+
+            const ymd = ddmmToYmd(data.date);
+            const end = addMinutesToYmdHm(
+                ymd,
+                data.time,
+                APPOINTMENT_DURATION_MIN,
+            );
+
+            let patientBody = null;
+
+            if (!data.patientExistsLocal) {
+                const patientBodyRaw = {
+                    firstName: data.regPatient?.firstName || "",
+                    secondName: data.regPatient?.secondName || "",
+                    firstLastName: data.regPatient?.firstLastName || "",
+                    secondLastName: data.regPatient?.secondLastName || "",
+                    birthDate: data.regPatient?.birthDate || "",
+                    gender: Number(data.regPatient?.gender || 0),
+                    documentType: Number(data.patientDocumentType),
+                    documentNumber: String(data.patientDocumentNumber),
+                    phone: parsePhoneE164ToDigits(phone),
+                    cellPhone: parsePhoneE164ToDigits(phone),
+                    email: data.regPatient?.email || "",
+                    eps: data.regPatient?.eps ? Number(data.regPatient.eps) : 0,
+                    habeasData: Boolean(data.regPatient?.habeasData),
+                };
+
+                const checked = validateAndNormalizePatientBody(patientBodyRaw);
+                if (!checked.ok) {
+                    data.step = checked.step;
+                    return {
+                        response: checked.message,
+                        nextState: "AGENDAR",
+                        data,
+                    };
+                }
+
+                patientBody = checked.body;
+            }
+
+            await updateAppointmentStatusById(appointmentId, "QUEUED");
 
             await createSaludtoolsJob({
                 jobType: "APPOINTMENT_CREATE",
@@ -1128,7 +1059,23 @@ export default async function agendarState(msg, data, context = {}) {
                     fullName: data.fullName,
                     dateLabel: data.date,
                     timeLabel: data.time,
-                    appointmentBody,
+                    patientExistsLocal: Boolean(data.patientExistsLocal),
+                    patientBody,
+                    appointmentBody: {
+                        startAppointment: `${ymd} ${data.time}`,
+                        endAppointment: `${end.ymd} ${end.hm}`,
+                        patientDocumentType: Number(data.patientDocumentType),
+                        patientDocumentNumber: String(
+                            data.patientDocumentNumber,
+                        ),
+                        doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                        doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                        modality: APPOINTMENT_MODALITY,
+                        stateAppointment: APPOINTMENT_STATE,
+                        appointmentType: APPOINTMENT_TYPE_DEFAULT,
+                        clinic: CLINIC_ID,
+                        comment: `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}`,
+                    },
                 },
                 priority: 110,
             });
@@ -1139,7 +1086,7 @@ export default async function agendarState(msg, data, context = {}) {
                     `Perfecto ${data.firstName}.\n\n` +
                     `Tipo: *${data.attentionType}*\n\n` +
                     "Tu solicitud quedó en proceso.\n\n" +
-                    "Te escribiremos por este medio cuando la cita quede creada en SaludTools.\n\n" +
+                    "Te escribiremos por este medio cuando la validación del paciente y la cita queden procesadas.\n\n" +
                     "Responde:\n" +
                     "1️⃣ Entendido\n" +
                     "2️⃣ Volver al menú",

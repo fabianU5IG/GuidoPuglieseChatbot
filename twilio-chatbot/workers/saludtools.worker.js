@@ -8,8 +8,14 @@ import {
 } from "../services/saludtools-jobs.service.js";
 
 import {
+    readPatientInSaludtools,
+    searchPatientInSaludtools,
     createPatientInSaludtools,
+    searchAppointmentsInSaludtools,
     createAppointmentInSaludtools,
+    searchAppointmentsByPatientInSaludtools,
+    updateAppointmentInSaludtools,
+    deleteAppointmentInSaludtools,
 } from "../services/saludtools-api.service.js";
 
 import {
@@ -21,23 +27,10 @@ import {
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
 
 const POLL_MS = 4000;
+const RETRY_DELAY_SECONDS = 60;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function calculateBackoff(attempts) {
-    return Math.min(300, Math.max(20, attempts * 20));
-}
-
-function extractSaludtoolsId(resp) {
-    return (
-        resp?.body?.id ||
-        resp?.id ||
-        resp?.data?.id ||
-        resp?.body?.content?.[0]?.id ||
-        null
-    );
 }
 
 function safeErrorMessage(error) {
@@ -50,69 +43,175 @@ function safeErrorMessage(error) {
     }
 }
 
-async function processPatientCreate(job) {
-    const payload = job.payload || {};
-    const patientBody = payload.patientBody || {};
+function extractSaludtoolsId(resp) {
+    return (
+        resp?.body?.id ||
+        resp?.body?.content?.[0]?.id ||
+        resp?.id ||
+        resp?.data?.id ||
+        null
+    );
+}
+
+function extractPatientExists(resp) {
+    const body = resp?.body;
+    if (Array.isArray(body?.content)) return body.content.length > 0;
+    if (extractSaludtoolsId(resp)) return true;
+    return false;
+}
+
+function hasAppointmentConflict(resp, targetStart) {
+    const content = resp?.body?.content;
+    if (!Array.isArray(content) || !content.length) return false;
+
+    const target = String(targetStart || "").slice(0, 16);
+    return content.some((item) => {
+        const start = String(item?.startAppointment || item?.start_date || "")
+            .replace("T", " ")
+            .slice(0, 16);
+        return start === target;
+    });
+}
+
+function shouldSendWaitingMessage(nextAttempts) {
+    return nextAttempts > 0 && nextAttempts % 5 === 0;
+}
+
+async function safeSendWhatsApp(phone, body) {
+    try {
+        await sendWhatsAppMessage(phone, body);
+    } catch (error) {
+        console.error("[saludtools.worker] whatsapp notify error", {
+            phone,
+            message: safeErrorMessage(error),
+        });
+    }
+}
+
+function formatAppointmentForUser(item, idx) {
+    const id = item?.id || item?.saludtools_id || "";
+    const start = String(item?.startAppointment || "").replace("T", " ");
+    const end = String(item?.endAppointment || "").replace("T", " ");
+    const state = item?.stateAppointment || item?.status || "";
+    return `${idx + 1}️⃣ ID ${id} | ${start}${end ? " - " + end : ""}${state ? ` | ${state}` : ""}`;
+}
+
+async function ensurePatientExists(patientBody) {
+    try {
+        const readResp = await readPatientInSaludtools(
+            patientBody.documentType,
+            patientBody.documentNumber,
+        );
+
+        if (extractPatientExists(readResp)) {
+            return readResp;
+        }
+    } catch {}
 
     try {
-        const resp = await createPatientInSaludtools(patientBody);
-        const saludtoolsId = extractSaludtoolsId(resp);
-
-        await saveSaludtoolsPatientEvent({
-            saludtoolsId,
-            eventType: "PATIENT_CREATE",
-            fullName: payload.fullName || "Paciente WhatsApp",
-            birthDate: patientBody.birthDate || null,
-            gender: patientBody.gender || null,
-            habeasData: patientBody.habeasData ?? null,
-            rawPayload: resp,
-        });
-
-        await markSaludtoolsJobDone(
-            job.id,
-            saludtoolsId ? String(saludtoolsId) : null,
+        const searchResp = await searchPatientInSaludtools(
+            patientBody.documentNumber,
+            patientBody.firstName || "",
         );
 
-        await sendWhatsAppMessage(
-            job.phone,
-            "✅ Tu paciente fue registrado correctamente. Ya puedes continuar con la creación de tu cita.",
-        );
-    } catch (error) {
-        const status = error?.status;
-        const retryable = [429, 500, 502, 503, 504].includes(status);
-        const lastError = safeErrorMessage(error);
+        if (extractPatientExists(searchResp)) {
+            return searchResp;
+        }
+    } catch {}
 
-        if (retryable && job.attempts < job.max_attempts) {
-            await markSaludtoolsJobRetry(
-                job.id,
-                lastError,
-                calculateBackoff(job.attempts),
-            );
-            return;
+    return createPatientInSaludtools(patientBody);
+}
+
+async function handleRetryOrFail({
+    job,
+    error,
+    userWaitingMessage,
+    userFailMessage,
+    onFinalFail,
+}) {
+    const status = error?.status;
+    const businessCode = error?.businessCode;
+
+    const retryable =
+        [429, 500, 502, 503, 504].includes(status) ||
+        [412].includes(businessCode);
+
+    const lastError = safeErrorMessage(error);
+    const nextAttempts = Number(job.attempts || 0) + 1;
+    const maxAttempts = Number(job.max_attempts || 30);
+
+    if (retryable && nextAttempts < maxAttempts) {
+        if (shouldSendWaitingMessage(nextAttempts) && userWaitingMessage) {
+            await safeSendWhatsApp(job.phone, userWaitingMessage);
         }
 
-        await markSaludtoolsJobFailed(job.id, lastError);
+        await markSaludtoolsJobRetry(job.id, lastError, RETRY_DELAY_SECONDS);
+        return;
+    }
 
-        await sendWhatsAppMessage(
-            job.phone,
-            "⚠️ No fue posible completar tu registro en este momento. Nuestro equipo revisará tu caso.",
-        );
+    if (typeof onFinalFail === "function") {
+        await onFinalFail();
+    }
+
+    await markSaludtoolsJobFailed(job.id, lastError);
+
+    if (userFailMessage) {
+        await safeSendWhatsApp(job.phone, userFailMessage);
     }
 }
 
 async function processAppointmentCreate(job) {
     const payload = job.payload || {};
-    const appointmentBody = payload.appointmentBody || {};
+    const patientExistsLocal = Boolean(payload.patientExistsLocal);
+    const patientBody = payload.patientBody || null;
+    const appointmentBody = { ...(payload.appointmentBody || {}) };
 
     try {
-        const resp = await createAppointmentInSaludtools(appointmentBody);
-        const saludtoolsId = extractSaludtoolsId(resp);
+        if (!patientExistsLocal) {
+            const patientResp = await ensurePatientExists(patientBody);
+            const patientId = extractSaludtoolsId(patientResp);
+
+            await saveSaludtoolsPatientEvent({
+                saludtoolsId: patientId,
+                eventType: "PATIENT_UPSERT_FROM_APPOINTMENT",
+                fullName: payload.fullName || "Paciente WhatsApp",
+                birthDate: patientBody?.birthDate || null,
+                gender: patientBody?.gender || null,
+                habeasData: patientBody?.habeasData ?? null,
+                rawPayload: patientResp,
+            });
+        }
+
+        const searchResp = await searchAppointmentsInSaludtools({
+            doctorDocumentType: appointmentBody.doctorDocumentType,
+            doctorDocumentNumber: appointmentBody.doctorDocumentNumber,
+            startAppointment: appointmentBody.startAppointment,
+            endAppointment: appointmentBody.endAppointment,
+            page: 0,
+            size: 20,
+        });
+
+        if (
+            hasAppointmentConflict(searchResp, appointmentBody.startAppointment)
+        ) {
+            throw Object.assign(
+                new Error("Appointment slot already occupied"),
+                {
+                    businessCode: 409,
+                    response: searchResp,
+                },
+            );
+        }
+
+        const appointmentResp =
+            await createAppointmentInSaludtools(appointmentBody);
+        const saludtoolsAppointmentId = extractSaludtoolsId(appointmentResp);
 
         const startAppointment = String(appointmentBody.startAppointment || "");
         const endAppointment = String(appointmentBody.endAppointment || "");
 
         await saveSaludtoolsAppointmentEvent({
-            saludtoolsId,
+            saludtoolsId: saludtoolsAppointmentId,
             eventType: "APPOINTMENT_CREATE",
             status: appointmentBody.stateAppointment || "PENDING",
             startDate: startAppointment.slice(0, 10) || null,
@@ -123,7 +222,7 @@ async function processAppointmentCreate(job) {
             patientDocumentType: appointmentBody.patientDocumentType,
             patientDocumentNumber: appointmentBody.patientDocumentNumber,
             clinic: appointmentBody.clinic || null,
-            rawPayload: resp,
+            rawPayload: appointmentResp,
         });
 
         if (job.appointment_id) {
@@ -132,48 +231,236 @@ async function processAppointmentCreate(job) {
 
         await markSaludtoolsJobDone(
             job.id,
-            saludtoolsId ? String(saludtoolsId) : null,
+            saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
         );
 
-        await sendWhatsAppMessage(
+        await safeSendWhatsApp(
             job.phone,
             `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`,
         );
     } catch (error) {
-        const status = error?.status;
-        const retryable = [429, 500, 502, 503, 504].includes(status);
-        const lastError = safeErrorMessage(error);
+        await handleRetryOrFail({
+            job,
+            error,
+            userWaitingMessage:
+                "⏳ Seguimos procesando tu solicitud. Aún estamos esperando confirmación del sistema y volveremos a intentarlo en unos minutos.",
+            userFailMessage:
+                "⚠️ No fue posible crear tu cita en este momento. Nuestro equipo revisará tu caso.",
+            onFinalFail: async () => {
+                if (job.appointment_id) {
+                    await updateAppointmentStatusById(
+                        job.appointment_id,
+                        "FAILED",
+                    );
+                }
+            },
+        });
+    }
+}
 
-        if (retryable && job.attempts < job.max_attempts) {
-            await markSaludtoolsJobRetry(
-                job.id,
-                lastError,
-                calculateBackoff(job.attempts),
+async function processSupportAppointmentSearch(job) {
+    const payload = job.payload || {};
+    const documento = String(payload.documento || "").trim();
+    const patientDocumentType = Number(payload.patientDocumentType || 1);
+    const tipo = String(payload.tipo || "SOPORTE");
+
+    try {
+        const patientResp = await readPatientInSaludtools(
+            patientDocumentType,
+            documento,
+        );
+
+        let patientFound = extractPatientExists(patientResp);
+
+        if (!patientFound) {
+            const patientSearchResp = await searchPatientInSaludtools(
+                documento,
+                "",
+            );
+            patientFound = extractPatientExists(patientSearchResp);
+        }
+
+        if (!patientFound) {
+            await markSaludtoolsJobDone(job.id, null);
+            await safeSendWhatsApp(
+                job.phone,
+                "No encontramos un paciente asociado a ese documento en el sistema. Por favor valida el número o contacta a la secretaria.",
             );
             return;
         }
 
-        if (job.appointment_id) {
-            await updateAppointmentStatusById(job.appointment_id, "FAILED");
+        const appointmentsResp = await searchAppointmentsByPatientInSaludtools({
+            patientDocumentType,
+            patientDocumentNumber: documento,
+        });
+
+        const content = appointmentsResp?.body?.content || [];
+
+        await markSaludtoolsJobDone(job.id, null);
+
+        if (!Array.isArray(content) || !content.length) {
+            await safeSendWhatsApp(
+                job.phone,
+                "No encontramos citas asociadas a tu documento en el sistema.",
+            );
+            return;
         }
 
-        await markSaludtoolsJobFailed(job.id, lastError);
+        const lines = content
+            .slice(0, 10)
+            .map((it, idx) => formatAppointmentForUser(it, idx));
 
-        await sendWhatsAppMessage(
+        const actionText =
+            tipo === "CANCELAR"
+                ? "cancelar"
+                : tipo === "REAGENDAR"
+                  ? "reagendar"
+                  : "gestionar";
+
+        await safeSendWhatsApp(
             job.phone,
-            "⚠️ No fue posible crear tu cita en este momento. Nuestro equipo revisará tu caso.",
+            "Encontramos estas citas asociadas a tu documento:\n\n" +
+                lines.join("\n") +
+                `\n\nPor favor vuelve al flujo y elige cuál deseas ${actionText}.`,
         );
+    } catch (error) {
+        await handleRetryOrFail({
+            job,
+            error,
+            userWaitingMessage:
+                "⏳ Seguimos validando tus citas en el sistema. Volveremos a intentarlo en unos minutos.",
+            userFailMessage:
+                "⚠️ No fue posible consultar tus citas en este momento. Nuestro equipo revisará tu caso.",
+        });
+    }
+}
+
+async function processAppointmentUpdate(job) {
+    const payload = job.payload || {};
+    const appointmentBody = payload.appointmentBody || {};
+    const appointmentId = appointmentBody.id || payload.appointmentId || null;
+
+    try {
+        const searchResp = await searchAppointmentsInSaludtools({
+            doctorDocumentType: 1,
+            doctorDocumentNumber:
+                process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079",
+            startAppointment: appointmentBody.startAppointment,
+            endAppointment: appointmentBody.endAppointment,
+            page: 0,
+            size: 20,
+        });
+
+        if (
+            hasAppointmentConflict(searchResp, appointmentBody.startAppointment)
+        ) {
+            const conflicts = searchResp?.body?.content || [];
+            const sameAppointmentExists = conflicts.some(
+                (it) => String(it?.id || "") === String(appointmentId || ""),
+            );
+
+            if (!sameAppointmentExists) {
+                throw Object.assign(
+                    new Error("Appointment slot already occupied"),
+                    {
+                        businessCode: 409,
+                        response: searchResp,
+                    },
+                );
+            }
+        }
+
+        const resp = await updateAppointmentInSaludtools(appointmentBody);
+        const saludtoolsAppointmentId =
+            extractSaludtoolsId(resp) || appointmentId;
+
+        const startAppointment = String(appointmentBody.startAppointment || "");
+        const endAppointment = String(appointmentBody.endAppointment || "");
+
+        await saveSaludtoolsAppointmentEvent({
+            saludtoolsId: saludtoolsAppointmentId,
+            eventType: "APPOINTMENT_UPDATE",
+            status: "RESCHEDULED",
+            startDate: startAppointment.slice(0, 10) || null,
+            startTime: startAppointment.slice(11, 16) || null,
+            endDate: endAppointment ? endAppointment.slice(0, 10) : null,
+            endTime: endAppointment ? endAppointment.slice(11, 16) : null,
+            doctorDocumentNumber:
+                process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079",
+            patientDocumentType: payload.patientDocumentType || null,
+            patientDocumentNumber: payload.documento || null,
+            clinic: null,
+            rawPayload: resp,
+        });
+
+        await markSaludtoolsJobDone(
+            job.id,
+            saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
+        );
+
+        await safeSendWhatsApp(
+            job.phone,
+            `✅ Tu cita fue reagendada correctamente para ${appointmentBody.startAppointment}.`,
+        );
+    } catch (error) {
+        await handleRetryOrFail({
+            job,
+            error,
+            userWaitingMessage:
+                "⏳ Seguimos intentando reagendar tu cita. Volveremos a intentarlo en unos minutos.",
+            userFailMessage:
+                "⚠️ No fue posible reagendar tu cita en este momento. Nuestro equipo revisará tu caso.",
+        });
+    }
+}
+
+async function processAppointmentDelete(job) {
+    const payload = job.payload || {};
+    const appointmentId = payload.appointmentId;
+
+    try {
+        const resp = await deleteAppointmentInSaludtools({
+            id: String(appointmentId),
+        });
+
+        await saveSaludtoolsAppointmentEvent({
+            saludtoolsId: appointmentId,
+            eventType: "APPOINTMENT_DELETE",
+            status: "CANCELLED",
+            startDate: null,
+            startTime: null,
+            endDate: null,
+            endTime: null,
+            doctorDocumentNumber: null,
+            patientDocumentType: payload.patientDocumentType || null,
+            patientDocumentNumber: payload.documento || null,
+            clinic: null,
+            rawPayload: resp,
+        });
+
+        await markSaludtoolsJobDone(
+            job.id,
+            appointmentId ? String(appointmentId) : null,
+        );
+
+        await safeSendWhatsApp(
+            job.phone,
+            "✅ Tu cita fue cancelada correctamente.",
+        );
+    } catch (error) {
+        await handleRetryOrFail({
+            job,
+            error,
+            userWaitingMessage:
+                "⏳ Seguimos intentando cancelar tu cita. Volveremos a intentarlo en unos minutos.",
+            userFailMessage:
+                "⚠️ No fue posible cancelar tu cita en este momento. Nuestro equipo revisará tu caso.",
+        });
     }
 }
 
 async function run() {
     console.log("[saludtools.worker] iniciado");
-    console.log("[saludtools.worker] DB env", {
-        host: process.env.DB_HOST,
-        user: process.env.DB_USER,
-        passwordLoaded: !!process.env.DB_PASS,
-        database: process.env.DB_NAME,
-    });
 
     while (true) {
         try {
@@ -188,10 +475,14 @@ async function run() {
                 `[saludtools.worker] procesando job ${job.id} (${job.job_type})`,
             );
 
-            if (job.job_type === "PATIENT_CREATE") {
-                await processPatientCreate(job);
-            } else if (job.job_type === "APPOINTMENT_CREATE") {
+            if (job.job_type === "APPOINTMENT_CREATE") {
                 await processAppointmentCreate(job);
+            } else if (job.job_type === "SUPPORT_APPOINTMENT_SEARCH") {
+                await processSupportAppointmentSearch(job);
+            } else if (job.job_type === "APPOINTMENT_UPDATE") {
+                await processAppointmentUpdate(job);
+            } else if (job.job_type === "APPOINTMENT_DELETE") {
+                await processAppointmentDelete(job);
             } else {
                 await markSaludtoolsJobFailed(
                     job.id,
