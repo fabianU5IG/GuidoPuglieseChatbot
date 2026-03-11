@@ -46,8 +46,9 @@ function formatAppointmentLine(item, idx) {
     const end =
         `${item?.end_date || ""} ${String(item?.end_time || "").slice(0, 5)}`.trim();
     const modality = item?.modality || "";
+    const appointmentType = item?.appointment_type || "";
 
-    return `${idx + 1}️⃣ ID ${id} | ${start}${end ? " - " + end : ""}${modality ? " | " + modality : ""}`;
+    return `${idx + 1}️⃣ ID ${id} | ${start}${end ? " - " + end : ""}${modality ? " | " + modality : ""}${appointmentType ? " | " + appointmentType : ""}`;
 }
 
 async function findLocalPatientByDocument(documentNumber) {
@@ -76,7 +77,8 @@ async function findLocalAppointmentsByDocument(documentNumber) {
             start_time,
             end_date,
             end_time,
-            status
+            status,
+            clinic
         FROM saludtools_appointments
         WHERE patient_document_number = ?
         ORDER BY start_date DESC, start_time DESC
@@ -130,7 +132,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 await createSaludtoolsJob({
                     jobType: "SUPPORT_APPOINTMENT_SEARCH",
                     phone,
-                    dedupeKey: `support-search:${documento}`,
+                    dedupeKey: `support-search:${documento}:${tipo || "SOPORTE"}`,
                     payload: {
                         documento,
                         tipo,
@@ -153,7 +155,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 await createSaludtoolsJob({
                     jobType: "SUPPORT_APPOINTMENT_SEARCH",
                     phone,
-                    dedupeKey: `support-search:${documento}`,
+                    dedupeKey: `support-search:${documento}:${tipo || "SOPORTE"}`,
                     payload: {
                         documento,
                         tipo,
@@ -247,14 +249,24 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             return {
                 response: `Vas a cancelar la cita ID ${appointmentId}.\n\nResponde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú`,
                 nextState: "SOPORTE_CITA",
-                data: { ...data, step: "CONFIRM_CANCEL", appointmentId },
+                data: {
+                    ...data,
+                    step: "CONFIRM_CANCEL",
+                    appointmentId,
+                    selectedIndex: idx,
+                },
             };
         }
 
         return {
             response: `Vas a reagendar la cita ID ${appointmentId}.\n\nEscribe la nueva fecha en formato AAAA-MM-DD (ej: 2026-03-05).\n\n0️⃣ Volver al menú`,
             nextState: "SOPORTE_CITA",
-            data: { ...data, step: "ASK_NEW_DATE", appointmentId },
+            data: {
+                ...data,
+                step: "ASK_NEW_DATE",
+                appointmentId,
+                selectedIndex: idx,
+            },
         };
     }
 
@@ -285,6 +297,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 data: { renderMenu: true },
             };
         }
+        const cita = data.citas[data.selectedIndex];
 
         await createSaludtoolsJob({
             jobType: "APPOINTMENT_DELETE",
@@ -294,6 +307,10 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 appointmentId: data.appointmentId,
                 documento: data.documento,
                 patientDocumentType: Number(data.patientDocumentType || 1),
+                startDate: cita.start_date,
+                startTime: cita.start_time,
+                endDate: cita.end_date,
+                endTime: cita.end_time,
             },
             priority: 100,
         });
@@ -387,6 +404,11 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             };
         }
 
+        const selectedAppointment =
+            Array.isArray(data.citas) && Number.isInteger(data.selectedIndex)
+                ? data.citas[data.selectedIndex]
+                : null;
+
         const end = addMinutesToYmdHm(
             data.newDate,
             data.newTime,
@@ -400,11 +422,40 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             payload: {
                 appointmentId: data.appointmentId,
                 documento: data.documento,
-                patientDocumentType: Number(data.patientDocumentType || 1),
+                patientDocumentType: Number(
+                    data.patientDocumentType ||
+                        selectedAppointment?.patient_document_type ||
+                        1,
+                ),
                 appointmentBody: {
                     id: String(data.appointmentId),
                     startAppointment: `${data.newDate} ${data.newTime}`,
                     endAppointment: `${end.ymd} ${end.hm}`,
+                    patientDocumentType: Number(
+                        data.patientDocumentType ||
+                            selectedAppointment?.patient_document_type ||
+                            1,
+                    ),
+                    patientDocumentNumber: String(data.documento),
+                    doctorDocumentType: 1,
+                    doctorDocumentNumber: String(
+                        selectedAppointment?.doctor_document_number ||
+                            process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER ||
+                            "72134079",
+                    ),
+                    modality: "CONVENTIONAL",
+                    stateAppointment: "PENDING",
+                    notificationState: "ATTEND",
+                    appointmentType:
+                        selectedAppointment?.appointment_type ||
+                        process.env.SALUDTOOLS_APPOINTMENT_TYPE ||
+                        "Pruebas Luis",
+                    clinic: Number(
+                        selectedAppointment?.clinic ||
+                            process.env.SALUDTOOLS_CLINIC_ID ||
+                            18569,
+                    ),
+                    comment: `Reagendada por chatbot. Documento: ${data.documento}`,
                 },
             },
             priority: 100,

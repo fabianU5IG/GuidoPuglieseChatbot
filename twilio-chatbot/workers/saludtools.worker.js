@@ -22,6 +22,8 @@ import {
     saveSaludtoolsPatientEvent,
     saveSaludtoolsAppointmentEvent,
     updateAppointmentStatusById,
+    findLocalSaludtoolsAppointmentById,
+    markLocalSaludtoolsAppointmentCancelled,
 } from "../services/chatbot-db.service.js";
 
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
@@ -60,7 +62,11 @@ function extractPatientExists(resp) {
     return false;
 }
 
-function hasAppointmentConflict(resp, targetStart) {
+function hasAppointmentConflict(
+    resp,
+    targetStart,
+    currentAppointmentId = null,
+) {
     const content = resp?.body?.content;
     if (!Array.isArray(content) || !content.length) return false;
 
@@ -69,7 +75,13 @@ function hasAppointmentConflict(resp, targetStart) {
         const start = String(item?.startAppointment || item?.start_date || "")
             .replace("T", " ")
             .slice(0, 16);
-        return start === target;
+
+        const sameAppointment =
+            currentAppointmentId &&
+            String(item?.id || item?.saludtools_id || "") ===
+                String(currentAppointmentId);
+
+        return start === target && !sameAppointment;
     });
 }
 
@@ -342,9 +354,12 @@ async function processAppointmentUpdate(job) {
 
     try {
         const searchResp = await searchAppointmentsInSaludtools({
-            doctorDocumentType: 1,
-            doctorDocumentNumber:
-                process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079",
+            doctorDocumentType: Number(appointmentBody.doctorDocumentType || 1),
+            doctorDocumentNumber: String(
+                appointmentBody.doctorDocumentNumber ||
+                    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER ||
+                    "72134079",
+            ),
             startAppointment: appointmentBody.startAppointment,
             endAppointment: appointmentBody.endAppointment,
             page: 0,
@@ -352,22 +367,19 @@ async function processAppointmentUpdate(job) {
         });
 
         if (
-            hasAppointmentConflict(searchResp, appointmentBody.startAppointment)
+            hasAppointmentConflict(
+                searchResp,
+                appointmentBody.startAppointment,
+                appointmentId,
+            )
         ) {
-            const conflicts = searchResp?.body?.content || [];
-            const sameAppointmentExists = conflicts.some(
-                (it) => String(it?.id || "") === String(appointmentId || ""),
+            throw Object.assign(
+                new Error("Appointment slot already occupied"),
+                {
+                    businessCode: 409,
+                    response: searchResp,
+                },
             );
-
-            if (!sameAppointmentExists) {
-                throw Object.assign(
-                    new Error("Appointment slot already occupied"),
-                    {
-                        businessCode: 409,
-                        response: searchResp,
-                    },
-                );
-            }
         }
 
         const resp = await updateAppointmentInSaludtools(appointmentBody);
@@ -380,16 +392,18 @@ async function processAppointmentUpdate(job) {
         await saveSaludtoolsAppointmentEvent({
             saludtoolsId: saludtoolsAppointmentId,
             eventType: "APPOINTMENT_UPDATE",
-            status: "RESCHEDULED",
+            status: appointmentBody.stateAppointment || "PENDING",
             startDate: startAppointment.slice(0, 10) || null,
             startTime: startAppointment.slice(11, 16) || null,
             endDate: endAppointment ? endAppointment.slice(0, 10) : null,
             endTime: endAppointment ? endAppointment.slice(11, 16) : null,
-            doctorDocumentNumber:
-                process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079",
-            patientDocumentType: payload.patientDocumentType || null,
-            patientDocumentNumber: payload.documento || null,
-            clinic: null,
+            doctorDocumentNumber: appointmentBody.doctorDocumentNumber || null,
+            patientDocumentType: appointmentBody.patientDocumentType || null,
+            patientDocumentNumber:
+                appointmentBody.patientDocumentNumber ||
+                payload.documento ||
+                null,
+            clinic: appointmentBody.clinic || null,
             rawPayload: resp,
         });
 
@@ -419,24 +433,33 @@ async function processAppointmentDelete(job) {
     const appointmentId = payload.appointmentId;
 
     try {
+        const localAppointment =
+            await findLocalSaludtoolsAppointmentById(appointmentId);
+
         const resp = await deleteAppointmentInSaludtools({
             id: String(appointmentId),
         });
 
-        await saveSaludtoolsAppointmentEvent({
-            saludtoolsId: appointmentId,
-            eventType: "APPOINTMENT_DELETE",
-            status: "CANCELLED",
-            startDate: null,
-            startTime: null,
-            endDate: null,
-            endTime: null,
-            doctorDocumentNumber: null,
-            patientDocumentType: payload.patientDocumentType || null,
-            patientDocumentNumber: payload.documento || null,
-            clinic: null,
-            rawPayload: resp,
-        });
+        if (localAppointment) {
+            // ✅ Si ya existe localmente, reutilizamos esa fila
+            await markLocalSaludtoolsAppointmentCancelled(appointmentId, resp);
+        } else {
+            // fallback raro: no existía local, insertamos con datos seguros del payload
+            await saveSaludtoolsAppointmentEvent({
+                saludtoolsId: appointmentId,
+                eventType: "APPOINTMENT_DELETE",
+                status: "CANCELLED",
+                startDate: payload.startDate || "1900-01-01",
+                startTime: payload.startTime || "00:00",
+                endDate: payload.endDate || null,
+                endTime: payload.endTime || null,
+                doctorDocumentNumber: null,
+                patientDocumentType: payload.patientDocumentType || null,
+                patientDocumentNumber: payload.documento || null,
+                clinic: null,
+                rawPayload: resp,
+            });
+        }
 
         await markSaludtoolsJobDone(
             job.id,

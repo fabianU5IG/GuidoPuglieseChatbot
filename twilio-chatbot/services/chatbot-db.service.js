@@ -337,7 +337,47 @@ export async function updateAppointmentStatusById(appointmentId, newStatus) {
         [appointmentId, previousStatus, newStatus],
     );
 }
+export async function findLocalSaludtoolsAppointmentById(saludtoolsId) {
+    const [rows] = await db.query(
+        `
+        SELECT
+            saludtools_id,
+            status,
+            start_date,
+            start_time,
+            end_date,
+            end_time,
+            doctor_document_number,
+            patient_document_type,
+            patient_document_number,
+            clinic,
+            raw_payload
+        FROM saludtools_appointments
+        WHERE saludtools_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [String(saludtoolsId)],
+    );
 
+    return rows?.[0] || null;
+}
+
+export async function markLocalSaludtoolsAppointmentCancelled(
+    saludtoolsId,
+    rawPayload = null,
+) {
+    await db.query(
+        `
+        UPDATE saludtools_appointments
+        SET
+            status = 'CANCELLED',
+            raw_payload = COALESCE(?, raw_payload)
+        WHERE saludtools_id = ?
+        `,
+        [rawPayload ? JSON.stringify(rawPayload) : null, String(saludtoolsId)],
+    );
+}
 export async function saveSaludtoolsPatientEvent({
     saludtoolsId,
     eventType,

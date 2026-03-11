@@ -228,10 +228,27 @@ export async function updateAppointmentInSaludtools(appointmentBody) {
         eventType: "APPOINTMENT",
         actionType: "UPDATE",
         body: {
-            ...appointmentBody,
             id: String(appointmentBody.id || ""),
             startAppointment: String(appointmentBody.startAppointment || ""),
             endAppointment: String(appointmentBody.endAppointment || ""),
+            patientDocumentType: Number(appointmentBody.patientDocumentType),
+            patientDocumentNumber: String(
+                appointmentBody.patientDocumentNumber || "",
+            ),
+            doctorDocumentType: Number(appointmentBody.doctorDocumentType),
+            doctorDocumentNumber: String(
+                appointmentBody.doctorDocumentNumber || "",
+            ),
+            modality: String(appointmentBody.modality || "CONVENTIONAL"),
+            stateAppointment: String(
+                appointmentBody.stateAppointment || "PENDING",
+            ),
+            notificationState: String(
+                appointmentBody.notificationState || "ATTEND",
+            ),
+            appointmentType: String(appointmentBody.appointmentType || ""),
+            clinic: Number(appointmentBody.clinic),
+            comment: String(appointmentBody.comment || ""),
         },
     });
 }
