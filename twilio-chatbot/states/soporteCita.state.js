@@ -40,15 +40,29 @@ function addMinutesToYmdHm(ymd, hm, minutes) {
 }
 
 function formatAppointmentLine(item, idx) {
-    const id = item?.saludtools_id || item?.id || "";
-    const start =
-        `${item?.start_date || ""} ${String(item?.start_time || "").slice(0, 5)}`.trim();
-    const end =
-        `${item?.end_date || ""} ${String(item?.end_time || "").slice(0, 5)}`.trim();
-    const modality = item?.modality || "";
-    const appointmentType = item?.appointment_type || "";
+    const startDate = item?.start_date;
+    const startTime = String(item?.start_time || "").slice(0, 5);
+    const endTime = String(item?.end_time || "").slice(0, 5);
 
-    return `${idx + 1}️⃣ ID ${id} | ${start}${end ? " - " + end : ""}${modality ? " | " + modality : ""}${appointmentType ? " | " + appointmentType : ""}`;
+    if (!startDate) {
+        return `${idx + 1}️⃣ Cita sin fecha`;
+    }
+
+    const d = new Date(startDate + "T00:00:00");
+
+    const weekday = d.toLocaleDateString("es-CO", {
+        weekday: "long",
+    });
+
+    const datePart = d.toLocaleDateString("es-CO", {
+        day: "2-digit",
+        month: "short",
+    });
+
+    const weekdayFormatted =
+        weekday.charAt(0).toUpperCase() + weekday.slice(1);
+
+    return `${idx + 1}️⃣ ${weekdayFormatted} ${datePart} | ${startTime}${endTime ? " - " + endTime : ""}`;
 }
 
 async function findLocalPatientByDocument(documentNumber) {
