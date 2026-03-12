@@ -419,11 +419,37 @@ export async function saveSaludtoolsAppointmentEvent({
 }) {
     await db.query(
         `INSERT INTO saludtools_appointments
-         (saludtools_id, event_type, status, start_date, start_time, end_date, end_time,
-          doctor_document_number, patient_document_type, patient_document_number, clinic, raw_payload)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+(
+  saludtools_id,
+  event_type,
+  status,
+  start_date,
+  start_time,
+  end_date,
+  end_time,
+  doctor_document_number,
+  patient_document_type,
+  patient_document_number,
+  clinic,
+  raw_payload
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+ON DUPLICATE KEY UPDATE
+  event_type = VALUES(event_type),
+  status = VALUES(status),
+  start_date = VALUES(start_date),
+  start_time = VALUES(start_time),
+  end_date = VALUES(end_date),
+  end_time = VALUES(end_time),
+  doctor_document_number = VALUES(doctor_document_number),
+  patient_document_type = VALUES(patient_document_type),
+  patient_document_number = VALUES(patient_document_number),
+  clinic = VALUES(clinic),
+  raw_payload = VALUES(raw_payload)
+`,
         [
-            saludtoolsId || 0,
+            saludtoolsId,
             eventType,
             status,
             startDate,

@@ -187,10 +187,12 @@ async function processAppointmentCreate(job) {
                 saludtoolsId: patientId,
                 eventType: "PATIENT_UPSERT_FROM_APPOINTMENT",
                 fullName: payload.fullName || "Paciente WhatsApp",
+                documentType: payload.patientDocumentType || null,
+                documentNumber: payload.documento || null,
                 birthDate: patientBody?.birthDate || null,
                 gender: patientBody?.gender || null,
                 habeasData: patientBody?.habeasData ?? null,
-                rawPayload: patientResp,
+                rawPayload: resp,
             });
         }
 
