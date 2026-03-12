@@ -40,24 +40,33 @@ function addMinutesToYmdHm(ymd, hm, minutes) {
 }
 
 function formatAppointmentLine(item, idx) {
-    const startDate = item?.start_date;
+    const startDateRaw = item?.start_date;
     const startTime = String(item?.start_time || "").slice(0, 5);
     const endTime = String(item?.end_time || "").slice(0, 5);
 
-    if (!startDate) {
+    if (!startDateRaw) {
         return `${idx + 1}️⃣ Cita sin fecha`;
     }
 
-    const d = new Date(startDate + "T00:00:00");
+    const d =
+        startDateRaw instanceof Date
+            ? startDateRaw
+            : new Date(startDateRaw);
+
+    if (isNaN(d.getTime())) {
+        return `${idx + 1}️⃣ Fecha inválida | ${startTime}${endTime ? " - " + endTime : ""}`;
+    }
 
     const weekday = d.toLocaleDateString("es-CO", {
         weekday: "long",
     });
 
-    const datePart = d.toLocaleDateString("es-CO", {
-        day: "2-digit",
-        month: "short",
-    });
+    const datePart = d
+        .toLocaleDateString("es-CO", {
+            day: "2-digit",
+            month: "short",
+        })
+        .replace(".", "");
 
     const weekdayFormatted =
         weekday.charAt(0).toUpperCase() + weekday.slice(1);
