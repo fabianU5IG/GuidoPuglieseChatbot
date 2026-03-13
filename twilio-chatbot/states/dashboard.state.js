@@ -17,6 +17,7 @@ const { getTimeSlots } = timeUtils;
  * =========================
  */
 const SECRETARY_PHONES = ["573153573131"]; // ✅ agrega aquí los números autorizados (solo dígitos)
+const SECRETARY_CASES_PAGE_SIZE = 10;
 
 // Duración por defecto para reprogramación en Saludtools (min)
 const APPOINTMENT_DURATION_MIN = Number(
@@ -184,6 +185,109 @@ function extractAppointmentDocInfo(stRead) {
     };
 }
 
+function capitalizeWords(str = "") {
+    return String(str)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(
+            (word) =>
+                word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+        )
+        .join(" ");
+}
+
+function buildFullNameFromParts(item = {}) {
+    const parts = [
+        item.firstName,
+        item.secondName,
+        item.firstLastName,
+        item.secondLastName,
+        item.first_name,
+        item.second_name,
+        item.first_last_name,
+        item.second_last_name,
+    ]
+        .map((v) => String(v || "").trim())
+        .filter(Boolean);
+
+    return capitalizeWords(parts.join(" "));
+}
+
+function extractPatientName(item = {}) {
+    const directCandidates = [
+        item.fullName,
+        item.patientFullName,
+        item.patientName,
+        item.name,
+        item.full_name,
+        item.patient_full_name,
+        item.patient_name,
+    ]
+        .map((v) => String(v || "").trim())
+        .filter(Boolean);
+
+    if (directCandidates.length) {
+        return capitalizeWords(directCandidates[0]);
+    }
+
+    const built = buildFullNameFromParts(item);
+    if (built) return built;
+
+    const nestedBuilt = buildFullNameFromParts(item.patient || {});
+    if (nestedBuilt) return nestedBuilt;
+
+    const nestedCandidates = [
+        item.patient?.fullName,
+        item.patient?.patientFullName,
+        item.patient?.patientName,
+        item.patient?.name,
+        item.patient?.full_name,
+        item.patient?.patient_full_name,
+        item.patient?.patient_name,
+    ]
+        .map((v) => String(v || "").trim())
+        .filter(Boolean);
+
+    if (nestedCandidates.length) {
+        return capitalizeWords(nestedCandidates[0]);
+    }
+
+    return "";
+}
+
+function extractPatientDocument(item = {}) {
+    const candidates = [
+        item.documentNumber,
+        item.patientDocumentNumber,
+        item.identification,
+        item.cc,
+        item.document_number,
+        item.patient_document_number,
+        item.patient?.documentNumber,
+        item.patient?.patientDocumentNumber,
+        item.patient?.identification,
+        item.patient?.cc,
+        item.patient?.document_number,
+        item.patient?.patient_document_number,
+    ]
+        .map((v) => String(v || "").trim())
+        .filter(Boolean);
+
+    return candidates.length ? candidates[0] : "";
+}
+
+function buildPatientDisplay(item = {}) {
+    const name = extractPatientName(item);
+    const document = extractPatientDocument(item);
+
+    if (name && document) return `${name} - CC ${document}`;
+    if (name) return name;
+    if (document) return `CC ${document}`;
+
+    return "Paciente sin identificar";
+}
+
 function addMinutesToYmdHm(ymd, hm, minutesToAdd) {
     const [H, M] = hm.split(":").map(Number);
     const [Y, Mo, D] = ymd.split("-").map(Number);
@@ -223,21 +327,38 @@ function isValidDateDDMM(value) {
     return !isNaN(date) && date >= today;
 }
 
-function formatCaseLine(c, i) {
-    let formattedDate = "Sin fecha";
-    if (c.last_update) {
-        const d = new Date(c.last_update);
-        if (!isNaN(d)) formattedDate = d.toLocaleString();
-    }
+function paginateCases(
+    cases = [],
+    page = 0,
+    pageSize = SECRETARY_CASES_PAGE_SIZE,
+) {
+    const safePage = Math.max(0, Number(page || 0));
+    const start = safePage * pageSize;
+    const end = start + pageSize;
 
-    const when = c.date && c.time ? `🗓️ ${c.date} ${c.time}` : "";
-    const type = c.attention_type ? `• ${c.attention_type}` : "";
+    return {
+        items: cases.slice(start, end),
+        page: safePage,
+        pageSize,
+        total: cases.length,
+        hasNext: end < cases.length,
+        hasPrev: safePage > 0,
+        totalPages: Math.ceil(cases.length / pageSize),
+        start,
+        end,
+    };
+}
+
+function formatCaseLine(c, absoluteIndex) {
+    const when =
+        c.date || c.time
+            ? `🗓️ ${c.date || "Sin fecha"} ${c.time || ""}`.trim()
+            : "🗓️ Sin fecha";
 
     return (
-        `${i + 1}️⃣ ${c.full_name || "Paciente"} ${type}\n` +
-        `📞 ${c.phone || "Sin teléfono"}\n` +
-        (when ? `${when}\n` : "") +
-        `🕒 ${formattedDate}\n\n`
+        `${absoluteIndex + 1}️⃣ ${buildPatientDisplay(c)}\n` +
+        `${when}\n` +
+        `Estado: ${c.status || "N/A"}\n\n`
     );
 }
 
@@ -245,12 +366,60 @@ function dashboardHeader() {
     return "📋 Dashboard Secretaría\n\n";
 }
 
-function returnToInbox(extra = "") {
+function buildPendingCasesResponse(cases = [], page = 0, extra = "") {
+    const paginated = paginateCases(cases, page);
+
+    if (!paginated.items.length) {
+        return {
+            response:
+                (extra ? `${extra}\n\n` : "") +
+                dashboardHeader() +
+                "No hay casos pendientes.\n\n0️⃣ Salir",
+            nextState: "DASHBOARD",
+            data: { step: "INBOX", page: 0, cases: [] },
+        };
+    }
+
+    let response = extra
+        ? `${extra}\n\n📋 Casos pendientes (${paginated.total} en total):\n\n`
+        : `📋 Casos pendientes (${paginated.total} en total):\n\n`;
+
+    paginated.items.forEach((c, i) => {
+        response += formatCaseLine(c, paginated.start + i);
+    });
+
+    response += `Página ${paginated.page + 1} de ${Math.max(1, paginated.totalPages)}\n`;
+
+    if (paginated.hasNext) {
+        response += "\n1️⃣1️⃣ Ver más casos";
+    }
+
+    if (paginated.hasPrev) {
+        response += "\n1️⃣2️⃣ Ver casos anteriores";
+    }
+
+    response +=
+        "\n\nSelecciona un caso por su número global o escribe 0️⃣ para salir";
+
     return {
-        response: extra ? `${extra}\n` : null,
+        response,
         nextState: "DASHBOARD",
-        data: { step: "INBOX" },
+        data: { step: "SELECT_CASE", cases, page: paginated.page },
     };
+}
+
+async function returnToInbox(extra = "", page = 0) {
+    let cases = [];
+    try {
+        cases = await getPendingCases();
+    } catch (err) {
+        console.error("❌ Error getPendingCases:", err);
+        cases = [];
+    }
+
+    if (!Array.isArray(cases)) cases = [];
+
+    return buildPendingCasesResponse(cases, page, extra);
 }
 
 /**
@@ -364,31 +533,7 @@ export default async function dashboardState(msg, data = {}, context) {
 
             if (!Array.isArray(cases)) cases = [];
 
-            if (cases.length === 0) {
-                return {
-                    response:
-                        dashboardHeader() +
-                        "No hay casos pendientes.\n\n0️⃣ Salir",
-                    nextState: "DASHBOARD",
-                    data: { step: "INBOX" },
-                };
-            }
-
-            let response = "📋 Casos pendientes:\n\n";
-            cases.slice(0, 10).forEach((c, i) => {
-                response += formatCaseLine(c, i);
-            });
-
-            if (cases.length > 10)
-                response += "\n... Mostrando primeros 10 casos\n";
-
-            response += "\nSelecciona un caso o escribe 0️⃣ para salir";
-
-            return {
-                response,
-                nextState: "DASHBOARD",
-                data: { step: "SELECT_CASE", cases },
-            };
+            return buildPendingCasesResponse(cases, 0);
         }
 
         /**
@@ -405,31 +550,57 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            const index = parseInt(msg, 10) - 1;
-            if (!Number.isInteger(index) || !data.cases?.[index]) {
-                return {
-                    response: "❌ Opción inválida",
-                    nextState: "DASHBOARD",
-                    data: { step: "INBOX" },
-                };
+            const allCases = Array.isArray(data.cases) ? data.cases : [];
+            const currentPage = Number(data.page || 0);
+            const paginated = paginateCases(allCases, currentPage);
+            const raw = String(msg || "").trim();
+
+            if (raw === "11") {
+                if (!paginated.hasNext) {
+                    return buildPendingCasesResponse(
+                        allCases,
+                        currentPage,
+                        "⚠️ No hay más casos para mostrar.",
+                    );
+                }
+
+                return buildPendingCasesResponse(allCases, currentPage + 1);
             }
 
-            const selectedCase = data.cases[index];
+            if (raw === "12") {
+                if (!paginated.hasPrev) {
+                    return buildPendingCasesResponse(
+                        allCases,
+                        currentPage,
+                        "⚠️ Ya estás en la primera página.",
+                    );
+                }
+
+                return buildPendingCasesResponse(allCases, currentPage - 1);
+            }
+
+            const requestedNumber = parseInt(raw, 10);
+            const index = Number.isInteger(requestedNumber)
+                ? requestedNumber - 1
+                : -1;
+
+            if (!Number.isInteger(index) || !allCases[index]) {
+                return buildPendingCasesResponse(
+                    allCases,
+                    currentPage,
+                    "❌ Opción inválida",
+                );
+            }
+
+            const selectedCase = allCases[index];
 
             const details =
                 `🔔 Caso seleccionado\n\n` +
-                `Paciente: ${selectedCase.full_name || "N/A"}\n` +
-                `Tel: ${selectedCase.phone || "N/A"}\n` +
-                (selectedCase.date && selectedCase.time
-                    ? `Cita: ${selectedCase.date} ${selectedCase.time}\n`
-                    : "") +
-                (selectedCase.attention_type
-                    ? `Tipo: ${selectedCase.attention_type}\n`
-                    : "") +
-                (selectedCase.saludtools_appointment_id
-                    ? `Saludtools ID: ${selectedCase.saludtools_appointment_id}\n`
-                    : "Saludtools ID: (no disponible)\n") +
-                "\n" +
+                `Paciente: ${buildPatientDisplay(selectedCase)}\n` +
+                `Documento: ${extractPatientDocument(selectedCase) || "N/A"}\n` +
+                `Cita: ${selectedCase.date || "Sin fecha"} ${selectedCase.time || ""}\n` +
+                `Estado: ${selectedCase.status || "N/A"}\n` +
+                `Saludtools ID: ${selectedCase.saludtools_appointment_id || "N/A"}\n\n` +
                 "1️⃣ Reagendar\n" +
                 "2️⃣ Cancelar\n" +
                 "0️⃣ Volver";
@@ -437,7 +608,12 @@ export default async function dashboardState(msg, data = {}, context) {
             return {
                 response: details,
                 nextState: "DASHBOARD",
-                data: { step: "CASE_ACTIONS", selectedCase },
+                data: {
+                    step: "CASE_ACTIONS",
+                    selectedCase,
+                    cases: allCases,
+                    page: currentPage,
+                },
             };
         }
 
@@ -447,7 +623,12 @@ export default async function dashboardState(msg, data = {}, context) {
          * =========================
          */
         case "CASE_ACTIONS": {
-            if (msg === "0") return returnToInbox("↩️ Volviendo al listado");
+            if (msg === "0") {
+                return returnToInbox(
+                    "↩️ Volviendo al listado",
+                    Number(data.page || 0),
+                );
+            }
 
             if (msg === "1") {
                 const saludId = data?.selectedCase?.saludtools_appointment_id;
@@ -573,7 +754,12 @@ export default async function dashboardState(msg, data = {}, context) {
         }
 
         case "ASK_DATE": {
-            if (msg === "0") return returnToInbox("↩️ Volviendo al listado");
+            if (msg === "0") {
+                return returnToInbox(
+                    "↩️ Volviendo al listado",
+                    Number(data.page || 0),
+                );
+            }
 
             if (!isValidDateDDMM(msg)) {
                 return {
@@ -591,7 +777,12 @@ export default async function dashboardState(msg, data = {}, context) {
         }
 
         case "ASK_TIME": {
-            if (msg === "0") return returnToInbox("↩️ Volviendo al listado");
+            if (msg === "0") {
+                return returnToInbox(
+                    "↩️ Volviendo al listado",
+                    Number(data.page || 0),
+                );
+            }
 
             if (msg === "7") {
                 data.page++;
@@ -618,7 +809,7 @@ export default async function dashboardState(msg, data = {}, context) {
             return {
                 response:
                     "✅ Confirma la reprogramación:\n\n" +
-                    `Paciente: ${sel.full_name || "N/A"}\n` +
+                    `Paciente: ${buildPatientDisplay(sel)}\n` +
                     `Tel: ${sel.phone || "N/A"}\n` +
                     `Nueva cita: ${data.newDate} ${data.newTime}\n\n` +
                     "1️⃣ Confirmar\n" +
@@ -632,6 +823,7 @@ export default async function dashboardState(msg, data = {}, context) {
             if (msg === "0")
                 return returnToInbox(
                     "↩️ Acción cancelada. Volviendo al listado.",
+                    Number(data.page || 0),
                 );
 
             if (msg !== "1") {
@@ -733,7 +925,7 @@ export default async function dashboardState(msg, data = {}, context) {
                                 data?.selectedCase?.attention_type ||
                                 "Cita (reprogramada por secretaría)",
                             clinic: CLINIC_ID,
-                            comment: `Reprogramada por secretaría. Paciente: ${data?.selectedCase?.full_name || ""}`,
+                            comment: `Reprogramada por secretaría. Paciente: ${extractPatientName(data?.selectedCase || {})}`,
                         },
                     });
 

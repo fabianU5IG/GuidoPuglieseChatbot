@@ -6,7 +6,6 @@ async function getOrCreatePatient(phone, fullName = null) {
             ? fullName.trim()
             : "Paciente WhatsApp";
 
-    // Traer también el nombre actual para poder actualizarlo si llega después
     const [p] = await db.query(
         "SELECT id, full_name FROM patients WHERE phone = ?",
         [phone],
@@ -15,7 +14,6 @@ async function getOrCreatePatient(phone, fullName = null) {
     if (p.length) {
         const currentName = p[0].full_name;
 
-        // Si el paciente existe y ahora llega un nombre "real", lo guardamos
         const isPlaceholder =
             !currentName ||
             String(currentName).trim().toLowerCase() ===
@@ -42,9 +40,6 @@ async function getOrCreatePatient(phone, fullName = null) {
     return r.insertId;
 }
 
-/* ======================================================
-   UPSERT – actualizar/crear nombre del paciente
-====================================================== */
 export async function upsertPatientName(phone, fullName) {
     const safeName =
         typeof fullName === "string" && fullName.trim()
@@ -60,7 +55,6 @@ export async function upsertPatientName(phone, fullName) {
 
     if (u.affectedRows && u.affectedRows > 0) return true;
 
-    // Si no existe aún, lo creamos con nombre (evita NULL)
     await db.query("INSERT INTO patients (phone, full_name) VALUES (?, ?)", [
         phone,
         safeName,
@@ -69,9 +63,6 @@ export async function upsertPatientName(phone, fullName) {
     return true;
 }
 
-/* ======================================================
-   REGISTRO DE INTERACCIONES (CHATBOT)
-====================================================== */
 export async function registerChatbotInteraction({
     phone,
     message,
@@ -81,9 +72,6 @@ export async function registerChatbotInteraction({
 }) {
     const patientId = await getOrCreatePatient(phone);
 
-    /* =========================
-       Crear cita SOLO una vez
-    ========================= */
     if (!appointmentId && createAppointment) {
         const [a] = await db.query(
             `
@@ -95,7 +83,6 @@ export async function registerChatbotInteraction({
         );
         appointmentId = a.insertId;
 
-        // historial
         await db.query(
             `
             INSERT INTO appointment_status_history
@@ -106,9 +93,6 @@ export async function registerChatbotInteraction({
         );
     }
 
-    /* =========================
-       Mensaje
-    ========================= */
     if (appointmentId && message) {
         await db.query(
             `
@@ -120,9 +104,6 @@ export async function registerChatbotInteraction({
         );
     }
 
-    /* =========================
-       SOLO HISTORIAL (NO tocar ENUM)
-    ========================= */
     if (appointmentId && appointmentData?.newStatus) {
         await db.query(
             `
@@ -141,15 +122,7 @@ export async function registerChatbotInteraction({
     return appointmentId;
 }
 
-/* ======================================================
-   CIERRE FINAL DE CITA
-====================================================== */
-export async function createFinalAppointment({
-    phone,
-    fullName,
-    date, // DD/MM
-    time, // HH:mm
-}) {
+export async function createFinalAppointment({ phone, fullName, date, time }) {
     const patientId = await getOrCreatePatient(phone, fullName);
 
     const [day, month] = date.split("/");
@@ -177,22 +150,27 @@ export async function createFinalAppointment({
     return a.insertId;
 }
 
-/* ======================================================
-   DASHBOARD – CONSULTAS
-====================================================== */
-
 export async function getPendingCases() {
     const [rows] = await db.query(`
         SELECT
-            a.id AS appointment_id,
-            p.full_name,
-            p.phone,
-            a.status,
-            a.updated_at AS last_update
-        FROM appointments a
-        JOIN patients p ON p.id = a.patient_id
-        WHERE a.status IN ('PROPOSED', 'RESCHEDULED')
-        ORDER BY a.updated_at DESC
+            NULL AS appointment_id,
+            sp.full_name,
+            NULL AS phone,
+            sa.status,
+            DATE_FORMAT(sa.start_date, '%Y-%m-%d') AS date,
+            TIME_FORMAT(sa.start_time, '%H:%i:%s') AS time,
+            sa.saludtools_id AS saludtools_appointment_id,
+            sa.patient_document_type,
+            sa.patient_document_number,
+            sa.updated_at AS last_update,
+            sa.event_type,
+            sa.clinic
+        FROM saludtools_appointments sa
+        LEFT JOIN saludtools_patients sp
+            ON sp.document_type = sa.patient_document_type
+           AND sp.document_number = sa.patient_document_number
+        WHERE sa.status IN ('PENDING', 'CONFIRMED')
+        ORDER BY sa.start_date ASC, sa.start_time ASC, sa.updated_at DESC
     `);
 
     return rows;
@@ -206,7 +184,6 @@ export async function markReScheduled(appointmentId) {
 }
 
 export async function confirmAppointment(appointmentId) {
-    // 1️⃣ Obtener estado actual
     const [rows] = await db.query(
         "SELECT status FROM appointments WHERE id = ?",
         [appointmentId],
@@ -216,13 +193,11 @@ export async function confirmAppointment(appointmentId) {
 
     const previousStatus = rows[0].status;
 
-    // 2️⃣ Actualizar status
     await db.query(
         "UPDATE appointments SET status = 'CONFIRMED' WHERE id = ?",
         [appointmentId],
     );
 
-    // 3️⃣ Guardar en historial
     await db.query(
         `INSERT INTO appointment_status_history
          (appointment_id, previous_status, new_status, changed_by)
@@ -237,13 +212,13 @@ export async function markCancelled(appointmentId) {
         [appointmentId],
     );
 }
+
 export async function createProposedAppointment({
     phone,
     fullName,
     date,
     time,
 }) {
-    // 1️⃣ Buscar o crear paciente
     const safeName =
         typeof fullName === "string" && fullName.trim()
             ? fullName.trim()
@@ -259,7 +234,6 @@ export async function createProposedAppointment({
     if (patient.length) {
         patientId = patient[0].id;
 
-        // Si llega un nombre real y en BD está vacío/placeholder, actualizamos
         const currentName = patient[0].full_name;
         const isPlaceholder =
             !currentName ||
@@ -283,12 +257,10 @@ export async function createProposedAppointment({
         patientId = result.insertId;
     }
 
-    // 2️⃣ Convertir fecha
     const [day, month] = date.split("/");
     const year = new Date().getFullYear();
     const scheduledDate = `${year}-${month}-${day}`;
 
-    // 3️⃣ Crear appointment (AQUÍ ESTÁ LA CORRECCIÓN)
     const [appointmentResult] = await db.query(
         `INSERT INTO appointments
          (patient_id, scheduled_date, scheduled_time, status, source)
@@ -298,7 +270,6 @@ export async function createProposedAppointment({
 
     const appointmentId = appointmentResult.insertId;
 
-    // 4️⃣ Status history
     await db.query(
         `INSERT INTO appointment_status_history
          (appointment_id, previous_status, new_status, changed_by)
@@ -317,6 +288,7 @@ export async function logAppointmentMessage(appointmentId, message) {
         [appointmentId, message],
     );
 }
+
 export async function updateAppointmentStatusById(appointmentId, newStatus) {
     const [rows] = await db.query(
         "SELECT status FROM appointments WHERE id = ? LIMIT 1",
@@ -337,6 +309,7 @@ export async function updateAppointmentStatusById(appointmentId, newStatus) {
         [appointmentId, previousStatus, newStatus],
     );
 }
+
 export async function findLocalSaludtoolsAppointmentById(saludtoolsId) {
     const [rows] = await db.query(
         `
@@ -378,10 +351,13 @@ export async function markLocalSaludtoolsAppointmentCancelled(
         [rawPayload ? JSON.stringify(rawPayload) : null, String(saludtoolsId)],
     );
 }
+
 export async function saveSaludtoolsPatientEvent({
     saludtoolsId,
     eventType,
     fullName,
+    documentType,
+    documentNumber,
     birthDate = null,
     gender = null,
     habeasData = null,
@@ -389,16 +365,38 @@ export async function saveSaludtoolsPatientEvent({
 }) {
     await db.query(
         `INSERT INTO saludtools_patients
-         (saludtools_id, event_type, full_name, birth_date, gender, habeas_data, raw_payload)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (
+            saludtools_id,
+            event_type,
+            full_name,
+            birth_date,
+            gender,
+            habeas_data,
+            raw_payload,
+            document_type,
+            document_number
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+            event_type = VALUES(event_type),
+            full_name = VALUES(full_name),
+            birth_date = VALUES(birth_date),
+            gender = VALUES(gender),
+            habeas_data = VALUES(habeas_data),
+            raw_payload = VALUES(raw_payload),
+            document_type = VALUES(document_type),
+            document_number = VALUES(document_number),
+            updated_at = CURRENT_TIMESTAMP`,
         [
             saludtoolsId || 0,
-            eventType,
+            eventType || "",
             fullName || "Paciente WhatsApp",
             birthDate,
             gender,
             habeasData,
             rawPayload ? JSON.stringify(rawPayload) : null,
+            Number(documentType),
+            String(documentNumber || "").trim(),
         ],
     );
 }

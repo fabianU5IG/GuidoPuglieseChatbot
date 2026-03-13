@@ -62,6 +62,14 @@ function extractPatientExists(resp) {
     return false;
 }
 
+function isCancelledAppointment(item) {
+    const status = String(
+        item?.stateAppointment || item?.status || "",
+    ).toUpperCase();
+
+    return status === "CANCELLED" || status === "CANCELED";
+}
+
 function hasAppointmentConflict(
     resp,
     targetStart,
@@ -70,7 +78,10 @@ function hasAppointmentConflict(
     const content = resp?.body?.content;
     if (!Array.isArray(content) || !content.length) return false;
 
-    const target = String(targetStart || "").slice(0, 16);
+    const target = String(targetStart || "")
+        .replace("T", " ")
+        .slice(0, 16);
+
     return content.some((item) => {
         const start = String(item?.startAppointment || item?.start_date || "")
             .replace("T", " ")
@@ -81,7 +92,10 @@ function hasAppointmentConflict(
             String(item?.id || item?.saludtools_id || "") ===
                 String(currentAppointmentId);
 
-        return start === target && !sameAppointment;
+        if (sameAppointment) return false;
+        if (isCancelledAppointment(item)) return false;
+
+        return start === target;
     });
 }
 
@@ -171,7 +185,95 @@ async function handleRetryOrFail({
         await safeSendWhatsApp(job.phone, userFailMessage);
     }
 }
+function normalizeDateTime(value) {
+    return String(value || "")
+        .replace("T", " ")
+        .slice(0, 16);
+}
 
+function extractCreatedAppointmentIdFromMessage(message = "") {
+    const text = String(message || "");
+    const match = text.match(/id:\s*(\d+)/i);
+    return match ? match[1] : null;
+}
+
+function findCreatedAppointmentCandidate(resp, appointmentBody) {
+    const targetStart = normalizeDateTime(appointmentBody?.startAppointment);
+    const targetPatientDoc = String(
+        appointmentBody?.patientDocumentNumber || "",
+    ).trim();
+
+    // 1) Caso válido: Saludtools devuelve el id en el root
+    if (resp?.id && Number(resp?.code) === 200) {
+        return {
+            id: resp.id,
+            startAppointment: appointmentBody?.startAppointment,
+            patientDocumentNumber: appointmentBody?.patientDocumentNumber,
+            source: "root",
+        };
+    }
+
+    // 2) Caso válido: el mensaje confirma registro
+    const idFromMessage = extractCreatedAppointmentIdFromMessage(resp?.message);
+    if (idFromMessage && Number(resp?.code) === 200) {
+        return {
+            id: idFromMessage,
+            startAppointment: appointmentBody?.startAppointment,
+            patientDocumentNumber: appointmentBody?.patientDocumentNumber,
+            source: "message",
+        };
+    }
+
+    // 3) Caso válido: body trae la cita directa
+    const directBody = resp?.body;
+    if (
+        directBody &&
+        directBody.id &&
+        normalizeDateTime(directBody.startAppointment) === targetStart &&
+        !isCancelledAppointment(directBody)
+    ) {
+        return {
+            ...directBody,
+            source: "body",
+        };
+    }
+
+    // 4) Caso válido: body.content trae la cita creada
+    const content = resp?.body?.content;
+    if (Array.isArray(content)) {
+        const found = content.find((item) => {
+            const sameStart =
+                normalizeDateTime(item?.startAppointment) === targetStart;
+            const samePatient =
+                String(item?.patientDocumentNumber || "").trim() ===
+                targetPatientDoc;
+
+            return sameStart && samePatient && !isCancelledAppointment(item);
+        });
+
+        if (found?.id) {
+            return {
+                ...found,
+                source: "content",
+            };
+        }
+    }
+
+    return null;
+}
+
+function assertAppointmentCreated(resp, appointmentBody) {
+    const candidate = findCreatedAppointmentCandidate(resp, appointmentBody);
+
+    if (!candidate?.id) {
+        const err = new Error("Saludtools no confirmó la creación de la cita");
+        err.businessCode = 422;
+        err.response = resp;
+        throw err;
+    }
+
+    return candidate;
+}
 async function processAppointmentCreate(job) {
     const payload = job.payload || {};
     const patientExistsLocal = Boolean(payload.patientExistsLocal);
@@ -187,12 +289,12 @@ async function processAppointmentCreate(job) {
                 saludtoolsId: patientId,
                 eventType: "PATIENT_UPSERT_FROM_APPOINTMENT",
                 fullName: payload.fullName || "Paciente WhatsApp",
-                documentType: payload.patientDocumentType || null,
-                documentNumber: payload.documento || null,
+                documentType: appointmentBody.patientDocumentType || null,
+                documentNumber: appointmentBody.patientDocumentNumber || null,
                 birthDate: patientBody?.birthDate || null,
                 gender: patientBody?.gender || null,
                 habeasData: patientBody?.habeasData ?? null,
-                rawPayload: resp,
+                rawPayload: patientResp, // Antes era 'resp' (corregido)
             });
         }
 
@@ -219,7 +321,13 @@ async function processAppointmentCreate(job) {
 
         const appointmentResp =
             await createAppointmentInSaludtools(appointmentBody);
-        const saludtoolsAppointmentId = extractSaludtoolsId(appointmentResp);
+
+        const createdAppointment = assertAppointmentCreated(
+            appointmentResp,
+            appointmentBody,
+        );
+
+        const saludtoolsAppointmentId = createdAppointment.id;
 
         const startAppointment = String(appointmentBody.startAppointment || "");
         const endAppointment = String(appointmentBody.endAppointment || "");
@@ -443,10 +551,8 @@ async function processAppointmentDelete(job) {
         });
 
         if (localAppointment) {
-            // ✅ Si ya existe localmente, reutilizamos esa fila
             await markLocalSaludtoolsAppointmentCancelled(appointmentId, resp);
         } else {
-            // fallback raro: no existía local, insertamos con datos seguros del payload
             await saveSaludtoolsAppointmentEvent({
                 saludtoolsId: appointmentId,
                 eventType: "APPOINTMENT_DELETE",

@@ -216,9 +216,23 @@ export async function createAppointmentInSaludtools(appointmentBody) {
         eventType: "APPOINTMENT",
         actionType: "CREATE",
         body: {
-            ...appointmentBody,
             startAppointment: String(appointmentBody.startAppointment || ""),
             endAppointment: String(appointmentBody.endAppointment || ""),
+            patientDocumentType: Number(appointmentBody.patientDocumentType),
+            patientDocumentNumber: String(
+                appointmentBody.patientDocumentNumber || "",
+            ),
+            doctorDocumentType: Number(appointmentBody.doctorDocumentType),
+            doctorDocumentNumber: String(
+                appointmentBody.doctorDocumentNumber || "",
+            ),
+            modality: String(appointmentBody.modality || "CONVENTIONAL"),
+            stateAppointment: String(
+                appointmentBody.stateAppointment || "PENDING",
+            ),
+            appointmentType: String(appointmentBody.appointmentType || ""),
+            clinic: Number(appointmentBody.clinic),
+            comment: String(appointmentBody.comment || ""),
         },
     });
 }

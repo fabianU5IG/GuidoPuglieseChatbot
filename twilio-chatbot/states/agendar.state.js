@@ -53,16 +53,48 @@ function parsePhoneE164ToDigits(phone) {
 
 function splitName(fullName = "") {
     const parts = String(fullName).trim().split(/\s+/).filter(Boolean);
+
+    if (parts.length === 0) {
+        return {
+            firstName: "",
+            secondName: "",
+            firstLastName: "",
+            secondLastName: "",
+        };
+    }
+
+    if (parts.length === 1) {
+        return {
+            firstName: parts[0],
+            secondName: "",
+            firstLastName: "",
+            secondLastName: "",
+        };
+    }
+
+    if (parts.length === 2) {
+        return {
+            firstName: parts[0],
+            secondName: "",
+            firstLastName: parts[1],
+            secondLastName: "",
+        };
+    }
+
+    if (parts.length === 3) {
+        return {
+            firstName: parts[0],
+            secondName: parts[1],
+            firstLastName: parts[2],
+            secondLastName: "",
+        };
+    }
+
     return {
-        firstName: parts[0] || "",
-        secondName: parts.length >= 3 ? parts[1] : "",
-        firstLastName: parts.length >= 2 ? parts[parts.length - 2] : "",
-        secondLastName:
-            parts.length >= 4
-                ? parts[parts.length - 1]
-                : parts.length === 3
-                  ? parts[2]
-                  : "",
+        firstName: parts[0],
+        secondName: parts.slice(1, parts.length - 2).join(" "),
+        firstLastName: parts[parts.length - 2],
+        secondLastName: parts[parts.length - 1],
     };
 }
 
@@ -380,6 +412,18 @@ function buildTimeResponse(data) {
     return { response, nextState: "AGENDAR", data };
 }
 
+function capitalize(str) {
+    if (!str) return "";
+    return String(str)
+        .trim()
+        .split(/\s+/)
+        .map(
+            (word) =>
+                word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
+        )
+        .join(" ");
+}
+
 export default async function agendarState(msg, data, context = {}) {
     const phone = context.from || "UNKNOWN";
 
@@ -403,8 +447,9 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            data.fullName = msg.trim();
-            data.firstName = data.fullName.split(" ")[0];
+            data.fullName = capitalize(msg);
+            const split = splitName(data.fullName);
+            data.firstName = capitalize(split.firstName);
 
             try {
                 await upsertPatientName(phone, data.fullName);
@@ -512,10 +557,10 @@ export default async function agendarState(msg, data, context = {}) {
                 response:
                     "No encontré tu registro local. Vamos a registrarte antes de agendar.\n\n" +
                     `Tengo estos datos de tu nombre:\n` +
-                    `• Primer nombre: ${data.regPatient.firstName || "(vacío)"}\n` +
-                    `• Segundo nombre: ${data.regPatient.secondName || "(vacío)"}\n` +
-                    `• Primer apellido: ${data.regPatient.firstLastName || "(vacío)"}\n` +
-                    `• Segundo apellido: ${data.regPatient.secondLastName || "(vacío)"}\n\n` +
+                    `• Primer nombre: ${capitalize(data.regPatient.firstName) || "(vacío)"}\n` +
+                    `• Segundo nombre: ${capitalize(data.regPatient.secondName) || "(vacío)"}\n` +
+                    `• Primer apellido: ${capitalize(data.regPatient.firstLastName) || "(vacío)"}\n` +
+                    `• Segundo apellido: ${capitalize(data.regPatient.secondLastName) || "(vacío)"}\n\n` +
                     "¿Están correctos?\n\n" +
                     "1️⃣ Sí\n" +
                     "2️⃣ No, quiero editarlos\n\n" +
@@ -566,7 +611,7 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            data.regPatient.firstName = v;
+            data.regPatient.firstName = capitalize(v);
             data.step = "REG_SECONDNAME";
             return {
                 response: "Segundo nombre (si no tienes, escribe 0):",
@@ -577,7 +622,7 @@ export default async function agendarState(msg, data, context = {}) {
 
         case "REG_SECONDNAME": {
             if (msg === "0") data.regPatient.secondName = "";
-            else data.regPatient.secondName = String(msg || "").trim();
+            else data.regPatient.secondName = capitalize(msg);
 
             data.step = "REG_FIRSTLASTNAME";
             return { response: "Primer apellido:", nextState: "AGENDAR", data };
@@ -593,7 +638,7 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            data.regPatient.firstLastName = v;
+            data.regPatient.firstLastName = capitalize(v);
             data.step = "REG_SECONDLASTNAME";
             return {
                 response: "Segundo apellido (si no tienes, escribe 0):",
@@ -604,7 +649,7 @@ export default async function agendarState(msg, data, context = {}) {
 
         case "REG_SECONDLASTNAME": {
             if (msg === "0") data.regPatient.secondLastName = "";
-            else data.regPatient.secondLastName = String(msg || "").trim();
+            else data.regPatient.secondLastName = capitalize(msg);
 
             data.step = "REG_BIRTHDATE";
             return {
