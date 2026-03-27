@@ -98,16 +98,33 @@ function splitName(fullName = "") {
     };
 }
 
+/**
+ * Festivos Colombia 2026
+ */
+function isHoliday(ymd) {
+    const holidays = [
+        // 2026
+        "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
+        "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
+        "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12", "2026-11-02",
+        "2026-11-16", "2026-12-08", "2026-12-25"
+    ];
+    return holidays.includes(ymd);
+}
+
 function isValidDateDDMM(value) {
     if (!/^\d{2}\/\d{2}$/.test(value)) return false;
 
     const [day, month] = value.split("/").map(Number);
     const year = new Date().getFullYear();
     const date = new Date(year, month - 1, day);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
 
-    return !isNaN(date) && date >= today;
+    // El Dr. requiere al menos 2 días de anticipación (T+2)
+    const minDate = new Date();
+    minDate.setHours(0, 0, 0, 0);
+    minDate.setDate(minDate.getDate() + 2);
+
+    return !isNaN(date.getTime()) && date >= minDate;
 }
 
 function ddmmToYmd(ddmm) {
@@ -351,13 +368,18 @@ function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
 }
 
 function getScheduleForYmd(ymd) {
+    if (isHoliday(ymd)) return null;
+
     const d = new Date(`${ymd}T00:00:00`);
     const dow = d.getDay();
 
+    // Lunes (1), Martes (2), Jueves (4)
     if (dow === 1 || dow === 2 || dow === 4)
         return { start: "08:00", end: "17:30" };
+    // Viernes (5)
     if (dow === 5) return { start: "08:30", end: "11:30" };
 
+    // Miércoles (3), Sábado (6) y Domingo (0) no atiende
     return null;
 }
 
@@ -453,7 +475,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             try {
                 await upsertPatientName(phone, data.fullName);
-            } catch {}
+            } catch { }
 
             data.step = "ASK_DOC_TYPE";
             return {
@@ -847,7 +869,12 @@ export default async function agendarState(msg, data, context = {}) {
             if (!isValidDateDDMM(msg)) {
                 return {
                     response:
-                        "Fecha inválida. Debe ser DD/MM y una fecha futura.",
+                        "❌ Fecha no válida o muy pronto.\n\n" +
+                        "Ten en cuenta:\n" +
+                        "• Las citas se agendan con al menos 2 días de anticipación.\n" +
+                        "• No atendemos miércoles, sábados, domingos ni festivos.\n" +
+                        "• Formato: DD/MM (ej: 15/05).\n\n" +
+                        "Por favor, ingresa otra fecha:",
                     nextState: "AGENDAR",
                     data,
                 };
