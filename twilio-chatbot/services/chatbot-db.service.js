@@ -1,5 +1,27 @@
 import { db } from "../db/mysql.js";
 
+function normalizeDdMmToYmd(value) {
+    const raw = String(value || "").trim();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return raw;
+    }
+
+    if (/^\d{2}\/\d{2}$/.test(raw)) {
+        const [day, month] = raw.split("/").map(Number);
+        const year = new Date().getFullYear();
+        const d = new Date(year, month - 1, day);
+
+        const yyyy = String(d.getFullYear()).padStart(4, "0");
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+
+        return `${yyyy}-${mm}-${dd}`;
+    }
+
+    return raw;
+}
+
 async function getOrCreatePatient(phone, fullName = null) {
     const safeName =
         typeof fullName === "string" && fullName.trim()
@@ -153,9 +175,9 @@ export async function createFinalAppointment({ phone, fullName, date, time }) {
 export async function getPendingCases() {
     const [rows] = await db.query(`
         SELECT
-            NULL AS appointment_id,
-            sp.full_name,
-            NULL AS phone,
+            a.id AS appointment_id,
+            COALESCE(p.full_name, sp.full_name, 'Paciente sin identificar') AS full_name,
+            p.phone AS phone,
             sa.status,
             DATE_FORMAT(sa.start_date, '%Y-%m-%d') AS date,
             TIME_FORMAT(sa.start_time, '%H:%i:%s') AS time,
@@ -164,11 +186,19 @@ export async function getPendingCases() {
             sa.patient_document_number,
             sa.updated_at AS last_update,
             sa.event_type,
-            sa.clinic
+            sa.clinic,
+            a.duration_minutes,
+            a.status AS internal_status
         FROM saludtools_appointments sa
         LEFT JOIN saludtools_patients sp
             ON sp.document_type = sa.patient_document_type
            AND sp.document_number = sa.patient_document_number
+        LEFT JOIN patients p
+            ON LOWER(TRIM(p.full_name)) = LOWER(TRIM(sp.full_name))
+        LEFT JOIN appointments a
+            ON a.patient_id = p.id
+           AND a.scheduled_date = sa.start_date
+           AND TIME(a.scheduled_time) = TIME(sa.start_time)
         WHERE sa.status IN ('PENDING', 'CONFIRMED')
         ORDER BY sa.start_date ASC, sa.start_time ASC, sa.updated_at DESC
     `);
@@ -176,11 +206,48 @@ export async function getPendingCases() {
     return rows;
 }
 
-export async function markReScheduled(appointmentId) {
-    await db.query(
-        "UPDATE appointments SET status = 'RESCHEDULED' WHERE id = ?",
+export async function markReScheduled(
+    appointmentId,
+    { newDate = null, newTime = null, changedBy = "SECRETARY" } = {},
+) {
+    const [rows] = await db.query(
+        `
+        SELECT status, scheduled_date, scheduled_time
+        FROM appointments
+        WHERE id = ?
+        LIMIT 1
+        `,
         [appointmentId],
     );
+
+    if (!rows.length) return false;
+
+    const previousStatus = rows[0].status;
+    const targetDate = normalizeDdMmToYmd(newDate || rows[0].scheduled_date);
+    const targetTime = String(newTime || rows[0].scheduled_time).slice(0, 8);
+
+    await db.query(
+        `
+        UPDATE appointments
+        SET
+            scheduled_date = ?,
+            scheduled_time = ?,
+            status = 'RESCHEDULED'
+        WHERE id = ?
+        `,
+        [targetDate, targetTime, appointmentId],
+    );
+
+    await db.query(
+        `
+        INSERT INTO appointment_status_history
+        (appointment_id, previous_status, new_status, changed_by)
+        VALUES (?, ?, 'RESCHEDULED', ?)
+        `,
+        [appointmentId, previousStatus, changedBy],
+    );
+
+    return true;
 }
 
 export async function confirmAppointment(appointmentId) {
@@ -206,11 +273,32 @@ export async function confirmAppointment(appointmentId) {
     );
 }
 
-export async function markCancelled(appointmentId) {
+export async function markCancelled(
+    appointmentId,
+    { changedBy = "SECRETARY" } = {},
+) {
+    const [rows] = await db.query(
+        "SELECT status FROM appointments WHERE id = ? LIMIT 1",
+        [appointmentId],
+    );
+
+    if (!rows.length) return false;
+
+    const previousStatus = rows[0].status;
+
     await db.query(
         "UPDATE appointments SET status = 'CANCELLED' WHERE id = ?",
         [appointmentId],
     );
+
+    await db.query(
+        `INSERT INTO appointment_status_history
+         (appointment_id, previous_status, new_status, changed_by)
+         VALUES (?, ?, 'CANCELLED', ?)`,
+        [appointmentId, previousStatus, changedBy],
+    );
+
+    return true;
 }
 
 export async function createProposedAppointment({

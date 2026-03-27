@@ -21,7 +21,6 @@ app.use(bodyParser.json());
  */
 app.use("/webhook/saludtools", saludtoolsWebhook);
 
-
 /**
  * Webhook Twilio WhatsApp
  */
@@ -30,6 +29,12 @@ app.post("/webhook", async (req, res) => {
         const message = req.body.Body || "";
         const from = req.body.From || "";
         const phone = from.replace("whatsapp:", "");
+        const numMedia = Number(req.body.NumMedia || 0);
+
+        const media = Array.from({ length: numMedia }, (_, i) => ({
+            url: req.body[`MediaUrl${i}`],
+            contentType: req.body[`MediaContentType${i}`],
+        })).filter((item) => item.url);
 
         if (!sessions[phone]) {
             sessions[phone] = {
@@ -39,7 +44,12 @@ app.post("/webhook", async (req, res) => {
         }
 
         const session = sessions[phone];
-        const context = { from: phone };
+        const context = {
+            from: phone,
+            numMedia,
+            media,
+            rawBody: req.body,
+        };
 
         const result = await chatbotResponse(message, session, context);
 
@@ -48,12 +58,10 @@ app.post("/webhook", async (req, res) => {
 
         res.set("Content-Type", "text/xml");
 
-        // 🛑 NO MENSAJE → RESPUESTA VACÍA (NO "OK", NO "null")
         if (!result.response) {
             return res.send("<Response></Response>");
         }
 
-        // ✅ MENSAJE NORMAL
         res.send(`
       <Response>
         <Message>${result.response}</Message>

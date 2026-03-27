@@ -18,15 +18,11 @@ function normalizeWhatsAppAddress(value, fallback = "") {
         throw new Error("Número WhatsApp no configurado.");
     }
 
-    // si ya viene como whatsapp:+573...
     if (raw.startsWith("whatsapp:")) {
         return raw;
     }
 
-    // limpia espacios
     const cleaned = raw.replace(/\s+/g, "");
-
-    // permite +573..., +1415..., etc.
     return `whatsapp:${cleaned}`;
 }
 
@@ -37,7 +33,7 @@ const FROM_WHATSAPP = normalizeWhatsAppAddress(
 
 const SECRETARY_WHATSAPP = normalizeWhatsAppAddress(
     process.env.SECRETARY_WHATSAPP_NUMBER,
-    "+573153573131",
+    "+573224811542",
 );
 
 export async function sendWhatsAppMessage(phone, body) {
@@ -50,26 +46,71 @@ export async function sendWhatsAppMessage(phone, body) {
     });
 }
 
-export async function notifySecretaryNewAppointment({
-    fullName,
+export async function sendWhatsAppMessageWithMedia(
     phone,
-    date,
-    time,
-    attentionType,
-    redirectUrl,
+    body,
+    mediaUrls = [],
+) {
+    const to = normalizeWhatsAppAddress(phone);
+
+    const payload = {
+        from: FROM_WHATSAPP,
+        to,
+        body,
+    };
+
+    if (Array.isArray(mediaUrls) && mediaUrls.length) {
+        payload.mediaUrl = mediaUrls;
+    }
+
+    return client.messages.create(payload);
+}
+
+export async function notifySecretaryPostSurgeryImage({
+    patientPhone,
+    patientName = "Paciente postquirúrgico",
+    note = "",
+    mediaUrls = [],
 }) {
-    const message =
-        `🆕 *Nuevo agendamiento iniciado*\n\n` +
-        `👤 Paciente: ${fullName}\n` +
-        `📞 Tel: ${phone}\n` +
-        `📅 Fecha: ${date}\n` +
-        `🕒 Hora: ${time}\n` +
-        `🏥 Tipo: ${attentionType}\n\n` +
-        `🔗 Doctoralia:\n${redirectUrl}`;
+    const body =
+        `🩺 *Post cirugía - imágenes recibidas*\n\n` +
+        `👤 Paciente: ${patientName}\n` +
+        `📞 Tel: ${patientPhone}\n` +
+        `📝 Mensaje: ${note || "Sin mensaje adicional"}`;
+
+    console.log("📤 Reenviando a secretaria:", {
+        to: SECRETARY_WHATSAPP,
+        patientPhone,
+        patientName,
+        note,
+        mediaUrls,
+    });
 
     return client.messages.create({
         from: FROM_WHATSAPP,
         to: SECRETARY_WHATSAPP,
-        body: message,
+        body,
+        ...(Array.isArray(mediaUrls) && mediaUrls.length
+            ? { mediaUrl: mediaUrls }
+            : {}),
     });
+}
+
+export async function downloadTwilioMedia(mediaUrl) {
+    const response = await fetch(mediaUrl, {
+        headers: {
+            Authorization:
+                "Basic " +
+                Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
+        },
+    });
+
+    if (!response.ok) {
+        throw new Error(
+            `No se pudo descargar media de Twilio. Status: ${response.status}`,
+        );
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
 }

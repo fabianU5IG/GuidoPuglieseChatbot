@@ -3,16 +3,14 @@ import { normalizeText } from "./utils/text.js";
 import menuState from "./states/menu.state.js";
 import agendarState from "./states/agendar.state.js";
 import secretariaState from "./states/secretaria.state.js";
-import postDoctoraliaState from "./states/postDoctoralia.state.js";
 import dashboardState from "./states/dashboard.state.js";
 import gestionCitasState from "./states/gestionCitas.state.js";
 import soporteCitaState from "./states/soporteCita.state.js";
+import postSurgeryState from "./states/postSurgery.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 
 // 📌 Números autorizados como secretaría
-const SECRETARY_PHONES = [
-    "573153573131", // 👈 reemplaza por el real
-];
+const SECRETARY_PHONES = ["573224811542"];
 
 /**
  * Función principal del chatbot
@@ -20,8 +18,6 @@ const SECRETARY_PHONES = [
 export default async function chatbotResponse(message, session, context = {}) {
     const rawMsg = message || "";
     const msg = normalizeText(rawMsg);
-
-    //const userPhone = context.from;
     const userPhone = context.from.replace(/\D/g, "");
 
     let state;
@@ -29,11 +25,12 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     if (SECRETARY_PHONES.includes(userPhone)) {
         state = "DASHBOARD";
-        data = session.data || {}; // ✅ NO reiniciar
+        data = session.data || {};
     } else {
         state = session.state || "MENU";
         data = session.data || {};
     }
+
     console.log(
         "📱 Usuario:",
         userPhone,
@@ -41,15 +38,16 @@ export default async function chatbotResponse(message, session, context = {}) {
         state,
         "| Mensaje:",
         rawMsg,
+        "| Media:",
+        context.numMedia || 0,
     );
-    // 🔹 Registro centralizado en DB
+
     await registerChatbotInteraction({
         phone: userPhone,
         message: rawMsg,
         state,
     });
 
-    // 🔹 Enrutamiento por estado
     if (state === "DASHBOARD") {
         return dashboardState(msg, data, context);
     }
@@ -62,13 +60,10 @@ export default async function chatbotResponse(message, session, context = {}) {
         return agendarState(msg, data, context);
     }
 
-    if (state === "POST_DOCTORALIA") {
-        return postDoctoraliaState(msg, data);
-    }
-
     if (state === "SECRETARIA") {
         return secretariaState(msg, data, context);
     }
+
     if (state === "GESTION_CITAS") {
         return gestionCitasState(msg, data, context);
     }
@@ -77,6 +72,9 @@ export default async function chatbotResponse(message, session, context = {}) {
         return soporteCitaState(msg, data, context);
     }
 
-    // 🔁 Fallback seguro
+    if (state === "POST_SURGERY" || state === "POST_SURGERY_WAIT_IMAGE") {
+        return postSurgeryState(msg, data, context);
+    }
+
     return menuState(msg, data);
 }

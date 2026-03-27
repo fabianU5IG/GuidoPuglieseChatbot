@@ -6,8 +6,7 @@ import {
     registerChatbotInteraction,
     logAppointmentMessage,
 } from "../services/chatbot-db.service.js";
-
-import { enqueueSaludtoolsRequest } from "../services/saludtools-rate-limit.service.js";
+import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 
 const { getTimeSlots } = timeUtils;
 
@@ -16,21 +15,13 @@ const { getTimeSlots } = timeUtils;
  *  CONFIG
  * =========================
  */
-const SECRETARY_PHONES = ["573153573131"]; // ✅ agrega aquí los números autorizados (solo dígitos)
+const SECRETARY_PHONES = ["573224811542"];
 const SECRETARY_CASES_PAGE_SIZE = 10;
 
-// Duración por defecto para reprogramación en Saludtools (min)
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN || 30,
 );
 
-// Saludtools config (por ENV)
-const SALUDTOOLS_HOST =
-    process.env.SALUDTOOLS_HOST || "https://saludtools.qa.carecloud.com.co/";
-const SALUDTOOLS_APIKEY = process.env.SALUDTOOLS_APIKEY || "";
-const SALUDTOOLS_APISECRET = process.env.SALUDTOOLS_APISECRET || "";
-
-// Doctor / clínica (ajusta en .env)
 const DOCTOR_DOCUMENT_TYPE = Number(
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE || 1,
 );
@@ -39,151 +30,9 @@ const DOCTOR_DOCUMENT_NUMBER = String(
 );
 const CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 8);
 
-// Defaults (según colección)
 const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
-
-/**
- * =========================
- *  SALUDTOOLS AUTH + EVENTS
- * =========================
- * Endpoints (Postman collection):
- * - POST /integration/authenticate/apikey/v1/
- * - POST /integration/sync/event/v1/   (APPOINTMENT: UPDATE / DELETE / READ)
- */
-let cachedToken = null;
-let cachedTokenExp = 0;
-
-async function authenticateSaludtools() {
-    if (!SALUDTOOLS_APIKEY || !SALUDTOOLS_APISECRET) return null;
-
-    const now = Date.now();
-    if (cachedToken && now < cachedTokenExp - 30_000) return cachedToken;
-
-    const url = new URL(
-        "integration/authenticate/apikey/v1/",
-        SALUDTOOLS_HOST,
-    ).toString();
-
-    const res = await enqueueSaludtoolsRequest(() =>
-        fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                key: SALUDTOOLS_APIKEY,
-                secret: SALUDTOOLS_APISECRET,
-            }),
-        }),
-    );
-
-    if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`Saludtools auth failed (${res.status}): ${txt}`);
-    }
-
-    const json = await res.json();
-    const token = json?.access_token || json?.token || null;
-    if (!token) throw new Error("Saludtools auth: token not found in response");
-
-    const expiresInSec = Number(json?.expires_in || 3600);
-    cachedToken = token;
-    cachedTokenExp = Date.now() + expiresInSec * 1000;
-
-    return cachedToken;
-}
-
-async function saludtoolsSyncEvent(payload) {
-    const token = await authenticateSaludtools();
-    if (!token)
-        return {
-            ok: false,
-            skipped: true,
-            reason: "Missing SALUDTOOLS credentials",
-        };
-
-    const url = new URL(
-        "integration/sync/event/v1/",
-        SALUDTOOLS_HOST,
-    ).toString();
-
-    const res = await enqueueSaludtoolsRequest(() =>
-        fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(payload),
-        }),
-    );
-
-    const text = await res.text().catch(() => "");
-    let json = null;
-    try {
-        json = text ? JSON.parse(text) : null;
-    } catch {
-        // ignore
-    }
-
-    if (!res.ok) {
-        return {
-            ok: false,
-            status: res.status,
-            raw: text,
-            error: json || text,
-            payload,
-        };
-    }
-
-    return { ok: true, status: res.status, data: json ?? text, payload };
-}
-
-// ====== SALUDTOOLS: APPOINTMENT READ (según colección Postman) ======
-async function saludtoolsReadAppointment(id) {
-    if (!id) return { ok: false, error: "Missing appointment id" };
-
-    const st = await saludtoolsSyncEvent({
-        eventType: "APPOINTMENT",
-        actionType: "READ",
-        body: { id: String(id) },
-    });
-
-    return st;
-}
-
-function extractAppointmentDocInfo(stRead) {
-    // Esta función intenta sacar patientDocumentType/Number desde la respuesta.
-    // El API puede variar; por eso lo hacemos defensivo.
-    const data = stRead?.data;
-
-    // Intentos comunes
-    const root = data?.body || data?.data || data;
-
-    const patientDocumentType =
-        root?.patientDocumentType ??
-        root?.patient?.documentType ??
-        root?.patient?.document_type ??
-        null;
-
-    const patientDocumentNumber =
-        root?.patientDocumentNumber ??
-        root?.patient?.documentNumber ??
-        root?.patient?.document_number ??
-        null;
-
-    return {
-        patientDocumentType:
-            patientDocumentType !== null && patientDocumentType !== undefined
-                ? Number(patientDocumentType)
-                : null,
-        patientDocumentNumber:
-            patientDocumentNumber !== null &&
-            patientDocumentNumber !== undefined
-                ? String(patientDocumentNumber)
-                : null,
-    };
-}
 
 function capitalizeWords(str = "") {
     return String(str)
@@ -349,16 +198,39 @@ function paginateCases(
     };
 }
 
+function toEmojiNumber(value) {
+    const map = {
+        0: "0️⃣",
+        1: "1️⃣",
+        2: "2️⃣",
+        3: "3️⃣",
+        4: "4️⃣",
+        5: "5️⃣",
+        6: "6️⃣",
+        7: "7️⃣",
+        8: "8️⃣",
+        9: "9️⃣",
+    };
+
+    return String(value)
+        .split("")
+        .map((char) => map[char] || char)
+        .join("");
+}
+
 function formatCaseLine(c, absoluteIndex) {
     const when =
         c.date || c.time
             ? `🗓️ ${c.date || "Sin fecha"} ${c.time || ""}`.trim()
             : "🗓️ Sin fecha";
 
+    const emojiIndex = toEmojiNumber(absoluteIndex + 1);
+
     return (
-        `${absoluteIndex + 1}️⃣ ${buildPatientDisplay(c)}\n` +
+        `${emojiIndex} ${buildPatientDisplay(c)}\n` +
         `${when}\n` +
-        `Estado: ${c.status || "N/A"}\n\n`
+        `Estado Saludtools: ${c.status || "N/A"}\n` +
+        `${c.internal_status ? `Estado local: ${c.internal_status}\n` : ""}\n`
     );
 }
 
@@ -388,7 +260,10 @@ function buildPendingCasesResponse(cases = [], page = 0, extra = "") {
         response += formatCaseLine(c, paginated.start + i);
     });
 
-    response += `Página ${paginated.page + 1} de ${Math.max(1, paginated.totalPages)}\n`;
+    response += `Página ${paginated.page + 1} de ${Math.max(
+        1,
+        paginated.totalPages,
+    )}\n`;
 
     if (paginated.hasNext) {
         response += "\n1️⃣1️⃣ Ver más casos";
@@ -422,28 +297,29 @@ async function returnToInbox(extra = "", page = 0) {
     return buildPendingCasesResponse(cases, page, extra);
 }
 
-/**
- * =========================
- *  DASHBOARD STATE
- * =========================
- */
-
-// ====== DASHBOARD: cancelar cita (DB + Saludtools DELETE) ======
 async function cancelSelectedCase({ from, data }) {
-    const apptId = data?.selectedCase?.appointment_id;
-    const saludId = data?.selectedCase?.saludtools_appointment_id;
+    const apptId = data?.selectedCase?.appointment_id || null;
+    const saludId = data?.selectedCase?.saludtools_appointment_id || null;
+    const patientDocType = Number(
+        data?.selectedCase?.patient_document_type || 1,
+    );
+    const patientDocNumber = String(
+        data?.selectedCase?.patient_document_number ||
+            data?.selectedCase?.document_number ||
+            extractPatientDocument(data?.selectedCase || {}) ||
+            "",
+    ).trim();
 
-    // 1) DB
     try {
-        if (apptId) await markCancelled(apptId);
-
-        await registerChatbotInteraction({
-            phone: from,
-            appointmentId: apptId,
-            appointmentData: { newStatus: "CANCELLED" },
-        });
-
         if (apptId) {
+            await markCancelled(apptId, { changedBy: "SECRETARY" });
+
+            await registerChatbotInteraction({
+                phone: from,
+                appointmentId: apptId,
+                appointmentData: { newStatus: "CANCELLED" },
+            });
+
             await logAppointmentMessage(
                 apptId,
                 "Secretaría: marcó CANCELLED desde dashboard",
@@ -453,49 +329,54 @@ async function cancelSelectedCase({ from, data }) {
         console.error("❌ Error cancelando en DB:", err);
     }
 
-    // 2) Saludtools
-    let saludtoolsMsg = "Saludtools: omitido";
-    if (!data?.skipSaludtools && saludId) {
-        saludtoolsMsg = "Saludtools: procesando...";
-        try {
-            const st = await saludtoolsSyncEvent({
-                eventType: "APPOINTMENT",
-                actionType: "DELETE",
-                body: { id: String(saludId) },
+    let workerMsg = "Worker: omitido";
+    try {
+        if (!data?.skipSaludtools && saludId) {
+            await createSaludtoolsJob({
+                jobType: "APPOINTMENT_DELETE",
+                phone: from,
+                appointmentId: apptId || null,
+                dedupeKey: `dashboard-appointment-delete:${saludId}`,
+                payload: {
+                    appointmentId: saludId,
+                    internalAppointmentId: apptId || null,
+                    documento: patientDocNumber,
+                    patientDocumentType: patientDocType,
+                    source: "SECRETARY_DASHBOARD",
+                },
+                priority: 90,
             });
 
-            if (st.skipped) {
-                saludtoolsMsg = "Saludtools: omitido (faltan credenciales)";
-            } else if (st.ok) {
-                saludtoolsMsg = `Saludtools: cita eliminada ✅ (HTTP ${st.status})`;
-            } else {
-                saludtoolsMsg = `Saludtools: error eliminando ⚠️ (HTTP ${st.status})`;
-                if (apptId) {
-                    await logAppointmentMessage(
-                        apptId,
-                        `Saludtools DELETE falló: ${String(st.raw || st.error || "").slice(0, 800)}`,
-                    );
-                }
-            }
-        } catch (err) {
-            saludtoolsMsg = "Saludtools: error eliminando ⚠️";
+            workerMsg = "Worker: solicitud de cancelación encolada ✅";
+
             if (apptId) {
                 await logAppointmentMessage(
                     apptId,
-                    `Error Saludtools DELETE: ${String(err?.message || err).slice(0, 800)}`,
+                    "Solicitud de cancelación encolada para worker desde dashboard",
                 );
             }
+        } else if (!saludId) {
+            workerMsg = "Worker: omitido (sin ID de Saludtools)";
+        } else if (data?.skipSaludtools) {
+            workerMsg = "Worker: omitido (decisión de secretaría)";
         }
-    } else if (!saludId) {
-        saludtoolsMsg = "Saludtools: omitido (sin ID)";
-    } else if (data?.skipSaludtools) {
-        saludtoolsMsg = "Saludtools: omitido (decisión de secretaría)";
+    } catch (err) {
+        workerMsg = "Worker: error encolando ⚠️";
+        if (apptId) {
+            await logAppointmentMessage(
+                apptId,
+                `Error encolando cancelación para worker: ${String(
+                    err?.message || err,
+                ).slice(0, 800)}`,
+            );
+        }
     }
 
     return {
         response:
             "❌ Cita marcada como *CANCELADA*\n\n" +
-            `${saludtoolsMsg}\n\n` +
+            `${workerMsg}\n\n` +
+            `${apptId ? "" : "Nota: no se encontró cita local enlazada; solo se aseguró la sincronización con Saludtools.\n\n"}` +
             "1️⃣ Terminar\n" +
             "2️⃣ Volver al dashboard",
         nextState: "DASHBOARD",
@@ -517,11 +398,6 @@ export default async function dashboardState(msg, data = {}, context) {
     if (!data.step) data.step = "INBOX";
 
     switch (data.step) {
-        /**
-         * =========================
-         * INBOX
-         * =========================
-         */
         case "INBOX": {
             let cases = [];
             try {
@@ -536,11 +412,6 @@ export default async function dashboardState(msg, data = {}, context) {
             return buildPendingCasesResponse(cases, 0);
         }
 
-        /**
-         * =========================
-         * SELECT CASE
-         * =========================
-         */
         case "SELECT_CASE": {
             if (msg === "0") {
                 return {
@@ -599,7 +470,9 @@ export default async function dashboardState(msg, data = {}, context) {
                 `Paciente: ${buildPatientDisplay(selectedCase)}\n` +
                 `Documento: ${extractPatientDocument(selectedCase) || "N/A"}\n` +
                 `Cita: ${selectedCase.date || "Sin fecha"} ${selectedCase.time || ""}\n` +
-                `Estado: ${selectedCase.status || "N/A"}\n` +
+                `Estado Saludtools: ${selectedCase.status || "N/A"}\n` +
+                `Estado local: ${selectedCase.internal_status || "N/A"}\n` +
+                `Appointment ID local: ${selectedCase.appointment_id || "N/A"}\n` +
                 `Saludtools ID: ${selectedCase.saludtools_appointment_id || "N/A"}\n\n` +
                 "1️⃣ Reagendar\n" +
                 "2️⃣ Cancelar\n" +
@@ -617,11 +490,6 @@ export default async function dashboardState(msg, data = {}, context) {
             };
         }
 
-        /**
-         * =========================
-         * CASE ACTIONS
-         * =========================
-         */
         case "CASE_ACTIONS": {
             if (msg === "0") {
                 return returnToInbox(
@@ -688,22 +556,10 @@ export default async function dashboardState(msg, data = {}, context) {
             };
         }
 
-        /**
-         * =========================
-         * RESCHEDULE FLOW
-         * =========================
-         */
-
-        /**
-         * =========================
-         * ASK SALUDTOOLS ID (si falta)
-         * =========================
-         */
         case "ASK_SALUD_ID": {
             const raw = String(msg || "").trim();
 
             if (raw === "0") {
-                // Continuar sin Saludtools
                 const next =
                     data?.pendingAction === "CANCEL" ? "DO_CANCEL" : "ASK_DATE";
                 return {
@@ -726,7 +582,6 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            // Guardar ID para la acción
             data.selectedCase = {
                 ...(data.selectedCase || {}),
                 saludtools_appointment_id: id,
@@ -744,11 +599,6 @@ export default async function dashboardState(msg, data = {}, context) {
             };
         }
 
-        /**
-         * =========================
-         * DO CANCEL
-         * =========================
-         */
         case "DO_CANCEL": {
             return await cancelSelectedCase({ from, data });
         }
@@ -820,11 +670,12 @@ export default async function dashboardState(msg, data = {}, context) {
         }
 
         case "CONFIRM_RESCHEDULE": {
-            if (msg === "0")
+            if (msg === "0") {
                 return returnToInbox(
                     "↩️ Acción cancelada. Volviendo al listado.",
                     Number(data.page || 0),
                 );
+            }
 
             if (msg !== "1") {
                 return {
@@ -834,15 +685,25 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            const apptId = data?.selectedCase?.appointment_id;
-            const saludId = data?.selectedCase?.saludtools_appointment_id;
+            const apptId = data?.selectedCase?.appointment_id || null;
+            const saludId =
+                data?.selectedCase?.saludtools_appointment_id || null;
+            const patientDocType = Number(
+                data?.selectedCase?.patient_document_type || 1,
+            );
+            const patientDocNumber = String(
+                data?.selectedCase?.patient_document_number ||
+                    data?.selectedCase?.document_number ||
+                    extractPatientDocument(data?.selectedCase || {}) ||
+                    "",
+            ).trim();
 
-            // 1) DB: marcar RESCHEDULED
             try {
                 if (apptId) {
                     await markReScheduled(apptId, {
                         newDate: data.newDate,
                         newTime: data.newTime,
+                        changedBy: "SECRETARY",
                     });
 
                     await registerChatbotInteraction({
@@ -864,29 +725,9 @@ export default async function dashboardState(msg, data = {}, context) {
                 console.error("❌ Error reagendando en DB:", err);
             }
 
-            // 2) Saludtools: UPDATE si hay ID
-            let saludtoolsMsg =
-                "Saludtools: omitido (sin credenciales o sin ID)";
-
+            let workerMsg = "Worker: omitido";
             try {
-                if (saludId) {
-                    // Si no tenemos documento del paciente en DB, intentamos leerlo desde Saludtools (APPOINTMENT READ)
-                    let patientDocType =
-                        data?.selectedCase?.patient_document_type || null;
-                    let patientDocNumber =
-                        data?.selectedCase?.patient_document_number || null;
-
-                    if (!patientDocType || !patientDocNumber) {
-                        const stRead = await saludtoolsReadAppointment(saludId);
-                        if (stRead.ok) {
-                            const info = extractAppointmentDocInfo(stRead);
-                            if (!patientDocType && info.patientDocumentType)
-                                patientDocType = info.patientDocumentType;
-                            if (!patientDocNumber && info.patientDocumentNumber)
-                                patientDocNumber = info.patientDocumentNumber;
-                        }
-                    }
-
+                if (!data?.skipSaludtools && saludId) {
                     const ymd = ddmmToYmd(data.newDate);
                     const end = addMinutesToYmdHm(
                         ymd,
@@ -894,62 +735,62 @@ export default async function dashboardState(msg, data = {}, context) {
                         APPOINTMENT_DURATION_MIN,
                     );
 
-                    const st = await saludtoolsSyncEvent({
-                        eventType: "APPOINTMENT",
-                        actionType: "UPDATE",
-                        body: {
-                            id: String(saludId),
-                            startAppointment: `${ymd} ${data.newTime}`,
-                            endAppointment: `${end.ymd} ${end.hm}`,
-                            // Campos exigidos por el ejemplo de la colección
-                            patientDocumentType: Number(
-                                patientDocType ||
-                                    process.env
-                                        .SALUDTOOLS_PATIENT_DOCUMENT_TYPE ||
-                                    1,
-                            ),
-                            patientDocumentNumber: String(
-                                patientDocNumber ||
-                                    (data?.selectedCase?.phone || "").replace(
-                                        /\D/g,
-                                        "",
-                                    ) ||
-                                    "0",
-                            ),
-                            doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
-                            doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                            modality: APPOINTMENT_MODALITY,
-                            stateAppointment: APPOINTMENT_STATE,
-                            notificationState: "ATTEND",
-                            appointmentType:
-                                data?.selectedCase?.attention_type ||
-                                "Cita (reprogramada por secretaría)",
-                            clinic: CLINIC_ID,
-                            comment: `Reprogramada por secretaría. Paciente: ${extractPatientName(data?.selectedCase || {})}`,
+                    await createSaludtoolsJob({
+                        jobType: "APPOINTMENT_UPDATE",
+                        phone: from,
+                        appointmentId: apptId || null,
+                        dedupeKey: `dashboard-appointment-update:${saludId}:${ymd}:${data.newTime}`,
+                        payload: {
+                            appointmentId: saludId,
+                            internalAppointmentId: apptId || null,
+                            documento: patientDocNumber,
+                            patientDocumentType: patientDocType,
+                            appointmentBody: {
+                                id: String(saludId),
+                                startAppointment: `${ymd} ${data.newTime}`,
+                                endAppointment: `${end.ymd} ${end.hm}`,
+                                patientDocumentType: patientDocType,
+                                patientDocumentNumber: patientDocNumber,
+                                doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                                doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                                modality: APPOINTMENT_MODALITY,
+                                stateAppointment: APPOINTMENT_STATE,
+                                notificationState: "ATTEND",
+                                appointmentType:
+                                    data?.selectedCase?.attention_type ||
+                                    "Cita (reprogramada por secretaría)",
+                                clinic: CLINIC_ID,
+                                comment: `Reprogramada por secretaría. Paciente: ${extractPatientName(
+                                    data?.selectedCase || {},
+                                )}`,
+                            },
+                            source: "SECRETARY_DASHBOARD",
                         },
+                        priority: 90,
                     });
 
-                    if (st.skipped) {
-                        saludtoolsMsg =
-                            "Saludtools: omitido (faltan credenciales)";
-                    } else if (st.ok) {
-                        saludtoolsMsg = `Saludtools: cita actualizada ✅ (HTTP ${st.status})`;
-                    } else {
-                        saludtoolsMsg = `Saludtools: error actualizando ⚠️ (HTTP ${st.status})`;
-                        if (apptId) {
-                            await logAppointmentMessage(
-                                apptId,
-                                `Saludtools UPDATE falló: ${String(st.raw || st.error || "").slice(0, 800)}`,
-                            );
-                        }
+                    workerMsg =
+                        "Worker: solicitud de reagendamiento encolada ✅";
+
+                    if (apptId) {
+                        await logAppointmentMessage(
+                            apptId,
+                            `Solicitud de reagendamiento encolada para worker: ${ymd} ${data.newTime}`,
+                        );
                     }
+                } else if (!saludId) {
+                    workerMsg = "Worker: omitido (sin ID de Saludtools)";
+                } else if (data?.skipSaludtools) {
+                    workerMsg = "Worker: omitido (decisión de secretaría)";
                 }
             } catch (err) {
-                saludtoolsMsg = "Saludtools: error actualizando ⚠️";
+                workerMsg = "Worker: error encolando ⚠️";
                 if (apptId) {
                     await logAppointmentMessage(
                         apptId,
-                        `Error Saludtools UPDATE: ${String(err?.message || err).slice(0, 800)}`,
+                        `Error encolando reagendamiento para worker: ${String(
+                            err?.message || err,
+                        ).slice(0, 800)}`,
                     );
                 }
             }
@@ -958,7 +799,8 @@ export default async function dashboardState(msg, data = {}, context) {
                 response:
                     "🔄 Cita marcada como *REAGENDADA*\n\n" +
                     `Nueva fecha/hora: ${data.newDate} ${data.newTime}\n\n` +
-                    `${saludtoolsMsg}\n\n` +
+                    `${workerMsg}\n\n` +
+                    `${apptId ? "" : "Nota: no se encontró cita local enlazada; se priorizó la actualización en Saludtools.\n\n"}` +
                     "1️⃣ Terminar\n" +
                     "2️⃣ Volver al dashboard",
                 nextState: "DASHBOARD",
@@ -966,11 +808,6 @@ export default async function dashboardState(msg, data = {}, context) {
             };
         }
 
-        /**
-         * =========================
-         * AFTER ACTION
-         * =========================
-         */
         case "AFTER_ACTION": {
             if (msg === "1") {
                 return {
@@ -1004,11 +841,6 @@ export default async function dashboardState(msg, data = {}, context) {
     }
 }
 
-/**
- * =========================
- *  HELPERS UI
- * =========================
- */
 function buildTimeResponseForDashboard(data) {
     const slots = getTimeSlots(data.page);
     let response = "Horas disponibles:\n\n";
