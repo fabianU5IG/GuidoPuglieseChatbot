@@ -34,6 +34,22 @@ const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
 
+function splitName(fullName = "") {
+    const parts = String(fullName).trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return { firstName: "", secondName: "", firstLastName: "", secondLastName: "" };
+    if (parts.length === 1) return { firstName: parts[0], secondName: "", firstLastName: "", secondLastName: "" };
+    if (parts.length === 2) return { firstName: parts[0], secondName: "", firstLastName: parts[1], secondLastName: "" };
+    if (parts.length === 3) return { firstName: parts[0], secondName: parts[1], firstLastName: parts[2], secondLastName: "" };
+    return {
+        firstName: parts[0],
+        secondName: parts.slice(1, parts.length - 2).join(" "),
+        firstLastName: parts[parts.length - 2],
+        secondLastName: parts[parts.length - 1],
+    };
+}
+
+const DASHBOARD_MENU_TEXT = "👋 Panel de Secretaría\n\n1️⃣ Crear cita rápida\n2️⃣ Ver casos pendientes\n\n0️⃣ Salir";
+
 function capitalizeWords(str = "") {
     return String(str)
         .trim()
@@ -305,9 +321,9 @@ async function cancelSelectedCase({ from, data }) {
     );
     const patientDocNumber = String(
         data?.selectedCase?.patient_document_number ||
-            data?.selectedCase?.document_number ||
-            extractPatientDocument(data?.selectedCase || {}) ||
-            "",
+        data?.selectedCase?.document_number ||
+        extractPatientDocument(data?.selectedCase || {}) ||
+        "",
     ).trim();
 
     try {
@@ -395,9 +411,202 @@ export default async function dashboardState(msg, data = {}, context) {
         };
     }
 
-    if (!data.step) data.step = "INBOX";
+    if (!data.step) {
+        data.step = "MENU";
+        return {
+            response: DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data,
+        };
+    }
 
     switch (data.step) {
+        case "MENU": {
+            if (msg === "0") {
+                return {
+                    response: "👋 Saliendo del dashboard",
+                    nextState: "MENU",
+                    data: { renderMenu: true },
+                };
+            }
+            if (msg === "1") {
+                data.step = "QUICK_NAME";
+                return {
+                    response: "📝 *Creación rápida de cita*\n\nEscribe el nombre completo del paciente:",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+            if (msg === "2") {
+                data.step = "INBOX";
+                let cases = [];
+                try {
+                    cases = await getPendingCases();
+                } catch (err) {
+                    console.error("❌ Error getPendingCases:", err);
+                }
+                return buildPendingCasesResponse(cases || [], 0);
+            }
+            return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+        }
+
+        case "QUICK_NAME": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            data.quickName = msg.trim();
+            data.step = "QUICK_DOC_TYPE";
+            return {
+                response: "Tipo de documento:\n\n1️⃣ CC\n2️⃣ CE\n\n0️⃣ Volver",
+                nextState: "DASHBOARD",
+                data,
+            };
+        }
+
+        case "QUICK_DOC_TYPE": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            if (msg !== "1" && msg !== "2") {
+                return { response: "Selecciona 1️⃣ o 2️⃣", nextState: "DASHBOARD", data };
+            }
+            data.quickDocType = Number(msg);
+            data.step = "QUICK_DOC_NUM";
+            return { response: "Número de documento:", nextState: "DASHBOARD", data };
+        }
+
+        case "QUICK_DOC_NUM": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            const doc = msg.replace(/\D/g, "");
+            if (doc.length < 5) {
+                return { response: "Número inválido. Intenta de nuevo:", nextState: "DASHBOARD", data };
+            }
+            data.quickDocNum = doc;
+            data.step = "QUICK_PHONE";
+            return { response: "Número de WhatsApp del paciente (ej: 573001234567):", nextState: "DASHBOARD", data };
+        }
+
+        case "QUICK_PHONE": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            const ph = msg.replace(/\D/g, "");
+            if (ph.length < 7) {
+                return { response: "Teléfono inválido. Intenta de nuevo:", nextState: "DASHBOARD", data };
+            }
+            data.quickPhone = ph;
+            data.step = "QUICK_DATE";
+            return { response: "Fecha de la cita (DD/MM):", nextState: "DASHBOARD", data };
+        }
+
+        case "QUICK_DATE": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            if (!isValidDateDDMM(msg)) {
+                return { response: "Fecha inválida (DD/MM). Intenta de nuevo:", nextState: "DASHBOARD", data };
+            }
+            data.quickDate = msg;
+            data.page = 0;
+            data.step = "QUICK_TIME";
+            return buildTimeResponseForDashboard(data);
+        }
+
+        case "QUICK_TIME": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            if (msg === "7") {
+                data.page++;
+                return buildTimeResponseForDashboard(data);
+            }
+            const index = parseInt(msg, 10) - 1;
+            const slots = getTimeSlots(data.page);
+            const hour = slots[index];
+            if (!hour) return { response: "Opción inválida.", nextState: "DASHBOARD", data };
+
+            data.quickTime = hour;
+            data.step = "QUICK_CONFIRM";
+            return {
+                response: `📝 *Confirmar Cita Rápida*\n\n` +
+                    `Paciente: ${data.quickName}\n` +
+                    `Documento: ${data.quickDocType === 1 ? 'CC' : 'CE'} ${data.quickDocNum}\n` +
+                    `WhatsApp: ${data.quickPhone}\n` +
+                    `Fecha: ${data.quickDate}\n` +
+                    `Hora: ${data.quickTime}\n\n` +
+                    `1️⃣ Confirmar y agendar\n` +
+                    `0️⃣ Cancelar y volver`,
+                nextState: "DASHBOARD",
+                data,
+            };
+        }
+
+        case "QUICK_CONFIRM": {
+            if (msg === "0") {
+                data.step = "MENU";
+                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
+            }
+            if (msg !== "1") {
+                return { response: "Responde 1️⃣ para confirmar o 0️⃣ para volver.", nextState: "DASHBOARD", data };
+            }
+
+            const ymd = ddmmToYmd(data.quickDate);
+            const end = addMinutesToYmdHm(ymd, data.quickTime, APPOINTMENT_DURATION_MIN);
+            const nameParts = splitName(data.quickName);
+
+            await createSaludtoolsJob({
+                jobType: "APPOINTMENT_CREATE",
+                phone: data.quickPhone,
+                dedupeKey: `quick-create:${data.quickDocNum}:${ymd}:${data.quickTime}`,
+                payload: {
+                    fullName: data.quickName,
+                    dateLabel: data.quickDate,
+                    timeLabel: data.quickTime,
+                    patientExistsLocal: false,
+                    patientBody: {
+                        ...nameParts,
+                        birthDate: "1900-01-01",
+                        gender: 1,
+                        documentType: data.quickDocType,
+                        documentNumber: data.quickDocNum,
+                        phone: data.quickPhone,
+                        cellPhone: data.quickPhone,
+                        email: "",
+                        eps: 0,
+                        habeasData: true,
+                    },
+                    appointmentBody: {
+                        startAppointment: `${ymd} ${data.quickTime}`,
+                        endAppointment: `${end.ymd} ${end.hm}`,
+                        patientDocumentType: data.quickDocType,
+                        patientDocumentNumber: data.quickDocNum,
+                        doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                        doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                        modality: APPOINTMENT_MODALITY,
+                        stateAppointment: APPOINTMENT_STATE,
+                        appointmentType: "Consulta (Agendada por Secretaría)",
+                        clinic: CLINIC_ID,
+                        comment: `Creada por secretaría desde dashboard.`,
+                    },
+                },
+                priority: 110,
+            });
+
+            return {
+                response: "✅ Solicitud de creación enviada al sistema.\n\n1️⃣ Terminar\n2️⃣ Volver al panel",
+                nextState: "DASHBOARD",
+                data: { step: "AFTER_ACTION" },
+            };
+        }
+
         case "INBOX": {
             let cases = [];
             try {
@@ -693,9 +902,9 @@ export default async function dashboardState(msg, data = {}, context) {
             );
             const patientDocNumber = String(
                 data?.selectedCase?.patient_document_number ||
-                    data?.selectedCase?.document_number ||
-                    extractPatientDocument(data?.selectedCase || {}) ||
-                    "",
+                data?.selectedCase?.document_number ||
+                extractPatientDocument(data?.selectedCase || {}) ||
+                "",
             ).trim();
 
             try {
