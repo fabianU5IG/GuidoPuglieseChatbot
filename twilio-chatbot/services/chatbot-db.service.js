@@ -550,3 +550,51 @@ ON DUPLICATE KEY UPDATE
         ],
     );
 }
+
+export async function createDashboardQuickAppointment({
+    saludtoolsId,
+    eventType,
+    status,
+    startDate,
+    startTime,
+    endDate,
+    endTime,
+    doctorDocumentNumber,
+    patientDocumentType,
+    patientDocumentNumber,
+    clinic,
+    rawPayload,
+}) {
+    const [result] = await db.query(
+        `INSERT INTO saludtools_appointments (
+            saludtools_id,
+            event_type,
+            status,
+            start_date,
+            start_time,
+            end_date,
+            end_time,
+            doctor_document_number,
+            patient_document_type,
+            patient_document_number,
+            clinic,
+            raw_payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            Number(saludtoolsId),
+            String(eventType),
+            String(status),
+            String(startDate),
+            String(startTime),
+            endDate ? String(endDate) : null,
+            endTime ? String(endTime) : null,
+            String(doctorDocumentNumber),
+            Number(patientDocumentType),
+            String(patientDocumentNumber),
+            clinic != null ? String(clinic) : null,
+            rawPayload ? JSON.stringify(rawPayload) : null,
+        ],
+    );
+
+    return result.insertId;
+}

@@ -5,6 +5,7 @@ import {
     markReScheduled,
     registerChatbotInteraction,
     logAppointmentMessage,
+    createDashboardQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 
@@ -34,21 +35,11 @@ const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
 
-function splitName(fullName = "") {
-    const parts = String(fullName).trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return { firstName: "", secondName: "", firstLastName: "", secondLastName: "" };
-    if (parts.length === 1) return { firstName: parts[0], secondName: "", firstLastName: "", secondLastName: "" };
-    if (parts.length === 2) return { firstName: parts[0], secondName: "", firstLastName: parts[1], secondLastName: "" };
-    if (parts.length === 3) return { firstName: parts[0], secondName: parts[1], firstLastName: parts[2], secondLastName: "" };
-    return {
-        firstName: parts[0],
-        secondName: parts.slice(1, parts.length - 2).join(" "),
-        firstLastName: parts[parts.length - 2],
-        secondLastName: parts[parts.length - 1],
-    };
-}
-
-const DASHBOARD_MENU_TEXT = "👋 Panel de Secretaría\n\n1️⃣ Crear cita rápida\n2️⃣ Ver casos pendientes\n\n0️⃣ Salir";
+const DASHBOARD_MENU_TEXT =
+    "👋 Panel de Secretaría\n\n" +
+    "1️⃣ Crear cita rápida\n" +
+    "2️⃣ Ver casos pendientes\n\n" +
+    "0️⃣ Salir";
 
 function capitalizeWords(str = "") {
     return String(str)
@@ -192,6 +183,160 @@ function isValidDateDDMM(value) {
     return !isNaN(date) && date >= today;
 }
 
+function isValidHour(value = "") {
+    return /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(value).trim());
+}
+
+function mapQuickDocType(docTypeRaw = "") {
+    const value = String(docTypeRaw || "")
+        .trim()
+        .toLowerCase();
+
+    const map = {
+        cc: 1,
+        ce: 2,
+        ti: 3,
+    };
+
+    return map[value] || null;
+}
+
+function normalizeQuickModality(modalityRaw = "") {
+    const value = String(modalityRaw || "")
+        .trim()
+        .toLowerCase();
+
+    if (value === "presencial") return "PRESENCIAL";
+    if (value === "llamada") return "LLAMADA";
+
+    return null;
+}
+
+function parseSingleQuickAppointmentLine(line = "") {
+    const raw = String(line || "")
+        .trim()
+        .replace(/\s+/g, " ");
+    if (!raw) return null;
+
+    const parts = raw.split(" ");
+    if (parts.length !== 5) {
+        return {
+            ok: false,
+            error: "Formato inválido. Usa: modalidad fecha hora tipoDoc numeroDoc",
+            raw,
+        };
+    }
+
+    const [modalityRaw, dateRaw, timeRaw, docTypeRaw, docNumberRaw] = parts;
+
+    const modality = normalizeQuickModality(modalityRaw);
+    const patientDocumentType = mapQuickDocType(docTypeRaw);
+    const patientDocumentNumber = String(docNumberRaw || "").replace(/\D/g, "");
+
+    if (!modality) {
+        return {
+            ok: false,
+            error: "Modalidad inválida. Usa presencial o llamada",
+            raw,
+        };
+    }
+
+    if (!isValidDateDDMM(dateRaw)) {
+        return {
+            ok: false,
+            error: "Fecha inválida. Usa DD/MM y una fecha vigente/futura",
+            raw,
+        };
+    }
+
+    if (!isValidHour(timeRaw)) {
+        return {
+            ok: false,
+            error: "Hora inválida. Usa HH:MM",
+            raw,
+        };
+    }
+
+    if (!patientDocumentType) {
+        return {
+            ok: false,
+            error: "Tipo de documento inválido. Usa cc, ce o ti",
+            raw,
+        };
+    }
+
+    if (patientDocumentNumber.length < 5) {
+        return {
+            ok: false,
+            error: "Número de documento inválido",
+            raw,
+        };
+    }
+
+    return {
+        ok: true,
+        modality,
+        dateLabel: dateRaw,
+        timeLabel: timeRaw,
+        patientDocumentType,
+        patientDocumentNumber,
+        rawDocType: String(docTypeRaw).trim().toLowerCase(),
+        raw,
+    };
+}
+
+function parseQuickAppointmentsMessage(msg = "") {
+    const lines = String(msg || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+
+    if (!lines.length) {
+        return {
+            valid: [],
+            invalid: [
+                {
+                    lineNumber: 1,
+                    raw: "",
+                    error: "No se recibió ninguna línea válida",
+                },
+            ],
+        };
+    }
+
+    const valid = [];
+    const invalid = [];
+
+    lines.forEach((line, index) => {
+        const parsed = parseSingleQuickAppointmentLine(line);
+
+        if (!parsed?.ok) {
+            invalid.push({
+                lineNumber: index + 1,
+                raw: line,
+                error: parsed?.error || "Línea inválida",
+            });
+            return;
+        }
+
+        valid.push({
+            lineNumber: index + 1,
+            ...parsed,
+        });
+    });
+
+    return { valid, invalid };
+}
+
+function isExitQuickBulkCommand(value = "") {
+    const normalized = String(value || "")
+        .trim()
+        .toLowerCase();
+    return ["0", "fin", "finalizar", "salir", "menu", "menú"].includes(
+        normalized,
+    );
+}
+
 function paginateCases(
     cases = [],
     page = 0,
@@ -321,9 +466,9 @@ async function cancelSelectedCase({ from, data }) {
     );
     const patientDocNumber = String(
         data?.selectedCase?.patient_document_number ||
-        data?.selectedCase?.document_number ||
-        extractPatientDocument(data?.selectedCase || {}) ||
-        "",
+            data?.selectedCase?.document_number ||
+            extractPatientDocument(data?.selectedCase || {}) ||
+            "",
     ).trim();
 
     try {
@@ -429,14 +574,29 @@ export default async function dashboardState(msg, data = {}, context) {
                     data: { renderMenu: true },
                 };
             }
+
             if (msg === "1") {
-                data.step = "QUICK_NAME";
+                data.step = "QUICK_BULK_MESSAGE";
                 return {
-                    response: "📝 *Creación rápida de cita*\n\nEscribe el nombre completo del paciente:",
+                    response:
+                        "📝 *Crear cita rápida*\n\n" +
+                        "Puedes enviar *una o varias citas por mensaje*.\n" +
+                        "También puedes enviar *varios mensajes seguidos*.\n\n" +
+                        "Escribe *una cita por línea* con este formato:\n\n" +
+                        "*presencial 15/04 08:30 cc 123456789*\n" +
+                        "*llamada 15/04 09:00 ce 987654321*\n\n" +
+                        "Campos por línea:\n" +
+                        "1. modalidad: presencial o llamada\n" +
+                        "2. fecha: DD/MM\n" +
+                        "3. hora: HH:MM\n" +
+                        "4. tipo documento: cc, ce o ti\n" +
+                        "5. número de documento\n\n" +
+                        "Cuando termines, escribe *fin* o *0*.",
                     nextState: "DASHBOARD",
                     data,
                 };
             }
+
             if (msg === "2") {
                 data.step = "INBOX";
                 let cases = [];
@@ -447,163 +607,156 @@ export default async function dashboardState(msg, data = {}, context) {
                 }
                 return buildPendingCasesResponse(cases || [], 0);
             }
-            return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-        }
 
-        case "QUICK_NAME": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            data.quickName = msg.trim();
-            data.step = "QUICK_DOC_TYPE";
             return {
-                response: "Tipo de documento:\n\n1️⃣ CC\n2️⃣ CE\n\n0️⃣ Volver",
+                response: DASHBOARD_MENU_TEXT,
                 nextState: "DASHBOARD",
                 data,
             };
         }
 
-        case "QUICK_DOC_TYPE": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            if (msg !== "1" && msg !== "2") {
-                return { response: "Selecciona 1️⃣ o 2️⃣", nextState: "DASHBOARD", data };
-            }
-            data.quickDocType = Number(msg);
-            data.step = "QUICK_DOC_NUM";
-            return { response: "Número de documento:", nextState: "DASHBOARD", data };
-        }
-
-        case "QUICK_DOC_NUM": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            const doc = msg.replace(/\D/g, "");
-            if (doc.length < 5) {
-                return { response: "Número inválido. Intenta de nuevo:", nextState: "DASHBOARD", data };
-            }
-            data.quickDocNum = doc;
-            data.step = "QUICK_PHONE";
-            return { response: "Número de WhatsApp del paciente (ej: 573001234567):", nextState: "DASHBOARD", data };
-        }
-
-        case "QUICK_PHONE": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            const ph = msg.replace(/\D/g, "");
-            if (ph.length < 7) {
-                return { response: "Teléfono inválido. Intenta de nuevo:", nextState: "DASHBOARD", data };
-            }
-            data.quickPhone = ph;
-            data.step = "QUICK_DATE";
-            return { response: "Fecha de la cita (DD/MM):", nextState: "DASHBOARD", data };
-        }
-
-        case "QUICK_DATE": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            if (!isValidDateDDMM(msg)) {
-                return { response: "Fecha inválida (DD/MM). Intenta de nuevo:", nextState: "DASHBOARD", data };
-            }
-            data.quickDate = msg;
-            data.page = 0;
-            data.step = "QUICK_TIME";
-            return buildTimeResponseForDashboard(data);
-        }
-
-        case "QUICK_TIME": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            if (msg === "7") {
-                data.page++;
-                return buildTimeResponseForDashboard(data);
-            }
-            const index = parseInt(msg, 10) - 1;
-            const slots = getTimeSlots(data.page);
-            const hour = slots[index];
-            if (!hour) return { response: "Opción inválida.", nextState: "DASHBOARD", data };
-
-            data.quickTime = hour;
-            data.step = "QUICK_CONFIRM";
-            return {
-                response: `📝 *Confirmar Cita Rápida*\n\n` +
-                    `Paciente: ${data.quickName}\n` +
-                    `Documento: ${data.quickDocType === 1 ? 'CC' : 'CE'} ${data.quickDocNum}\n` +
-                    `WhatsApp: ${data.quickPhone}\n` +
-                    `Fecha: ${data.quickDate}\n` +
-                    `Hora: ${data.quickTime}\n\n` +
-                    `1️⃣ Confirmar y agendar\n` +
-                    `0️⃣ Cancelar y volver`,
-                nextState: "DASHBOARD",
-                data,
-            };
-        }
-
-        case "QUICK_CONFIRM": {
-            if (msg === "0") {
-                data.step = "MENU";
-                return { response: DASHBOARD_MENU_TEXT, nextState: "DASHBOARD", data };
-            }
-            if (msg !== "1") {
-                return { response: "Responde 1️⃣ para confirmar o 0️⃣ para volver.", nextState: "DASHBOARD", data };
+        case "QUICK_BULK_MESSAGE": {
+            if (isExitQuickBulkCommand(msg)) {
+                return {
+                    response:
+                        "✅ Saliendo de carga rápida de citas.\n\n" +
+                        DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
             }
 
-            const ymd = ddmmToYmd(data.quickDate);
-            const end = addMinutesToYmdHm(ymd, data.quickTime, APPOINTMENT_DURATION_MIN);
-            const nameParts = splitName(data.quickName);
+            const { valid, invalid } = parseQuickAppointmentsMessage(msg);
 
-            await createSaludtoolsJob({
-                jobType: "APPOINTMENT_CREATE",
-                phone: data.quickPhone,
-                dedupeKey: `quick-create:${data.quickDocNum}:${ymd}:${data.quickTime}`,
-                payload: {
-                    fullName: data.quickName,
-                    dateLabel: data.quickDate,
-                    timeLabel: data.quickTime,
-                    patientExistsLocal: false,
-                    patientBody: {
-                        ...nameParts,
-                        birthDate: "1900-01-01",
-                        gender: 1,
-                        documentType: data.quickDocType,
-                        documentNumber: data.quickDocNum,
-                        phone: data.quickPhone,
-                        cellPhone: data.quickPhone,
-                        email: "",
-                        eps: 0,
-                        habeasData: true,
-                    },
-                    appointmentBody: {
-                        startAppointment: `${ymd} ${data.quickTime}`,
-                        endAppointment: `${end.ymd} ${end.hm}`,
-                        patientDocumentType: data.quickDocType,
-                        patientDocumentNumber: data.quickDocNum,
-                        doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+            if (!valid.length) {
+                let response =
+                    "❌ No se pudo procesar ninguna cita.\n\n" +
+                    "Formato por línea:\n" +
+                    "*presencial 15/04 08:30 cc 123456789*\n" +
+                    "*llamada 15/04 09:00 ce 987654321*\n\n";
+
+                if (invalid.length) {
+                    response += "Errores encontrados:\n";
+                    invalid.slice(0, 10).forEach((item) => {
+                        response += `Línea ${item.lineNumber}: ${item.error}\n`;
+                    });
+                }
+
+                response +=
+                    "\nPuedes enviar otro mensaje con más citas.\n" +
+                    "Escribe *fin* o *0* para salir.";
+
+                return {
+                    response,
+                    nextState: "DASHBOARD",
+                    data: { ...data, step: "QUICK_BULK_MESSAGE" },
+                };
+            }
+
+            const inserted = [];
+            const failed = [];
+
+            for (const item of valid) {
+                try {
+                    const ymd = ddmmToYmd(item.dateLabel);
+                    const end = addMinutesToYmdHm(
+                        ymd,
+                        item.timeLabel,
+                        APPOINTMENT_DURATION_MIN,
+                    );
+
+                    const rawPayload = {
+                        source: "SECRETARY_DASHBOARD",
+                        origin: "dashboard",
+                        eventType: "CREADA_DESDE_DASHBOARD",
+                        appointmentBody: {
+                            startAppointment: `${ymd} ${item.timeLabel}`,
+                            endAppointment: `${end.ymd} ${end.hm}`,
+                            patientDocumentType: item.patientDocumentType,
+                            patientDocumentNumber: item.patientDocumentNumber,
+                            doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                            doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                            modality:
+                                item.modality === "LLAMADA"
+                                    ? "LLAMADA"
+                                    : APPOINTMENT_MODALITY,
+                            stateAppointment: APPOINTMENT_STATE,
+                            appointmentType: "Creada desde dashboard",
+                            clinic: CLINIC_ID,
+                            comment: `Creada desde dashboard - ${item.modality}`,
+                        },
+                    };
+
+                    const insertedId = await createDashboardQuickAppointment({
+                        saludtoolsId: Number(
+                            `${Date.now()}${String(item.lineNumber).padStart(2, "0")}`,
+                        ),
+                        eventType: "CREADA_DESDE_DASHBOARD",
+                        status: APPOINTMENT_STATE,
+                        startDate: ymd,
+                        startTime: `${item.timeLabel}:00`,
+                        endDate: end.ymd,
+                        endTime: `${end.hm}:00`,
                         doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                        modality: APPOINTMENT_MODALITY,
-                        stateAppointment: APPOINTMENT_STATE,
-                        appointmentType: "Consulta (Agendada por Secretaría)",
-                        clinic: CLINIC_ID,
-                        comment: `Creada por secretaría desde dashboard.`,
-                    },
-                },
-                priority: 110,
-            });
+                        patientDocumentType: item.patientDocumentType,
+                        patientDocumentNumber: item.patientDocumentNumber,
+                        clinic: String(CLINIC_ID),
+                        rawPayload,
+                    });
+
+                    inserted.push({
+                        lineNumber: item.lineNumber,
+                        id: insertedId,
+                        modality: item.modality,
+                        dateLabel: item.dateLabel,
+                        timeLabel: item.timeLabel,
+                        rawDocType: item.rawDocType,
+                        patientDocumentNumber: item.patientDocumentNumber,
+                    });
+                } catch (err) {
+                    failed.push({
+                        lineNumber: item.lineNumber,
+                        raw: item.raw,
+                        error: String(err?.message || err).slice(0, 180),
+                    });
+                }
+            }
+
+            let response =
+                `✅ Insertadas: ${inserted.length}\n` +
+                `❌ Con error: ${invalid.length + failed.length}\n\n`;
+
+            if (inserted.length) {
+                response += "Citas guardadas:\n";
+                inserted.slice(0, 20).forEach((item) => {
+                    response +=
+                        `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
+                        `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
+                        `(${item.modality})\n`;
+                });
+                response += "\n";
+            }
+
+            const allErrors = [...invalid, ...failed];
+            if (allErrors.length) {
+                response += "Errores:\n";
+                allErrors.slice(0, 20).forEach((item) => {
+                    response += `Línea ${item.lineNumber}: ${item.error}\n`;
+                });
+                response += "\n";
+            }
+
+            response +=
+                "Puedes enviar *otro mensaje* con más citas.\n" +
+                "Escribe *fin* o *0* para salir.";
 
             return {
-                response: "✅ Solicitud de creación enviada al sistema.\n\n1️⃣ Terminar\n2️⃣ Volver al panel",
+                response,
                 nextState: "DASHBOARD",
-                data: { step: "AFTER_ACTION" },
+                data: {
+                    ...data,
+                    step: "QUICK_BULK_MESSAGE",
+                },
             };
         }
 
@@ -902,9 +1055,9 @@ export default async function dashboardState(msg, data = {}, context) {
             );
             const patientDocNumber = String(
                 data?.selectedCase?.patient_document_number ||
-                data?.selectedCase?.document_number ||
-                extractPatientDocument(data?.selectedCase || {}) ||
-                "",
+                    data?.selectedCase?.document_number ||
+                    extractPatientDocument(data?.selectedCase || {}) ||
+                    "",
             ).trim();
 
             try {
