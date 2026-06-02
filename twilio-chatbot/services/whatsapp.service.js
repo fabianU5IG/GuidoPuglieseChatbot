@@ -9,7 +9,10 @@ if (!accountSid || !authToken) {
     );
 }
 
-const client = twilio(accountSid, authToken);
+const client = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN,
+);
 
 function normalizeWhatsAppAddress(value, fallback = "") {
     const raw = String(value || fallback || "").trim();
@@ -26,9 +29,34 @@ function normalizeWhatsAppAddress(value, fallback = "") {
     return `whatsapp:${cleaned}`;
 }
 
+export async function sendWhatsAppTemplate(to, contentSid, variables = null) {
+    const payload = {
+        to: to.startsWith("whatsapp:") ? to : `whatsapp:${to}`,
+        contentSid,
+        messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+    };
+
+    if (variables) {
+        payload.contentVariables = JSON.stringify(variables);
+    }
+
+    console.log("📤 Enviando template Twilio:", payload);
+
+    const response = await client.messages.create(payload);
+
+    console.log("✅ Respuesta Twilio template:", {
+        sid: response.sid,
+        status: response.status,
+        errorCode: response.errorCode,
+        errorMessage: response.errorMessage,
+    });
+
+    return response;
+}
+
 const FROM_WHATSAPP = normalizeWhatsAppAddress(
     process.env.TWILIO_WHATSAPP_NUMBER,
-    "+14155238886",
+    "+573114811385",
 );
 
 const SECRETARY_WHATSAPP = normalizeWhatsAppAddress(

@@ -1,5 +1,9 @@
 import gestionCitasState from "./gestionCitas.state.js";
 
+const WELCOME_TEMPLATE_SID =
+    process.env.TWILIO_WELCOME_TEMPLATE_SID ||
+    "HX5686e3023c8d6be6225d94748bc1bf4c";
+
 export default function menuState(msg, data) {
     const mainMenu =
         "Hola 👋\n\n" +
@@ -10,6 +14,21 @@ export default function menuState(msg, data) {
         "3️⃣ Teleconsulta (lectura de estudios)\n" +
         "4️⃣ Soy paciente postquirúrgico\n" +
         "5️⃣ Hablar con la secretaria";
+
+    // Si el usuario escribe hola, enviar plantilla SIEMPRE
+    if (msg === "hola") {
+        return {
+            sendTemplate: true,
+            template: {
+                contentSid: WELCOME_TEMPLATE_SID,
+            },
+            nextState: "MENU",
+            data: {
+                ...data,
+                welcomeTemplateSent: true,
+            },
+        };
+    }
 
     // Render forzado
     if (data?.renderMenu) {
@@ -73,6 +92,6 @@ export default function menuState(msg, data) {
             };
 
         default:
-            return { response: mainMenu, nextState: "MENU", data: {} };
+            return { response: mainMenu, nextState: "MENU", data };
     }
 }
