@@ -42,16 +42,7 @@ export async function sendWhatsAppTemplate(to, contentSid, variables = null) {
 
     console.log("📤 Enviando template Twilio:", payload);
 
-    const response = await client.messages.create(payload);
-
-    console.log("✅ Respuesta Twilio template:", {
-        sid: response.sid,
-        status: response.status,
-        errorCode: response.errorCode,
-        errorMessage: response.errorMessage,
-    });
-
-    return response;
+    return client.messages.create(payload);
 }
 
 const FROM_WHATSAPP = normalizeWhatsAppAddress(

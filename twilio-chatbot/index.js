@@ -58,6 +58,7 @@ app.post("/webhook", async (req, res) => {
 
         res.set("Content-Type", "text/xml");
 
+        // ENVÍO DE TEMPLATE
         if (result.sendTemplate && result.template?.contentSid) {
             console.log("📤 Enviando template:", result.template.contentSid);
 
@@ -77,17 +78,19 @@ app.post("/webhook", async (req, res) => {
             return res.send("<Response></Response>");
         }
 
+        // RESPUESTA NORMAL
         if (!result.response) {
             return res.send("<Response></Response>");
         }
 
         return res.send(`
 <Response>
-  <Message>${result.response}</Message>
+    <Message>${result.response}</Message>
 </Response>
         `);
     } catch (error) {
         console.error("❌ Error en webhook:", error);
+
         res.set("Content-Type", "text/xml");
         return res.send("<Response></Response>");
     }
