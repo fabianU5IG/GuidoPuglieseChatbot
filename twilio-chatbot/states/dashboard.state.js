@@ -8,6 +8,7 @@ import {
     createDashboardQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
+import { parseDashboardAppointmentsAI, summarizeSecretaryCasesAI } from "../services/azure.ai.services.js";
 
 const { getTimeSlots } = timeUtils;
 
@@ -38,7 +39,8 @@ const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
 const DASHBOARD_MENU_TEXT =
     "👋 Panel de Secretaría\n\n" +
     "1️⃣ Crear cita rápida\n" +
-    "2️⃣ Ver casos pendientes\n\n" +
+    "2️⃣ Ver casos pendientes\n" +
+    "3️⃣ Resumen IA de pendientes\n\n" +
     "0️⃣ Salir";
 
 function capitalizeWords(str = "") {
@@ -328,6 +330,67 @@ function parseQuickAppointmentsMessage(msg = "") {
     return { valid, invalid };
 }
 
+function normalizeAiDashboardAppointments(aiResult = {}) {
+    const appointments = Array.isArray(aiResult.appointments) ? aiResult.appointments : [];
+    const valid = [];
+    const invalid = [];
+
+    appointments.forEach((item, index) => {
+        const normalizedLine = [
+            String(item.modality || "").toLowerCase() === "llamada" ? "llamada" : "presencial",
+            item.dateLabel,
+            item.timeLabel,
+            item.rawDocType || (Number(item.patientDocumentType) === 2 ? "ce" : Number(item.patientDocumentType) === 3 ? "ti" : "cc"),
+            item.patientDocumentNumber,
+        ]
+            .filter(Boolean)
+            .join(" ");
+
+        const parsed = parseSingleQuickAppointmentLine(normalizedLine);
+        if (!parsed?.ok) {
+            invalid.push({
+                lineNumber: index + 1,
+                raw: normalizedLine,
+                error: parsed?.error || "La IA no logró estructurar esta cita",
+            });
+            return;
+        }
+
+        valid.push({
+            lineNumber: index + 1,
+            ...parsed,
+        });
+    });
+
+    const aiErrors = Array.isArray(aiResult.errors) ? aiResult.errors : [];
+    aiErrors.forEach((error, index) => {
+        invalid.push({
+            lineNumber: appointments.length + index + 1,
+            raw: "IA",
+            error: String(error || "Dato incompleto detectado por IA"),
+        });
+    });
+
+    return { valid, invalid };
+}
+
+async function parseQuickAppointmentsMessageWithAI(msg = "") {
+    const parsed = parseQuickAppointmentsMessage(msg);
+    if (parsed.valid.length || !parsed.invalid.length) return parsed;
+
+    const ai = await parseDashboardAppointmentsAI(msg);
+    if (!ai) return parsed;
+
+    const aiParsed = normalizeAiDashboardAppointments(ai);
+    if (!aiParsed.valid.length) return parsed;
+
+    return {
+        valid: aiParsed.valid,
+        invalid: aiParsed.invalid,
+        usedAI: true,
+    };
+}
+
 function isExitQuickBulkCommand(value = "") {
     const normalized = String(value || "")
         .trim()
@@ -608,6 +671,26 @@ export default async function dashboardState(msg, data = {}, context) {
                 return buildPendingCasesResponse(cases || [], 0);
             }
 
+            if (msg === "3") {
+                let cases = [];
+                try {
+                    cases = await getPendingCases();
+                } catch (err) {
+                    console.error("❌ Error getPendingCases AI:", err);
+                }
+
+                const summary = await summarizeSecretaryCasesAI(cases || []);
+                return {
+                    response:
+                        "🤖 Resumen IA de pendientes\n\n" +
+                        (summary || "No encontré suficientes datos para generar un resumen.") +
+                        "\n\n" +
+                        DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
             return {
                 response: DASHBOARD_MENU_TEXT,
                 nextState: "DASHBOARD",
@@ -626,7 +709,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            const { valid, invalid } = parseQuickAppointmentsMessage(msg);
+            const { valid, invalid, usedAI } = await parseQuickAppointmentsMessageWithAI(msg);
 
             if (!valid.length) {
                 let response =
@@ -727,7 +810,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 `❌ Con error: ${invalid.length + failed.length}\n\n`;
 
             if (inserted.length) {
-                response += "Citas guardadas:\n";
+                response += (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") + "Citas guardadas:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +

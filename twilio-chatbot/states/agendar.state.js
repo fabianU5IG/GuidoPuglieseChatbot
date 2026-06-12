@@ -6,6 +6,7 @@ import {
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { EPS_CONVENIO } from "../constants.js";
+import { normalizeAppointmentInputAI } from "../services/azure.ai.services.js";
 import { db } from "../db/mysql.js";
 
 const DOCTOR_DOCUMENT_TYPE = Number(
@@ -26,6 +27,23 @@ const SALUDTOOLS_DEBUG =
     String(process.env.SALUDTOOLS_DEBUG || "").toLowerCase() === "true" ||
     process.env.SALUDTOOLS_DEBUG === "1";
 
+const TEMPLATE_ASK_DOC_NUMBER = "HXb7f86251fabd4b572ccde29a86f348ff";
+const TEMPLATE_ASK_ATTENTION_TYPE = "HXcda5ec9a090db786740c644ddd809cbb";
+const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
+
+function sendTemplate(contentSid, nextState = "AGENDAR", data = {}, variables = null) {
+    return {
+        response: null,
+        nextState,
+        data,
+        sendTemplate: true,
+        template: {
+            contentSid,
+            variables,
+        },
+    };
+}
+
 function returnToMenu() {
     return { response: null, nextState: "MENU", data: { renderMenu: true } };
 }
@@ -33,7 +51,37 @@ function returnToMenu() {
 function normKey(s) {
     return String(s || "")
         .trim()
-        .toLowerCase();
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function parseHourButton(msg) {
+    const raw = String(msg || "").trim().toLowerCase();
+    const key = normKey(msg);
+
+    // Payloads esperados desde la plantilla HX288...:
+    // hora_1 ... hora_6 y mas_horarios.
+    if (
+        raw === "mas_horarios" ||
+        key === "mas horarios" ||
+        key === "ver mas horarios" ||
+        key === "mas"
+    ) {
+        return "MORE";
+    }
+
+    const rawMatch = raw.match(/^hora[_\s-]*([1-6])$/);
+    if (rawMatch) return Number(rawMatch[1]) - 1;
+
+    const match = key.match(/^hora\s*([1-6])$/);
+    if (match) return Number(match[1]) - 1;
+
+    return null;
 }
 
 function normalizeDocType(msg) {
@@ -395,9 +443,21 @@ function getSlotsForDate(ymd, page = 0) {
 
 function buildTimeResponse(data) {
     const ymd = data.ymd;
-    const slotsAll = getSlotsForDate(ymd, data.page || 0);
+    const page = Number(data.page || 0);
+    const slotsAll = getSlotsForDate(ymd, page);
 
     if (!slotsAll.length) {
+        if (page > 0) {
+            data.page = 0;
+            return {
+                response:
+                    `No hay más horarios disponibles para ${data.date}.\n\n` +
+                    "Puedes escribir otra fecha en formato DD/MM o seleccionar una de las horas anteriores.",
+                nextState: "AGENDAR",
+                data,
+            };
+        }
+
         return {
             response:
                 `El Dr. no tiene atención el día ${data.date}.\n\n` +
@@ -415,23 +475,24 @@ function buildTimeResponse(data) {
         return {
             response:
                 `No veo horarios disponibles para ${data.date} en esta página.\n\n` +
-                "7️⃣ Ver más horarios\n" +
-                "También puedes escribir otra fecha en formato DD/MM.\n\n" +
-                "0️⃣ Volver al menú",
+                "Escribe otra fecha en formato DD/MM o pulsa Más horarios si aparece disponible.",
             nextState: "AGENDAR",
             data,
         };
     }
 
-    let response = `Horas disponibles para ${data.date}:\n\n`;
-    slots.forEach((h, i) => {
-        response += `${i + 1}️⃣ ${h}\n`;
-    });
-    response += "\n7️⃣ Más horarios\n";
-    response += "También puedes escribir otra fecha en formato DD/MM.\n";
-    response += "0️⃣ Volver al menú";
+    const variables = {
+        "1": data.date,
+        hora_1: slots[0] || "No disponible",
+        hora_2: slots[1] || "No disponible",
+        hora_3: slots[2] || "No disponible",
+        hora_4: slots[3] || "No disponible",
+        hora_5: slots[4] || "No disponible",
+        hora_6: slots[5] || "No disponible",
+        mas_horarios: "Más horarios",
+    };
 
-    return { response, nextState: "AGENDAR", data };
+    return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "AGENDAR", data, variables);
 }
 
 function capitalize(str) {
@@ -446,8 +507,48 @@ function capitalize(str) {
         .join(" ");
 }
 
+async function normalizeAgendarMessage(msg, step, data) {
+    const raw = String(msg || "").trim();
+    if (!raw) return raw;
+
+    // Primero respetamos payloads exactos de botones/plantillas.
+    if (/^(0|1|2|3|4|5|6|7)$/.test(raw)) return raw;
+    if (/^hora[_\s-]*[1-6]$/i.test(raw)) return raw;
+    if (/^mas[_\s-]*horarios$/i.test(raw)) return "mas_horarios";
+    if (/^\d{2}\/\d{2}$/.test(raw)) return raw;
+
+    const parsed = await normalizeAppointmentInputAI({ message: raw, step, data });
+    if (!parsed || parsed.confidence < 0.7) return raw;
+
+    switch (parsed.intent) {
+        case "BACK_MENU":
+            return "0";
+        case "YES":
+        case "CONTINUE":
+            return "1";
+        case "NO":
+            return "2";
+        case "DOC_TYPE":
+            return String(parsed.value || raw);
+        case "DATE_DDMM":
+            return String(parsed.value || raw);
+        case "HOUR_BUTTON":
+            return String(parsed.value || raw);
+        case "MORE_HOURS":
+            return "mas_horarios";
+        case "ATTENTION_TYPE":
+            return String(parsed.value || raw);
+        default:
+            return raw;
+    }
+}
+
 export default async function agendarState(msg, data, context = {}) {
     const phone = context.from || "UNKNOWN";
+
+    if (data?.step) {
+        msg = await normalizeAgendarMessage(msg, data.step, data);
+    }
 
     if (!data.step) {
         data.step = "ASK_NAME";
@@ -508,11 +609,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.patientDocumentType = t;
             data.step = "ASK_DOC_NUMBER";
-            return {
-                response: "Escribe tu número de documento (solo números):",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_ASK_DOC_NUMBER, "AGENDAR", data);
         }
 
         case "ASK_DOC_NUMBER": {
@@ -925,8 +1022,10 @@ export default async function agendarState(msg, data, context = {}) {
                 return buildTimeResponse(data);
             }
 
-            if (msg === "7") {
-                data.page++;
+            const hourButton = parseHourButton(msg);
+
+            if (msg === "7" || hourButton === "MORE") {
+                data.page = Number(data.page || 0) + 1;
                 return buildTimeResponse(data);
             }
 
@@ -934,14 +1033,14 @@ export default async function agendarState(msg, data, context = {}) {
                 ? data.visibleSlots
                 : getSlotsForDate(data.ymd, data.page || 0);
 
-            const index = Number(msg) - 1;
+            const index = typeof hourButton === "number" ? hourButton : Number(msg) - 1;
 
             if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
                 return {
                     response:
                         `Elige una opción válida (1 a ${slots.length}).\n\n` +
                         "También puedes escribir otra fecha en formato DD/MM.\n\n" +
-                        "7️⃣ Ver más horarios\n" +
+                        "Pulsa Más horarios para ver más opciones.\n" +
                         "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
@@ -976,44 +1075,37 @@ export default async function agendarState(msg, data, context = {}) {
                     response:
                         "El horario seleccionado ya no se encuentra disponible.\n" +
                         "Por favor elige otro horario:\n\n" +
-                        ui.response,
+                        (ui.response || ""),
                 };
             }
 
             data.time = hour;
             data.step = "ASK_TYPE";
 
-            return {
-                response:
-                    `Perfecto ✅\n\n` +
-                    `Fecha: ${data.date}\n` +
-                    `Hora: ${hour}\n\n` +
-                    "Ahora selecciona\n\n" +
-                    "¿Qué tipo de atención deseas?\n\n" +
-                    "1️⃣ Consulta particular\n" +
-                    "2️⃣ Consulta con póliza / prepagada\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
         }
 
         case "ASK_TYPE": {
             if (msg === "0") return returnToMenu();
 
-            if (msg === "1") data.attentionType = "Consulta particular";
-            else if (msg === "2") {
+            const typeKey = normKey(msg);
+
+            if (
+                msg === "1" ||
+                typeKey === "consulta particular" ||
+                typeKey === "particular" ||
+                typeKey.includes("particular")
+            ) {
+                data.attentionType = "Consulta particular";
+            } else if (
+                msg === "2" ||
+                typeKey.includes("poliza") ||
+                typeKey.includes("prepagada") ||
+                typeKey.includes("medicina prepagada")
+            ) {
                 data.attentionType = "Consulta con póliza/prepagada";
             } else {
-                return {
-                    response:
-                        "Selecciona una opción válida:\n\n" +
-                        "1️⃣ Consulta particular\n" +
-                        "2️⃣ Consulta con póliza / prepagada\n\n" +
-                        "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
-                };
+                return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
             }
 
             data.step = "SHOW_COST_INFO";

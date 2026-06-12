@@ -17,14 +17,20 @@ app.use("/webhook/saludtools", saludtoolsWebhook);
 
 app.post("/webhook", async (req, res) => {
     try {
-        const message = req.body.Body || "";
+        const incomingBody = req.body.Body || "";
+        const buttonPayload = req.body.ButtonPayload || "";
+        const buttonText = req.body.ButtonText || "";
+        const message = buttonPayload || buttonText || incomingBody;
         const from = req.body.From || "";
         const phone = from.replace("whatsapp:", "");
         const numMedia = Number(req.body.NumMedia || 0);
 
         console.log("📩 Mensaje entrante:", {
             from,
-            body: message,
+            body: incomingBody,
+            buttonPayload,
+            buttonText,
+            processedMessage: message,
             numMedia,
         });
 
