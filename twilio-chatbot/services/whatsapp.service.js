@@ -29,6 +29,20 @@ function normalizeWhatsAppAddress(value, fallback = "") {
     return `whatsapp:${cleaned}`;
 }
 
+function normalizeTemplateVariables(variables) {
+    if (!variables || typeof variables !== "object" || Array.isArray(variables)) {
+        return null;
+    }
+
+    const cleaned = Object.fromEntries(
+        Object.entries(variables)
+            .filter(([, value]) => value !== undefined && value !== null)
+            .map(([key, value]) => [String(key), String(value)]),
+    );
+
+    return Object.keys(cleaned).length ? cleaned : null;
+}
+
 export async function sendWhatsAppTemplate(to, contentSid, variables = null) {
     const payload = {
         to: to.startsWith("whatsapp:") ? to : `whatsapp:${to}`,
@@ -36,8 +50,9 @@ export async function sendWhatsAppTemplate(to, contentSid, variables = null) {
         messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
     };
 
-    if (variables) {
-        payload.contentVariables = JSON.stringify(variables);
+    const contentVariables = normalizeTemplateVariables(variables);
+    if (contentVariables) {
+        payload.contentVariables = JSON.stringify(contentVariables);
     }
 
     console.log("📤 Enviando template Twilio:", payload);

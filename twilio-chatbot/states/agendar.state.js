@@ -27,6 +27,7 @@ const SALUDTOOLS_DEBUG =
     String(process.env.SALUDTOOLS_DEBUG || "").toLowerCase() === "true" ||
     process.env.SALUDTOOLS_DEBUG === "1";
 
+const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_ASK_DOC_NUMBER = "HXb7f86251fabd4b572ccde29a86f348ff";
 const TEMPLATE_ASK_ATTENTION_TYPE = "HXcda5ec9a090db786740c644ddd809cbb";
 const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
@@ -45,7 +46,7 @@ function sendTemplate(contentSid, nextState = "AGENDAR", data = {}, variables = 
 }
 
 function returnToMenu() {
-    return { response: null, nextState: "MENU", data: { renderMenu: true } };
+    return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
 }
 
 function normKey(s) {
@@ -85,12 +86,55 @@ function parseHourButton(msg) {
 }
 
 function normalizeDocType(msg) {
-    const v = String(msg || "")
+    const raw = String(msg || "")
         .trim()
-        .toLowerCase();
-    if (v === "1" || v === "cc") return 1;
-    if (v === "2" || v === "ce") return 2;
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+
+    const key = raw
+        .replace(/[._-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const compact = key.replace(/\s+/g, "_");
+
+    if (
+        key === "1" ||
+        key === "cc" ||
+        key === "c c" ||
+        compact === "doc_cc" ||
+        compact === "tipo_cc" ||
+        compact === "documento_cc" ||
+        key.includes("cedula ciudadania") ||
+        key.includes("cedula de ciudadania")
+    ) {
+        return 1;
+    }
+
+    if (
+        key === "2" ||
+        key === "ce" ||
+        key === "c e" ||
+        compact === "doc_ce" ||
+        compact === "tipo_ce" ||
+        compact === "documento_ce" ||
+        key.includes("cedula extranjeria") ||
+        key.includes("cedula de extranjeria")
+    ) {
+        return 2;
+    }
+
     return null;
+}
+
+function getFirstNameForTemplate(data = {}) {
+    return data.firstName || splitName(data.fullName || "").firstName || "Paciente";
+}
+
+function sendDocTypeTemplate(data) {
+    return sendTemplate(TEMPLATE_ASK_DOC_NUMBER, "AGENDAR", data, {
+        "1": getFirstNameForTemplate(data),
+    });
 }
 
 function parsePhoneE164ToDigits(phone) {
@@ -200,10 +244,36 @@ function addMinutesToYmdHm(ymd, hm, minutesToAdd) {
     return { ymd: `${yyyy}-${mm}-${dd}`, hm: `${hh}:${min}` };
 }
 
+function normalizeBirthDateInput(value) {
+    const raw = String(value || "").trim();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+    // Acepta también DD/MM/YYYY o DD-MM-YYYY para evitar loops con usuarios nuevos.
+    const dmy = raw.match(/^(\d{2})[\/-](\d{2})[\/-](\d{4})$/);
+    if (dmy) {
+        const [, dd, mm, yyyy] = dmy;
+        return `${yyyy}-${mm}-${dd}`;
+    }
+
+    return raw;
+}
+
 function isValidBirthDateYmd(value) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-    const d = new Date(value + "T00:00:00");
-    return !isNaN(d.getTime());
+
+    const [year, month, day] = value.split("-").map(Number);
+    const d = new Date(year, month - 1, day);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return (
+        d.getFullYear() === year &&
+        d.getMonth() === month - 1 &&
+        d.getDate() === day &&
+        d < today &&
+        year >= 1900
+    );
 }
 
 function normalizeEmail(value) {
@@ -483,13 +553,12 @@ function buildTimeResponse(data) {
 
     const variables = {
         "1": data.date,
-        hora_1: slots[0] || "No disponible",
-        hora_2: slots[1] || "No disponible",
-        hora_3: slots[2] || "No disponible",
-        hora_4: slots[3] || "No disponible",
-        hora_5: slots[4] || "No disponible",
-        hora_6: slots[5] || "No disponible",
-        mas_horarios: "Más horarios",
+        "2": slots[0] || "No disponible",
+        "3": slots[1] || "No disponible",
+        "4": slots[2] || "No disponible",
+        "5": slots[3] || "No disponible",
+        "6": slots[4] || "No disponible",
+        "7": slots[5] || "No disponible",
     };
 
     return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "AGENDAR", data, variables);
@@ -516,6 +585,7 @@ async function normalizeAgendarMessage(msg, step, data) {
     if (/^hora[_\s-]*[1-6]$/i.test(raw)) return raw;
     if (/^mas[_\s-]*horarios$/i.test(raw)) return "mas_horarios";
     if (/^\d{2}\/\d{2}$/.test(raw)) return raw;
+    if (step === "REG_BIRTHDATE") return normalizeBirthDateInput(raw);
 
     const parsed = await normalizeAppointmentInputAI({ message: raw, step, data });
     if (!parsed || parsed.confidence < 0.7) return raw;
@@ -579,16 +649,7 @@ export default async function agendarState(msg, data, context = {}) {
             } catch { }
 
             data.step = "ASK_DOC_TYPE";
-            return {
-                response:
-                    `Gracias, ${data.firstName}.\n\n` +
-                    "Para crear tu cita necesito tu tipo de documento:\n\n" +
-                    "1️⃣ CC\n" +
-                    "2️⃣ CE\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendDocTypeTemplate(data);
         }
 
         case "ASK_DOC_TYPE": {
@@ -596,20 +657,18 @@ export default async function agendarState(msg, data, context = {}) {
 
             const t = normalizeDocType(msg);
             if (!t) {
-                return {
-                    response:
-                        "Selecciona una opción válida:\n\n" +
-                        "1️⃣ CC\n" +
-                        "2️⃣ CE\n\n" +
-                        "0️⃣ Volver al menú",
-                    nextState: "AGENDAR",
-                    data,
-                };
+                return sendDocTypeTemplate(data);
             }
 
             data.patientDocumentType = t;
             data.step = "ASK_DOC_NUMBER";
-            return sendTemplate(TEMPLATE_ASK_DOC_NUMBER, "AGENDAR", data);
+            return {
+                response:
+                    "Perfecto. Ahora escribe tu número de documento, solo números:\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
+            };
         }
 
         case "ASK_DOC_NUMBER": {
@@ -619,7 +678,8 @@ export default async function agendarState(msg, data, context = {}) {
             if (!/^\d{5,20}$/.test(doc)) {
                 return {
                     response:
-                        "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):",
+                        "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):\n\n" +
+                        "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -781,10 +841,12 @@ export default async function agendarState(msg, data, context = {}) {
         case "REG_BIRTHDATE": {
             if (msg === "0") return returnToMenu();
 
-            const v = String(msg || "").trim();
+            const v = normalizeBirthDateInput(msg);
             if (!isValidBirthDateYmd(v)) {
                 return {
-                    response: "Fecha inválida. Usa YYYY-MM-DD. Ej: 1967-12-05",
+                    response:
+                        "Fecha inválida. Usa YYYY-MM-DD. Ej: 1967-12-05\n" +
+                        "También puedes escribirla como DD/MM/YYYY. Ej: 05/12/1967",
                     nextState: "AGENDAR",
                     data,
                 };

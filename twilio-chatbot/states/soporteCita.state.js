@@ -2,26 +2,213 @@ import { db } from "../db/mysql.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 
 const APPOINTMENT_DURATION_MIN = 20;
+const SLOT_MIN = 20;
+const DOCTOR_DOCUMENT_NUMBER =
+    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079";
+const DEFAULT_CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 18569);
+const DEFAULT_APPOINTMENT_TYPE =
+    process.env.SALUDTOOLS_APPOINTMENT_TYPE || "Pruebas Luis";
+
+const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_ASK_DOC_TYPE =
+    process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
+    process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
+    "HXb7f86251fabd4b572ccde29a86f348ff";
+const TEMPLATE_AVAILABLE_HOURS =
+    process.env.TWILIO_TEMPLATE_SUPPORT_AVAILABLE_HOURS_SID ||
+    process.env.TWILIO_TEMPLATE_AVAILABLE_HOURS_SID ||
+    "HX288f8c61244fb7ccd84dadc3a2b18085";
+
+function sendTemplate(contentSid, nextState = "SOPORTE_CITA", data = {}, variables = null) {
+    return {
+        response: null,
+        nextState,
+        data,
+        sendTemplate: true,
+        template: {
+            contentSid,
+            variables,
+        },
+    };
+}
+
+function returnToMenu(message = null) {
+    if (!message) {
+        return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
+    }
+
+    return {
+        response: message,
+        nextState: "MENU",
+        data: {},
+    };
+}
+
+function normalizeOption(value = "") {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
+        .replace(/[._-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function compact(value = "") {
+    return normalizeOption(value).replace(/\s+/g, "_");
+}
 
 function isBackToMenu(input) {
-    return String(input || "").trim() === "0";
+    const t = normalizeOption(input);
+    const c = compact(input);
+    return (
+        t === "0" ||
+        t === "menu" ||
+        t === "volver" ||
+        c === "volver_menu" ||
+        c === "menu_principal"
+    );
+}
+
+function normalizeDocType(input) {
+    const t = normalizeOption(input);
+    const c = compact(input);
+
+    if (
+        t === "1" ||
+        t === "cc" ||
+        t === "c c" ||
+        c === "doc_cc" ||
+        c === "tipo_cc" ||
+        c === "documento_cc" ||
+        t.includes("cedula ciudadania") ||
+        t.includes("cedula de ciudadania")
+    ) {
+        return 1;
+    }
+
+    if (
+        t === "2" ||
+        t === "ce" ||
+        t === "c e" ||
+        c === "doc_ce" ||
+        c === "tipo_ce" ||
+        c === "documento_ce" ||
+        t.includes("cedula extranjeria") ||
+        t.includes("cedula de extranjeria")
+    ) {
+        return 2;
+    }
+
+    return null;
 }
 
 function normalizeYesNo(input) {
-    const t = String(input || "")
-        .trim()
-        .toLowerCase();
-    if (["si", "sí", "s", "1", "ok", "vale"].includes(t)) return "YES";
-    if (["no", "n", "2", "cancelar"].includes(t)) return "NO";
+    const t = normalizeOption(input);
+    const c = compact(input);
+
+    if (
+        [
+            "si",
+            "s",
+            "1",
+            "ok",
+            "vale",
+            "confirmar",
+            "aceptar",
+            "continuar",
+            "confirmo",
+        ].includes(t) ||
+        [
+            "si_cancelar",
+            "confirmar_cancelacion",
+            "cancelar_confirmar",
+            "confirmar_reagendar",
+            "si_reagendar",
+            "reagendar_confirmar",
+        ].includes(c)
+    ) {
+        return "YES";
+    }
+
+    if (
+        ["no", "n", "2", "abortar", "volver", "cancelar"].includes(t) ||
+        [
+            "no_cancelar",
+            "no_reagendar",
+            "abortar_cancelacion",
+            "abortar_reagendar",
+            "mantener_cita",
+        ].includes(c)
+    ) {
+        return "NO";
+    }
+
     return "";
 }
 
-function isValidYmd(s) {
-    return /^\d{4}-\d{2}-\d{2}$/.test(String(s || "").trim());
+function isValidHm(value) {
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || "").trim());
 }
 
-function isValidHm(s) {
-    return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(s || "").trim());
+function pad2(n) {
+    return String(n).padStart(2, "0");
+}
+
+function isHoliday(ymd) {
+    const holidays = [
+        "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
+        "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
+        "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12", "2026-11-02",
+        "2026-11-16", "2026-12-08", "2026-12-25",
+    ];
+    return holidays.includes(ymd);
+}
+
+function formatYmdToDdMm(ymd) {
+    const [y, m, d] = String(ymd || "").split("-");
+    if (!y || !m || !d) return "";
+    return `${d}/${m}`;
+}
+
+function parseDateInput(value) {
+    const raw = String(value || "").trim();
+    let ymd = "";
+    let label = "";
+
+    const ddmm = raw.match(/^(\d{2})[\/-](\d{2})$/);
+    if (ddmm) {
+        const [, day, month] = ddmm;
+        const year = new Date().getFullYear();
+        const date = new Date(year, Number(month) - 1, Number(day));
+        if (!isNaN(date.getTime())) {
+            ymd = `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+            label = `${day}/${month}`;
+        }
+    }
+
+    const ymdMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (ymdMatch) {
+        const [, year, month, day] = ymdMatch;
+        const date = new Date(Number(year), Number(month) - 1, Number(day));
+        if (!isNaN(date.getTime())) {
+            ymd = `${year}-${month}-${day}`;
+            label = `${day}/${month}`;
+        }
+    }
+
+    if (!ymd) return null;
+
+    const minDate = new Date();
+    minDate.setHours(0, 0, 0, 0);
+    minDate.setDate(minDate.getDate() + 2);
+
+    const selectedDate = new Date(`${ymd}T00:00:00`);
+    if (selectedDate < minDate) return null;
+
+    return { ymd, label };
 }
 
 function addMinutesToYmdHm(ymd, hm, minutes) {
@@ -39,39 +226,102 @@ function addMinutesToYmdHm(ymd, hm, minutes) {
     return { ymd: `${y2}-${m2}-${d2}`, hm: `${hh2}:${mm2}` };
 }
 
+function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
+    const [sh, sm] = startHm.split(":").map(Number);
+    const [eh, em] = endHm.split(":").map(Number);
+    const startTotal = sh * 60 + sm;
+    const endTotal = eh * 60 + em;
+    const lastStart = endTotal - slotMin;
+    const slots = [];
+
+    for (let t = startTotal; t <= lastStart; t += slotMin) {
+        const h = Math.floor(t / 60);
+        const m = t % 60;
+        slots.push(`${pad2(h)}:${pad2(m)}`);
+    }
+
+    return slots;
+}
+
+function getScheduleForYmd(ymd) {
+    if (isHoliday(ymd)) return null;
+
+    const d = new Date(`${ymd}T00:00:00`);
+    const dow = d.getDay();
+
+    if (dow === 1 || dow === 2 || dow === 4) return { start: "08:00", end: "17:30" };
+    if (dow === 5) return { start: "08:30", end: "11:30" };
+    return null;
+}
+
+function getSlotsForDate(ymd, page = 0) {
+    const schedule = getScheduleForYmd(ymd);
+    if (!schedule) return [];
+
+    const all = buildSlots(schedule.start, schedule.end, SLOT_MIN);
+    const pageSize = 6;
+    return all.slice(Number(page || 0) * pageSize, Number(page || 0) * pageSize + pageSize);
+}
+
+function parseHourButton(input) {
+    const raw = String(input || "").trim().toLowerCase();
+    const t = normalizeOption(input);
+    const c = compact(input);
+
+    if (raw === "mas_horarios" || c === "mas_horarios" || t === "mas horarios" || t === "ver mas horarios" || t === "mas" || t === "7") {
+        return "MORE";
+    }
+
+    const match = c.match(/^hora_([1-6])$/);
+    if (match) return Number(match[1]) - 1;
+
+    if (/^[1-6]$/.test(t)) return Number(t) - 1;
+
+    return null;
+}
+
+function isCancelledStatus(status) {
+    const s = String(status || "").trim().toUpperCase();
+    return ["CANCELLED", "CANCELED", "CANCELADO", "NO_SHOW", "NO ATTEND"].includes(s);
+}
+
+function formatDbDate(value) {
+    if (!value) return "";
+    if (value instanceof Date) {
+        return `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
+    }
+    return String(value).slice(0, 10);
+}
+
 function formatAppointmentLine(item, idx) {
-    const startDateRaw = item?.start_date;
+    const ymd = formatDbDate(item?.start_date);
     const startTime = String(item?.start_time || "").slice(0, 5);
     const endTime = String(item?.end_time || "").slice(0, 5);
 
-    if (!startDateRaw) {
-        return `${idx + 1}️⃣ Cita sin fecha`;
-    }
+    if (!ymd) return `${idx + 1}️⃣ Cita sin fecha`;
 
-    const d =
-        startDateRaw instanceof Date
-            ? startDateRaw
-            : new Date(startDateRaw);
-
+    const d = new Date(`${ymd}T00:00:00`);
     if (isNaN(d.getTime())) {
         return `${idx + 1}️⃣ Fecha inválida | ${startTime}${endTime ? " - " + endTime : ""}`;
     }
 
-    const weekday = d.toLocaleDateString("es-CO", {
-        weekday: "long",
-    });
-
-    const datePart = d
-        .toLocaleDateString("es-CO", {
-            day: "2-digit",
-            month: "short",
-        })
-        .replace(".", "");
-
-    const weekdayFormatted =
-        weekday.charAt(0).toUpperCase() + weekday.slice(1);
+    const weekday = d.toLocaleDateString("es-CO", { weekday: "long" });
+    const datePart = d.toLocaleDateString("es-CO", { day: "2-digit", month: "short" }).replace(".", "");
+    const weekdayFormatted = weekday.charAt(0).toUpperCase() + weekday.slice(1);
 
     return `${idx + 1}️⃣ ${weekdayFormatted} ${datePart} | ${startTime}${endTime ? " - " + endTime : ""}`;
+}
+
+function parseAppointmentSelection(input) {
+    const t = normalizeOption(input);
+    const c = compact(input);
+
+    if (/^\d+$/.test(t)) return Number(t) - 1;
+
+    const match = c.match(/^(cita|appointment|opcion)_?(\d{1,2})$/);
+    if (match) return Number(match[2]) - 1;
+
+    return NaN;
 }
 
 async function findLocalPatientByDocument(documentNumber) {
@@ -92,6 +342,7 @@ async function findLocalAppointmentsByDocument(documentNumber) {
     const [rows] = await db.query(
         `
         SELECT
+            id,
             saludtools_id,
             patient_document_type,
             patient_document_number,
@@ -101,10 +352,13 @@ async function findLocalAppointmentsByDocument(documentNumber) {
             end_date,
             end_time,
             status,
-            clinic
+            clinic,
+            raw_payload
         FROM saludtools_appointments
         WHERE patient_document_number = ?
-        ORDER BY start_date DESC, start_time DESC
+          AND start_date >= CURDATE()
+          AND UPPER(status) NOT IN ('CANCELLED', 'CANCELED', 'CANCELADO', 'NO_SHOW', 'COMPLETED')
+        ORDER BY start_date ASC, start_time ASC
         LIMIT 10
         `,
         [String(documentNumber)],
@@ -113,138 +367,267 @@ async function findLocalAppointmentsByDocument(documentNumber) {
     return Array.isArray(rows) ? rows : [];
 }
 
-export default async function soporteCitaState(msg, data = {}, context = {}) {
-    const phone = context.from || "UNKNOWN";
-    const { tipo, step } = data;
-    const text = String(msg || "").trim();
+async function getBookedHmFromDb({ ymd, doctorDoc }) {
+    const [rows] = await db.query(
+        `
+        SELECT start_time, status
+        FROM saludtools_appointments
+        WHERE start_date = ?
+          AND doctor_document_number = ?
+        `,
+        [ymd, String(doctorDoc)],
+    );
 
-    if (!step) {
+    if (!Array.isArray(rows) || !rows.length) return [];
+
+    return rows
+        .filter((r) => !isCancelledStatus(r.status))
+        .map((r) => String(r.start_time).slice(0, 5));
+}
+
+async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
+    const [rows] = await db.query(
+        `
+        SELECT status
+        FROM saludtools_appointments
+        WHERE start_date = ?
+          AND start_time = ?
+          AND doctor_document_number = ?
+        LIMIT 1
+        `,
+        [ymd, `${hm}:00`, String(doctorDoc)],
+    );
+
+    if (!rows.length) return false;
+    return !isCancelledStatus(rows[0].status);
+}
+
+function buildTimeTemplateResponse(data) {
+    const ymd = data.newDate;
+    const page = Number(data.page || 0);
+    const label = data.newDateLabel || formatYmdToDdMm(ymd);
+    const slotsAll = getSlotsForDate(ymd, page);
+
+    if (!slotsAll.length) {
+        if (page > 0) data.page = 0;
         return {
             response:
-                "Por favor escribe tu número de documento (sin puntos ni espacios):\n\n0️⃣ Volver al menú",
+                `El Dr. no tiene atención disponible el día ${label}.\n\n` +
+                "Escribe otra fecha en formato DD/MM o 0 para volver al menú.",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    const booked = new Set(Array.isArray(data.bookedHm) ? data.bookedHm : []);
+    const slots = slotsAll.filter((h) => !booked.has(h));
+    data.visibleSlots = slots;
+
+    if (!slots.length) {
+        return {
+            response:
+                `No veo horarios disponibles para ${label} en esta página.\n\n` +
+                "Pulsa Más horarios o escribe otra fecha en formato DD/MM.",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "SOPORTE_CITA", data, {
+        "1": label,
+        "2": slots[0] || "No disponible",
+        "3": slots[1] || "No disponible",
+        "4": slots[2] || "No disponible",
+        "5": slots[3] || "No disponible",
+        "6": slots[4] || "No disponible",
+        "7": slots[5] || "No disponible",
+    });
+}
+
+function askDocType(data) {
+    return sendTemplate(TEMPLATE_ASK_DOC_TYPE, "SOPORTE_CITA", {
+        ...data,
+        step: "ASK_DOC_TYPE",
+        firstName: data?.firstName || "Paciente",
+    }, { "1": data?.firstName || "Paciente" });
+}
+
+async function handleDocumentSearch({ text, data, phone }) {
+    if (!/^\d{5,20}$/.test(text)) {
+        return {
+            response:
+                "El número de documento debe contener solo números y mínimo 5 dígitos. Intenta nuevamente:\n\n0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data: { ...data, step: "ASK_DOCUMENT" },
         };
     }
 
-    if (step === "ASK_DOCUMENT") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
-        }
+    const documento = text;
 
-        if (!/^\d+$/.test(text)) {
-            return {
-                response:
-                    "El número de documento debe contener solo números. Intenta nuevamente:\n\n0️⃣ Volver al menú",
-                nextState: "SOPORTE_CITA",
-                data,
-            };
-        }
+    try {
+        const patient = await findLocalPatientByDocument(documento);
+        const citas = await findLocalAppointmentsByDocument(documento);
 
-        const documento = text;
-
-        try {
-            const patient = await findLocalPatientByDocument(documento);
-            const citas = await findLocalAppointmentsByDocument(documento);
-
-            if (!patient && !citas.length) {
-                await createSaludtoolsJob({
-                    jobType: "SUPPORT_APPOINTMENT_SEARCH",
-                    phone,
-                    dedupeKey: `support-search:${documento}:${tipo || "SOPORTE"}`,
-                    payload: {
-                        documento,
-                        tipo,
-                    },
-                    priority: 90,
-                });
-
-                return {
-                    response:
-                        "No encontré información local con ese documento.\n\n" +
-                        "Tu solicitud quedó en proceso y validaremos la información en el sistema. " +
-                        "Te avisaremos por este medio.\n\n" +
-                        "Volviendo al menú principal.",
-                    nextState: "MENU",
-                    data: { renderMenu: true },
-                };
-            }
-
-            if (!citas.length) {
-                await createSaludtoolsJob({
-                    jobType: "SUPPORT_APPOINTMENT_SEARCH",
-                    phone,
-                    dedupeKey: `support-search:${documento}:${tipo || "SOPORTE"}`,
-                    payload: {
-                        documento,
-                        tipo,
-                        patientDocumentType: Number(
-                            patient?.document_type || 1,
-                        ),
-                    },
-                    priority: 90,
-                });
-
-                return {
-                    response:
-                        "No encontré citas locales asociadas a ese documento.\n\n" +
-                        "Tu solicitud quedó en proceso y validaremos las citas en el sistema. " +
-                        "Te avisaremos por este medio.\n\n" +
-                        "Volviendo al menú principal.",
-                    nextState: "MENU",
-                    data: { renderMenu: true },
-                };
-            }
-
-            const lines = citas.map((it, idx) =>
-                formatAppointmentLine(it, idx),
-            );
-
-            return {
-                response:
-                    "Encontramos estas citas asociadas a tu documento:\n\n" +
-                    lines.join("\n") +
-                    "\n\nEscribe el número de la cita que deseas " +
-                    (tipo === "CANCELAR" ? "cancelar" : "reagendar") +
-                    ".\n\n0️⃣ Volver al menú",
-                nextState: "SOPORTE_CITA",
-                data: {
-                    ...data,
-                    step: "SELECT_APPOINTMENT",
+        if (!patient && !citas.length) {
+            await createSaludtoolsJob({
+                jobType: "SUPPORT_APPOINTMENT_SEARCH",
+                phone,
+                dedupeKey: `support-search:${documento}:${data.tipo || "SOPORTE"}`,
+                payload: {
                     documento,
-                    patientDocumentType: Number(
-                        patient?.document_type ||
-                            citas[0]?.patient_document_type ||
-                            1,
-                    ),
-                    citas,
+                    tipo: data.tipo,
+                    patientDocumentType: Number(data.patientDocumentType || 1),
                 },
-            };
-        } catch (error) {
-            console.error("Error en soporteCitaState (ASK_DOCUMENT):", error);
-            return {
-                response:
-                    "Ocurrió un error consultando tu información.\n\nPor favor intenta nuevamente o escribe *SECRETARIA*.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
+                priority: 90,
+            });
+
+            return returnToMenu(
+                "No encontré información local con ese documento.\n\n" +
+                "Tu solicitud quedó en proceso y validaremos la información en el sistema. " +
+                "Te avisaremos por este medio."
+            );
         }
+
+        if (!citas.length) {
+            await createSaludtoolsJob({
+                jobType: "SUPPORT_APPOINTMENT_SEARCH",
+                phone,
+                dedupeKey: `support-search:${documento}:${data.tipo || "SOPORTE"}`,
+                payload: {
+                    documento,
+                    tipo: data.tipo,
+                    patientDocumentType: Number(patient?.document_type || data.patientDocumentType || 1),
+                },
+                priority: 90,
+            });
+
+            return returnToMenu(
+                "No encontré citas locales asociadas a ese documento.\n\n" +
+                "Tu solicitud quedó en proceso y validaremos las citas en el sistema. " +
+                "Te avisaremos por este medio."
+            );
+        }
+
+        const lines = citas.map((it, idx) => formatAppointmentLine(it, idx));
+        const actionText = data.tipo === "CANCELAR" ? "cancelar" : "reagendar";
+
+        return {
+            response:
+                "Encontramos estas citas asociadas a tu documento:\n\n" +
+                lines.join("\n") +
+                `\n\nEscribe el número de la cita que deseas ${actionText}.\n\n0️⃣ Volver al menú`,
+            nextState: "SOPORTE_CITA",
+            data: {
+                ...data,
+                step: "SELECT_APPOINTMENT",
+                documento,
+                patientDocumentType: Number(patient?.document_type || data.patientDocumentType || citas[0]?.patient_document_type || 1),
+                citas,
+            },
+        };
+    } catch (error) {
+        console.error("Error en soporteCitaState (ASK_DOCUMENT):", error);
+        return returnToMenu(
+            "Ocurrió un error consultando tu información.\n\nPor favor intenta nuevamente o escribe *SECRETARIA*."
+        );
+    }
+}
+
+async function prepareNewDate({ text, data }) {
+    const parsed = parseDateInput(text);
+    if (!parsed) {
+        return {
+            response:
+                "Fecha inválida o muy pronto. Escríbela en formato DD/MM o AAAA-MM-DD.\n\n" +
+                "Recuerda que no atendemos miércoles, sábados, domingos ni festivos.\n\n" +
+                "0️⃣ Volver al menú",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    const schedule = getScheduleForYmd(parsed.ymd);
+    if (!schedule) {
+        return {
+            response:
+                `El Dr. no tiene atención el día ${parsed.label}.\n\n` +
+                "Escribe otra fecha en formato DD/MM o 0 para volver al menú.",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    const selectedAppointment =
+        Array.isArray(data.citas) && Number.isInteger(data.selectedIndex)
+            ? data.citas[data.selectedIndex]
+            : null;
+
+    let booked = [];
+    try {
+        booked = await getBookedHmFromDb({
+            ymd: parsed.ymd,
+            doctorDoc: selectedAppointment?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER,
+        });
+    } catch (error) {
+        booked = [];
+        console.error("Error consultando horarios ocupados para soporte:", error);
+    }
+
+    const nextData = {
+        ...data,
+        step: "ASK_NEW_TIME",
+        newDate: parsed.ymd,
+        newDateLabel: parsed.label,
+        page: 0,
+        bookedHm: Array.isArray(booked) ? booked : [],
+    };
+
+    return buildTimeTemplateResponse(nextData);
+}
+
+export default async function soporteCitaState(msg, data = {}, context = {}) {
+    const phone = context.from || "UNKNOWN";
+    const text = String(msg || "").trim();
+    const { tipo, step } = data;
+
+    if (!step) {
+        return askDocType({ ...data, tipo: tipo || "REAGENDAR" });
+    }
+
+    if (isBackToMenu(text)) {
+        return returnToMenu(null);
+    }
+
+    if (step === "ASK_DOC_TYPE") {
+        const docType = normalizeDocType(text);
+
+        // Si el paciente escribe directamente el número, asumimos CC para evitar bloqueos.
+        if (/^\d{5,20}$/.test(text)) {
+            return handleDocumentSearch({
+                text,
+                data: { ...data, patientDocumentType: Number(data.patientDocumentType || 1), step: "ASK_DOCUMENT" },
+                phone,
+            });
+        }
+
+        if (!docType) {
+            return askDocType(data);
+        }
+
+        return {
+            response:
+                "Perfecto. Ahora escribe tu número de documento, solo números:\n\n0️⃣ Volver al menú",
+            nextState: "SOPORTE_CITA",
+            data: { ...data, patientDocumentType: docType, step: "ASK_DOCUMENT" },
+        };
+    }
+
+    if (step === "ASK_DOCUMENT") {
+        return handleDocumentSearch({ text, data, phone });
     }
 
     if (step === "SELECT_APPOINTMENT") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
-        }
-
-        const idx = Number(text) - 1;
+        const idx = parseAppointmentSelection(text);
         const citas = Array.isArray(data.citas) ? data.citas : [];
 
         if (!Number.isFinite(idx) || idx < 0 || idx >= citas.length) {
@@ -260,17 +643,16 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         const appointmentId = cita?.saludtools_id || cita?.id;
 
         if (!appointmentId) {
-            return {
-                response:
-                    "No pudimos identificar la cita seleccionada.\n\nPor favor escribe *SECRETARIA* para ayudarte.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
+            return returnToMenu(
+                "No pudimos identificar la cita seleccionada.\n\nPor favor escribe *SECRETARIA* para ayudarte."
+            );
         }
 
         if (tipo === "CANCELAR") {
             return {
-                response: `Vas a cancelar la cita ID ${appointmentId}.\n\nResponde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú`,
+                response:
+                    `Vas a cancelar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.\n\n` +
+                    "Responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data: {
                     ...data,
@@ -282,7 +664,9 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         }
 
         return {
-            response: `Vas a reagendar la cita ID ${appointmentId}.\n\nEscribe la nueva fecha en formato AAAA-MM-DD (ej: 2026-03-05).\n\n0️⃣ Volver al menú`,
+            response:
+                `Vas a reagendar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.\n\n` +
+                "¿Para qué nueva fecha deseas reagendarla?\nFormato DD/MM.\n\n0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data: {
                 ...data,
@@ -294,14 +678,6 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
     }
 
     if (step === "CONFIRM_CANCEL") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
-        }
-
         const yn = normalizeYesNo(text);
         if (!yn) {
             return {
@@ -313,14 +689,10 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         }
 
         if (yn === "NO") {
-            return {
-                response:
-                    "Listo, no realizamos cambios.\n\nVolviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
+            return returnToMenu("Listo, no realizamos cambios.");
         }
-        const cita = data.citas[data.selectedIndex];
+
+        const cita = data.citas?.[data.selectedIndex];
 
         await createSaludtoolsJob({
             jobType: "APPOINTMENT_DELETE",
@@ -330,84 +702,92 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 appointmentId: data.appointmentId,
                 documento: data.documento,
                 patientDocumentType: Number(data.patientDocumentType || 1),
-                startDate: cita.start_date,
-                startTime: cita.start_time,
-                endDate: cita.end_date,
-                endTime: cita.end_time,
+                startDate: formatDbDate(cita?.start_date),
+                startTime: String(cita?.start_time || "").slice(0, 5),
+                endDate: formatDbDate(cita?.end_date),
+                endTime: String(cita?.end_time || "").slice(0, 5),
             },
             priority: 100,
         });
 
-        return {
-            response:
-                "Tu solicitud de cancelación quedó en proceso.\n\n" +
-                "Te avisaremos por este medio cuando quede aplicada.\n\n" +
-                "Volviendo al menú principal.",
-            nextState: "MENU",
-            data: { renderMenu: true },
-        };
+        return returnToMenu(
+            "Tu solicitud de cancelación quedó en proceso.\n\n" +
+            "Te avisaremos por este medio cuando quede aplicada."
+        );
     }
 
     if (step === "ASK_NEW_DATE") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
+        return prepareNewDate({ text, data });
+    }
+
+    if (step === "ASK_NEW_TIME") {
+        const maybeDate = parseDateInput(text);
+        if (maybeDate) {
+            return prepareNewDate({ text, data });
         }
 
-        if (!isValidYmd(text)) {
+        const hourButton = parseHourButton(text);
+
+        if (hourButton === "MORE") {
+            const nextData = { ...data, page: Number(data.page || 0) + 1 };
+            return buildTimeTemplateResponse(nextData);
+        }
+
+        const slots = Array.isArray(data.visibleSlots)
+            ? data.visibleSlots
+            : getSlotsForDate(data.newDate, data.page || 0);
+
+        let index = typeof hourButton === "number" ? hourButton : NaN;
+        let selectedHour = "";
+
+        if (Number.isFinite(index) && index >= 0 && index < slots.length) {
+            selectedHour = slots[index];
+        } else if (isValidHm(text)) {
+            selectedHour = text;
+        }
+
+        if (!selectedHour) {
             return {
                 response:
-                    "Fecha inválida. Escríbela en formato AAAA-MM-DD (ej: 2026-03-05).\n\n0️⃣ Volver al menú",
+                    "Elige una hora de la plantilla o escribe otra fecha en formato DD/MM.\n\n0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data,
             };
+        }
+
+        const selectedAppointment =
+            Array.isArray(data.citas) && Number.isInteger(data.selectedIndex)
+                ? data.citas[data.selectedIndex]
+                : null;
+
+        let bookedNow = false;
+        try {
+            bookedNow = await isSlotBookedInDb({
+                ymd: data.newDate,
+                hm: selectedHour,
+                doctorDoc: selectedAppointment?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER,
+            });
+        } catch (error) {
+            bookedNow = false;
+            console.error("Error verificando horario seleccionado:", error);
+        }
+
+        if (bookedNow) {
+            const bookedHm = Array.isArray(data.bookedHm) ? data.bookedHm : [];
+            if (!bookedHm.includes(selectedHour)) bookedHm.push(selectedHour);
+            return buildTimeTemplateResponse({ ...data, bookedHm });
         }
 
         return {
             response:
-                "Perfecto. Ahora escribe la hora en formato HH:MM (24h), por ejemplo 14:30.\n\n0️⃣ Volver al menú",
+                `Confirmación: reagendar la cita para ${data.newDateLabel || formatYmdToDdMm(data.newDate)} a las ${selectedHour}.\n\n` +
+                "Responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
-            data: { ...data, step: "ASK_NEW_TIME", newDate: text },
-        };
-    }
-
-    if (step === "ASK_NEW_TIME") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
-        }
-
-        if (!isValidHm(text)) {
-            return {
-                response:
-                    "Hora inválida. Escríbela en formato HH:MM (24h), por ejemplo 14:30.\n\n0️⃣ Volver al menú",
-                nextState: "SOPORTE_CITA",
-                data,
-            };
-        }
-
-        return {
-            response: `Confirmación: reagendar la cita ID ${data.appointmentId} para ${data.newDate} ${text}.\n\nResponde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú`,
-            nextState: "SOPORTE_CITA",
-            data: { ...data, step: "CONFIRM_RESCHEDULE", newTime: text },
+            data: { ...data, step: "CONFIRM_RESCHEDULE", newTime: selectedHour },
         };
     }
 
     if (step === "CONFIRM_RESCHEDULE") {
-        if (isBackToMenu(text)) {
-            return {
-                response: "Volviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
-        }
-
         const yn = normalizeYesNo(text);
         if (!yn) {
             return {
@@ -419,12 +799,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         }
 
         if (yn === "NO") {
-            return {
-                response:
-                    "Listo, no realizamos cambios.\n\nVolviendo al menú principal.",
-                nextState: "MENU",
-                data: { renderMenu: true },
-            };
+            return returnToMenu("Listo, no realizamos cambios.");
         }
 
         const selectedAppointment =
@@ -432,11 +807,11 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 ? data.citas[data.selectedIndex]
                 : null;
 
-        const end = addMinutesToYmdHm(
-            data.newDate,
-            data.newTime,
-            APPOINTMENT_DURATION_MIN,
+        const end = addMinutesToYmdHm(data.newDate, data.newTime, APPOINTMENT_DURATION_MIN);
+        const doctorDocumentNumber = String(
+            selectedAppointment?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER,
         );
+        const clinic = Number(selectedAppointment?.clinic || DEFAULT_CLINIC_ID);
 
         await createSaludtoolsJob({
             jobType: "APPOINTMENT_UPDATE",
@@ -446,57 +821,34 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 appointmentId: data.appointmentId,
                 documento: data.documento,
                 patientDocumentType: Number(
-                    data.patientDocumentType ||
-                        selectedAppointment?.patient_document_type ||
-                        1,
+                    data.patientDocumentType || selectedAppointment?.patient_document_type || 1,
                 ),
                 appointmentBody: {
                     id: String(data.appointmentId),
                     startAppointment: `${data.newDate} ${data.newTime}`,
                     endAppointment: `${end.ymd} ${end.hm}`,
                     patientDocumentType: Number(
-                        data.patientDocumentType ||
-                            selectedAppointment?.patient_document_type ||
-                            1,
+                        data.patientDocumentType || selectedAppointment?.patient_document_type || 1,
                     ),
                     patientDocumentNumber: String(data.documento),
                     doctorDocumentType: 1,
-                    doctorDocumentNumber: String(
-                        selectedAppointment?.doctor_document_number ||
-                            process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER ||
-                            "72134079",
-                    ),
+                    doctorDocumentNumber,
                     modality: "CONVENTIONAL",
                     stateAppointment: "PENDING",
                     notificationState: "ATTEND",
-                    appointmentType:
-                        selectedAppointment?.appointment_type ||
-                        process.env.SALUDTOOLS_APPOINTMENT_TYPE ||
-                        "Pruebas Luis",
-                    clinic: Number(
-                        selectedAppointment?.clinic ||
-                            process.env.SALUDTOOLS_CLINIC_ID ||
-                            18569,
-                    ),
+                    appointmentType: DEFAULT_APPOINTMENT_TYPE,
+                    clinic,
                     comment: `Reagendada por chatbot. Documento: ${data.documento}`,
                 },
             },
             priority: 100,
         });
 
-        return {
-            response:
-                "Tu solicitud de reagendamiento quedó en proceso.\n\n" +
-                "Te avisaremos por este medio cuando quede aplicada.\n\n" +
-                "Volviendo al menú principal.",
-            nextState: "MENU",
-            data: { renderMenu: true },
-        };
+        return returnToMenu(
+            "Tu solicitud de reagendamiento quedó en proceso.\n\n" +
+            "Te avisaremos por este medio cuando quede aplicada."
+        );
     }
 
-    return {
-        response: "Volviendo al menú principal.",
-        nextState: "MENU",
-        data: { renderMenu: true },
-    };
+    return returnToMenu(null);
 }

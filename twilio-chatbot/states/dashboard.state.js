@@ -8,7 +8,10 @@ import {
     createDashboardQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
-import { parseDashboardAppointmentsAI, summarizeSecretaryCasesAI } from "../services/azure.ai.services.js";
+import {
+    parseDashboardAppointmentsAI,
+    summarizeSecretaryCasesAI,
+} from "../services/azure.ai.services.js";
 
 const { getTimeSlots } = timeUtils;
 
@@ -164,12 +167,17 @@ function addMinutesToYmdHm(ymd, hm, minutesToAdd) {
 
 function ddmmToYmd(ddmm) {
     const [day, month] = ddmm.split("/").map(Number);
-    const year = new Date().getFullYear();
-    const d = new Date(year, month - 1, day);
-    const yyyy = String(d.getFullYear()).padStart(4, "0");
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+
+    const today = new Date();
+    let year = today.getFullYear();
+
+    const candidate = new Date(year, month - 1, day);
+
+    if (candidate < today) {
+        year++;
+    }
+
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function isValidDateDDMM(value) {
@@ -183,6 +191,30 @@ function isValidDateDDMM(value) {
     today.setHours(0, 0, 0, 0);
 
     return !isNaN(date) && date >= today;
+}
+function isHoliday(ymd) {
+    const holidays = [
+        "2026-01-01",
+        "2026-01-12",
+        "2026-03-23",
+        "2026-04-02",
+        "2026-04-03",
+        "2026-05-01",
+        "2026-05-18",
+        "2026-06-08",
+        "2026-06-15",
+        "2026-06-29",
+        "2026-07-20",
+        "2026-08-07",
+        "2026-08-17",
+        "2026-10-12",
+        "2026-11-02",
+        "2026-11-16",
+        "2026-12-08",
+        "2026-12-25",
+    ];
+
+    return holidays.includes(ymd);
 }
 
 function isValidHour(value = "") {
@@ -331,16 +363,25 @@ function parseQuickAppointmentsMessage(msg = "") {
 }
 
 function normalizeAiDashboardAppointments(aiResult = {}) {
-    const appointments = Array.isArray(aiResult.appointments) ? aiResult.appointments : [];
+    const appointments = Array.isArray(aiResult.appointments)
+        ? aiResult.appointments
+        : [];
     const valid = [];
     const invalid = [];
 
     appointments.forEach((item, index) => {
         const normalizedLine = [
-            String(item.modality || "").toLowerCase() === "llamada" ? "llamada" : "presencial",
+            String(item.modality || "").toLowerCase() === "llamada"
+                ? "llamada"
+                : "presencial",
             item.dateLabel,
             item.timeLabel,
-            item.rawDocType || (Number(item.patientDocumentType) === 2 ? "ce" : Number(item.patientDocumentType) === 3 ? "ti" : "cc"),
+            item.rawDocType ||
+                (Number(item.patientDocumentType) === 2
+                    ? "ce"
+                    : Number(item.patientDocumentType) === 3
+                      ? "ti"
+                      : "cc"),
             item.patientDocumentNumber,
         ]
             .filter(Boolean)
@@ -683,7 +724,8 @@ export default async function dashboardState(msg, data = {}, context) {
                 return {
                     response:
                         "🤖 Resumen IA de pendientes\n\n" +
-                        (summary || "No encontré suficientes datos para generar un resumen.") +
+                        (summary ||
+                            "No encontré suficientes datos para generar un resumen.") +
                         "\n\n" +
                         DASHBOARD_MENU_TEXT,
                     nextState: "DASHBOARD",
@@ -709,7 +751,8 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            const { valid, invalid, usedAI } = await parseQuickAppointmentsMessageWithAI(msg);
+            const { valid, invalid, usedAI } =
+                await parseQuickAppointmentsMessageWithAI(msg);
 
             if (!valid.length) {
                 let response =
@@ -742,11 +785,15 @@ export default async function dashboardState(msg, data = {}, context) {
             for (const item of valid) {
                 try {
                     const ymd = ddmmToYmd(item.dateLabel);
-                    const end = addMinutesToYmdHm(
-                        ymd,
-                        item.timeLabel,
-                        APPOINTMENT_DURATION_MIN,
-                    );
+
+                    if (isHoliday(ymd)) {
+                        failed.push({
+                            lineNumber: item.lineNumber,
+                            raw: item.raw,
+                            error: "La fecha corresponde a un festivo en Colombia",
+                        });
+                        continue;
+                    }
 
                     const rawPayload = {
                         source: "SECRETARY_DASHBOARD",
@@ -810,7 +857,9 @@ export default async function dashboardState(msg, data = {}, context) {
                 `❌ Con error: ${invalid.length + failed.length}\n\n`;
 
             if (inserted.length) {
-                response += (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") + "Citas guardadas:\n";
+                response +=
+                    (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
+                    "Citas guardadas:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
@@ -1065,9 +1114,21 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
+            const ymd = ddmmToYmd(msg);
+
+            if (isHoliday(ymd)) {
+                return {
+                    response:
+                        "❌ La fecha seleccionada corresponde a un día festivo en Colombia.\n\nSelecciona otra fecha:",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
             data.newDate = msg;
             data.page = 0;
             data.step = "ASK_TIME";
+
             return buildTimeResponseForDashboard(data);
         }
 
@@ -1174,11 +1235,18 @@ export default async function dashboardState(msg, data = {}, context) {
             try {
                 if (!data?.skipSaludtools && saludId) {
                     const ymd = ddmmToYmd(data.newDate);
-                    const end = addMinutesToYmdHm(
-                        ymd,
-                        data.newTime,
-                        APPOINTMENT_DURATION_MIN,
-                    );
+
+                    if (isHoliday(ymd)) {
+                        return {
+                            response:
+                                "❌ No es posible reagendar citas para días festivos en Colombia.\n\nIngresa una nueva fecha:",
+                            nextState: "DASHBOARD",
+                            data: {
+                                ...data,
+                                step: "ASK_DATE",
+                            },
+                        };
+                    }
 
                     await createSaludtoolsJob({
                         jobType: "APPOINTMENT_UPDATE",
