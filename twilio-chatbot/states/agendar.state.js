@@ -28,7 +28,7 @@ const SALUDTOOLS_DEBUG =
     process.env.SALUDTOOLS_DEBUG === "1";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
-const TEMPLATE_ASK_DOC_NUMBER = "HXb7f86251fabd4b572ccde29a86f348ff";
+const TEMPLATE_ASK_DOC_NUMBER = "HX0890465c34494390129eb9c80f47c61a";
 const TEMPLATE_ASK_ATTENTION_TYPE = "HXcda5ec9a090db786740c644ddd809cbb";
 const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
 
@@ -96,6 +96,7 @@ function normalizeDocType(msg) {
         .replace(/[._-]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+
     const compact = key.replace(/\s+/g, "_");
 
     if (
@@ -122,6 +123,41 @@ function normalizeDocType(msg) {
         key.includes("cedula de extranjeria")
     ) {
         return 2;
+    }
+
+    if (
+        key === "3" ||
+        key === "pasaporte" ||
+        compact === "doc_pasaporte" ||
+        compact === "tipo_pasaporte" ||
+        compact === "documento_pasaporte"
+    ) {
+        return 4;
+    }
+
+    if (
+        key === "4" ||
+        key === "rc" ||
+        key === "r c" ||
+        compact === "doc_rc" ||
+        compact === "tipo_rc" ||
+        compact === "documento_rc" ||
+        key.includes("registro civil")
+    ) {
+        return 5;
+    }
+
+    if (
+        key === "5" ||
+        key === "ti" ||
+        key === "t i" ||
+        compact === "doc_ti" ||
+        compact === "tipo_ti" ||
+        compact === "documento_ti" ||
+        key.includes("tarjeta identidad") ||
+        key.includes("tarjeta de identidad")
+    ) {
+        return 6;
     }
 
     return null;
@@ -338,7 +374,7 @@ async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
     return !isCancelledStatus(rows[0].status);
 }
 
-const ALLOWED_DOC_TYPES = new Set([1, 2]);
+const ALLOWED_DOC_TYPES = new Set([1, 2, 4, 5, 6]);
 const ALLOWED_GENDERS = new Set([1, 2]);
 
 function collapseSpaces(s) {
