@@ -1173,7 +1173,18 @@ export default async function agendarState(msg, data, context = {}) {
             data.step = "SHOW_COST_INFO";
             return {
                 response:
-                    "La consulta particular tiene un valor de $400.000\n\n" +
+                     "El Dr. atiende pacientes de las siguientes entidades:\n" +
+                        "• ARL\n" +
+                        "• Allianz\n" +
+                        "• AXA\n" +
+                        "• Colpatria\n" +
+                        "• Colmedica\n" +
+                        "• Colsanitas\n" +
+                        "• Coomeva\n" +
+                        "• Suramericana\n" +
+                        "• Medisanitas\n" +
+                        "• Medplus\n\n" +
+                    "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
                     "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
                     "Los descuentos son autorizados directamente por el Dr.\n\n" +
                     "1️⃣ Continuar\n" +
