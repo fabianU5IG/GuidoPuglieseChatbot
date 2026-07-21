@@ -50,7 +50,6 @@ function startAppointmentSupport(tipo) {
 export default function gestionCitasState(msg, data = {}) {
     const textoMenu =
         "Antes de continuar, ten en cuenta:\n\n" +
-        "• El Dr. no es ortopedista pediátrico.\n" +
         "• No realizamos consultas domiciliarias.\n" +
         "• Nos enfocamos principalmente en problemas de columna.\n" +
         "• No prestamos servicio de urgencias.\n\n" +

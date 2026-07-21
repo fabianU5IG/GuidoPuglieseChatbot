@@ -903,7 +903,7 @@ export default async function agendarState(msg, data, context = {}) {
             data.step = "REG_EPS";
             return {
                 response:
-                    "¿Cuál es tu EPS?\n\n" +
+                    "¿Cuál es tu seguro médico?\n\n" +
                     "Escribe el nombre (ej: Suramericana, Colsanitas).\n" +
                     "Si es particular, escribe PARTICULAR.\n\n" +
                     "0️⃣ Volver al menú",
