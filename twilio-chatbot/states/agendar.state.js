@@ -763,6 +763,7 @@ export default async function agendarState(msg, data, context = {}) {
                 birthDate: "",
                 gender: null,
                 email: "",
+                phone: "",
                 eps: "",
                 habeasData: false,
             };
@@ -936,12 +937,41 @@ export default async function agendarState(msg, data, context = {}) {
                 data.regPatient.email = em;
             }
 
+            data.step = "REG_PHONE";
+            return {
+                response:
+                    "¿Cuál es tu teléfono de contacto?\n\n" +
+                    "Escribe solo números.\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data,
+            };
+        }
+
+        case "REG_PHONE": {
+            if (msg === "0") return returnToMenu();
+
+            const phone = String(msg || "").replace(/\D/g, "");
+
+            if (!/^\d{7,15}$/.test(phone)) {
+                return {
+                    response:
+                        "Número inválido. Escribe únicamente números (entre 7 y 15 dígitos).\n\n" +
+                        "0️⃣ Volver al menú",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            data.regPatient.phone = phone;
+
             data.step = "REG_EPS";
+
             return {
                 response:
                     "¿Cuál es tu seguro médico?\n\n" +
-                    "Escribe el nombre (ej: Suramericana, Colsanitas).\n" +
-                    "Si es particular, escribe PARTICULAR.\n\n" +
+                    "Escribe el nombre (ej: Colsanitas, Sura).\n" +
+                    "Si es particular escribe PARTICULAR.\n\n" +
                     "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
                 data,
@@ -1301,8 +1331,9 @@ export default async function agendarState(msg, data, context = {}) {
                     gender: Number(data.regPatient?.gender || 0),
                     documentType: Number(data.patientDocumentType),
                     documentNumber: String(data.patientDocumentNumber),
-                    phone: parsePhoneE164ToDigits(phone),
-                    cellPhone: parsePhoneE164ToDigits(phone),
+                    phone: data.regPatient.phone,
+                    phone: data.regPatient.phone,
+                    cellPhone: data.regPatient.phone || parsePhoneE164ToDigits(phone),
                     email: data.regPatient?.email || "",
                     eps: data.regPatient?.eps ? Number(data.regPatient.eps) : 0,
                     habeasData: Boolean(data.regPatient?.habeasData),
