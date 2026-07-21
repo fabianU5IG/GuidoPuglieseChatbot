@@ -130,6 +130,34 @@ export async function notifySecretaryPostSurgeryImage({
     });
 }
 
+export async function notifySecretarySupportRequest({
+    patientPhone,
+    patientName = "Paciente",
+    reason = "Solicitud de atención",
+    note = "",
+}) {
+    const body =
+        `📥 *Solicitud para secretaria*\n\n` +
+        `👤 Paciente: ${patientName}\n` +
+        `📞 Tel: ${patientPhone}\n` +
+        `📌 Motivo: ${reason}` +
+        (note ? `\n📝 Mensaje: ${note}` : "");
+
+    console.log("📤 Notificando solicitud a secretaria:", {
+        to: SECRETARY_WHATSAPP,
+        patientPhone,
+        patientName,
+        reason,
+        hasNote: Boolean(note),
+    });
+
+    return client.messages.create({
+        from: FROM_WHATSAPP,
+        to: SECRETARY_WHATSAPP,
+        body,
+    });
+}
+
 export async function downloadTwilioMedia(mediaUrl) {
     const response = await fetch(mediaUrl, {
         headers: {

@@ -53,7 +53,7 @@ export default async function chatbotResponse(message, session, context = {}) {
     }
 
     if (state === "MENU") {
-        return menuState(msg, data);
+        return menuState(msg, data, context);
     }
 
     if (state.startsWith("AGENDAR")) {
@@ -76,5 +76,5 @@ export default async function chatbotResponse(message, session, context = {}) {
         return postSurgeryState(msg, data, context);
     }
 
-    return menuState(msg, data);
+    return menuState(msg, data, context);
 }

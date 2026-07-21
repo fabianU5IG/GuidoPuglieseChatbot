@@ -321,7 +321,17 @@ function normalizeEmail(value) {
 
 function isCancelledStatus(status) {
     const s = String(status || "").toUpperCase();
-    return s === "CANCELLED" || s === "CANCELED";
+    return s === "CANCELLED" || s === "CANCELED" || s === "FAILED";
+}
+
+function hmToMinutes(value) {
+    const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function intervalsOverlap(startA, endA, startB, endB) {
+    return startA < endB && startB < endA;
 }
 
 async function findSaludtoolsPatientInDb({ docType, docNum }) {
@@ -340,9 +350,9 @@ async function findSaludtoolsPatientInDb({ docType, docNum }) {
 }
 
 async function getBookedHmFromDb({ ymd, doctorDoc }) {
-    const [rows] = await db.query(
+    const [saludtoolsRows] = await db.query(
         `
-        SELECT start_time, status
+        SELECT start_time, end_time, status
         FROM saludtools_appointments
         WHERE start_date = ?
           AND doctor_document_number = ?
@@ -350,28 +360,70 @@ async function getBookedHmFromDb({ ymd, doctorDoc }) {
         [ymd, String(doctorDoc)],
     );
 
-    if (!Array.isArray(rows) || !rows.length) return [];
+    const [localRows] = await db.query(
+        `
+        SELECT
+            scheduled_time AS start_time,
+            ADDTIME(
+                scheduled_time,
+                SEC_TO_TIME(COALESCE(duration_minutes, ?) * 60)
+            ) AS end_time,
+            status
+        FROM appointments
+        WHERE scheduled_date = ?
+          AND (
+                UPPER(status) IN ('CONFIRMED', 'RESCHEDULED')
+                OR (
+                    UPPER(status) IN ('PROPOSED', 'QUEUED')
+                    AND created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                )
+          )
+        `,
+        [APPOINTMENT_DURATION_MIN, ymd],
+    );
 
-    return rows
-        .filter((r) => !isCancelledStatus(r.status))
-        .map((r) => String(r.start_time).slice(0, 5));
+    const rows = [
+        ...(Array.isArray(saludtoolsRows) ? saludtoolsRows : []),
+        ...(Array.isArray(localRows) ? localRows : []),
+    ].filter((row) => !isCancelledStatus(row.status));
+
+    if (!rows.length) return [];
+
+    const schedule = getScheduleForYmd(ymd);
+    if (!schedule) return [];
+
+    const candidateSlots = buildSlots(
+        schedule.start,
+        schedule.end,
+        SLOT_MIN,
+    );
+
+    return candidateSlots.filter((hm) => {
+        const candidateStart = hmToMinutes(hm);
+        const candidateEnd = candidateStart + APPOINTMENT_DURATION_MIN;
+
+        return rows.some((row) => {
+            const existingStart = hmToMinutes(row.start_time);
+            if (!Number.isFinite(existingStart)) return false;
+
+            const parsedEnd = hmToMinutes(row.end_time);
+            const existingEnd = Number.isFinite(parsedEnd)
+                ? parsedEnd
+                : existingStart + APPOINTMENT_DURATION_MIN;
+
+            return intervalsOverlap(
+                candidateStart,
+                candidateEnd,
+                existingStart,
+                existingEnd,
+            );
+        });
+    });
 }
 
 async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
-    const [rows] = await db.query(
-        `
-        SELECT status
-        FROM saludtools_appointments
-        WHERE start_date = ?
-          AND start_time = ?
-          AND doctor_document_number = ?
-        LIMIT 1
-        `,
-        [ymd, `${hm}:00`, String(doctorDoc)],
-    );
-
-    if (!rows.length) return false;
-    return !isCancelledStatus(rows[0].status);
+    const booked = await getBookedHmFromDb({ ymd, doctorDoc });
+    return booked.includes(hm);
 }
 
 const ALLOWED_DOC_TYPES = new Set([1, 2, 4, 5, 6]);
@@ -1376,9 +1428,14 @@ export default async function agendarState(msg, data, context = {}) {
                         doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
                         modality: APPOINTMENT_MODALITY,
                         stateAppointment: APPOINTMENT_STATE,
-                        appointmentType: APPOINTMENT_TYPE_DEFAULT,
+                        appointmentType:
+                            data.appointmentType || APPOINTMENT_TYPE_DEFAULT,
                         clinic: CLINIC_ID,
-                        comment: `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}`,
+                        comment:
+                            `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}` +
+                            (data.isPostOperative
+                                ? ". Motivo: cita posoperatoria desde los 15 días posteriores a cirugía"
+                                : ""),
                     },
                 },
                 priority: 110,

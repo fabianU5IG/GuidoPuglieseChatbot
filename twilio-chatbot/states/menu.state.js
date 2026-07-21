@@ -1,13 +1,8 @@
+import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
+
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_GESTION_CITA = "HX4148f8bb8a8e0312b0f58302b1cd48d7";
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
-const SECRETARY_WHATSAPP_NUMBER = process.env.SECRETARY_WHATSAPP_NUMBER || "+573224811542";
-
-function buildSecretaryWhatsappLink() {
-    const digits = String(SECRETARY_WHATSAPP_NUMBER || "").replace(/\D/g, "");
-    return `https://wa.me/${digits}`;
-}
-
 function sendTemplate(contentSid, nextState = "MENU", data = {}, variables = null) {
     return {
         response: null,
@@ -122,7 +117,7 @@ function isInfoIntent(normalizedMsg, compactMsg) {
     );
 }
 
-export default function menuState(msg, data = {}) {
+export default async function menuState(msg, data = {}, context = {}) {
     const mainMenu =
         "Hola 👋\n\n" +
         "Soy el asistente del consultorio del Dr. Guido Pugliese, Ortopedista – Traumatólogo.\n\n" +
@@ -178,28 +173,39 @@ export default function menuState(msg, data = {}) {
     }
 
     if (isAdvisorIntent(normalizedMsg, compactMsg)) {
+        try {
+            await notifySecretarySupportRequest({
+                patientPhone: context.from,
+                patientName: data.fullName || data.patientName || "Paciente",
+                reason: "Solicitud general a secretaria",
+                note: String(context.rawBody?.Body || "").trim(),
+            });
+        } catch (error) {
+            console.error("❌ No fue posible notificar a la secretaria:", error);
+        }
+
         return {
             response:
-                "Puedes comunicarte directamente con la secretaria en este enlace:\n" +
-                buildSecretaryWhatsappLink(),
-            nextState: "MENU",
-            data: {},
+                "Tu solicitud fue enviada a la secretaria y quedó en espera. No necesitas seleccionar ni enviar más opciones; te responderemos por este mismo medio.",
+            nextState: "SECRETARIA",
+            data: {
+                reason: "GENERAL_SECRETARY_SUPPORT",
+                waitingForSecretary: true,
+                secretaryNotified: true,
+            },
         };
     }
 
     if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
         return {
             response:
-                "Si presentas:\n\n" +
-                "• Supuración de herida\n" +
-                "• Cambios extraños\n" +
-                "• Dolor intenso\n\n" +
-                "Puedes enviarnos fotos para que el Dr. las revise.\n\n" +
-                "1️⃣ Enviar imágenes\n" +
-                "2️⃣ Agendar cita de control\n" +
-                "3️⃣ Hablar con secretaria",
+                "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
+                "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
+                "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
+                "3️⃣ Hablar con la secretaria\n" +
+                "0️⃣ Volver al menú",
             nextState: "POST_SURGERY",
-            data: {},
+            data: { step: "ASK_POST_SURGERY_DAYS" },
         };
     }
 

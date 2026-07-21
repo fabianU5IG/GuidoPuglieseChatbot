@@ -73,20 +73,20 @@ function isCancelledAppointment(item) {
 function hasAppointmentConflict(
     resp,
     targetStart,
+    targetEnd,
     currentAppointmentId = null,
 ) {
     const content = resp?.body?.content;
     if (!Array.isArray(content) || !content.length) return false;
 
-    const target = String(targetStart || "")
-        .replace("T", " ")
-        .slice(0, 16);
+    const targetStartMin = dateTimeToEpochMinutes(targetStart);
+    const targetEndMin = dateTimeToEpochMinutes(targetEnd);
+    const targetDuration =
+        Number.isFinite(targetStartMin) && Number.isFinite(targetEndMin)
+            ? Math.max(1, targetEndMin - targetStartMin)
+            : 20;
 
     return content.some((item) => {
-        const start = String(item?.startAppointment || item?.start_date || "")
-            .replace("T", " ")
-            .slice(0, 16);
-
         const sameAppointment =
             currentAppointmentId &&
             String(item?.id || item?.saludtools_id || "") ===
@@ -95,8 +95,80 @@ function hasAppointmentConflict(
         if (sameAppointment) return false;
         if (isCancelledAppointment(item)) return false;
 
-        return start === target;
+        const existingStart = dateTimeToEpochMinutes(
+            item?.startAppointment || item?.start_date,
+        );
+        const parsedExistingEnd = dateTimeToEpochMinutes(
+            item?.endAppointment || item?.end_date,
+        );
+        const existingEnd = Number.isFinite(parsedExistingEnd)
+            ? parsedExistingEnd
+            : existingStart + targetDuration;
+
+        if (
+            Number.isFinite(targetStartMin) &&
+            Number.isFinite(targetEndMin) &&
+            Number.isFinite(existingStart) &&
+            Number.isFinite(existingEnd)
+        ) {
+            return targetStartMin < existingEnd && existingStart < targetEndMin;
+        }
+
+        return (
+            normalizeDateTime(item?.startAppointment || item?.start_date) ===
+            normalizeDateTime(targetStart)
+        );
     });
+}
+
+function dateTimeToEpochMinutes(value) {
+    const match = String(value || "")
+        .replace("T", " ")
+        .match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})/);
+
+    if (!match) return null;
+
+    const [, year, month, day, hour, minute] = match.map(Number);
+    return Date.UTC(year, month - 1, day, hour, minute) / 60_000;
+}
+
+function normalizeErrorText(error) {
+    const parts = [
+        error?.message,
+        error?.response?.message,
+        error?.response?.raw,
+        error?.response?.body?.message,
+    ];
+
+    return parts
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isSlotUnavailableError(error) {
+    if (Number(error?.businessCode) === 409) return true;
+
+    const text = normalizeErrorText(error);
+    if (text.includes("appointment slot already occupied")) return true;
+
+    const mentionsSlot =
+        text.includes("horario") ||
+        text.includes("hora") ||
+        text.includes("cita") ||
+        text.includes("appointment");
+
+    const unavailable =
+        text.includes("no disponible") ||
+        text.includes("ocupad") ||
+        text.includes("cruce") ||
+        text.includes("se solapa") ||
+        text.includes("overlap") ||
+        text.includes("ya existe una cita");
+
+    return mentionsSlot && unavailable;
 }
 
 function shouldSendWaitingMessage(nextAttempts) {
@@ -304,11 +376,15 @@ async function processAppointmentCreate(job) {
             startAppointment: appointmentBody.startAppointment,
             endAppointment: appointmentBody.endAppointment,
             page: 0,
-            size: 20,
+            size: 200,
         });
 
         if (
-            hasAppointmentConflict(searchResp, appointmentBody.startAppointment)
+            hasAppointmentConflict(
+                searchResp,
+                appointmentBody.startAppointment,
+                appointmentBody.endAppointment,
+            )
         ) {
             throw Object.assign(
                 new Error("Appointment slot already occupied"),
@@ -361,6 +437,23 @@ async function processAppointmentCreate(job) {
             `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`,
         );
     } catch (error) {
+        if (isSlotUnavailableError(error)) {
+            if (job.appointment_id) {
+                await updateAppointmentStatusById(job.appointment_id, "FAILED");
+            }
+
+            await markSaludtoolsJobFailed(
+                job.id,
+                `HORARIO_NO_DISPONIBLE: ${safeErrorMessage(error)}`,
+            );
+
+            await safeSendWhatsApp(
+                job.phone,
+                `El horario ${payload.timeLabel || "seleccionado"} del ${payload.dateLabel || "día solicitado"} ya no está disponible en SaludTools. Escribe *AGENDAR* para escoger una nueva fecha y hora.`,
+            );
+            return;
+        }
+
         await handleRetryOrFail({
             job,
             error,
@@ -473,13 +566,14 @@ async function processAppointmentUpdate(job) {
             startAppointment: appointmentBody.startAppointment,
             endAppointment: appointmentBody.endAppointment,
             page: 0,
-            size: 20,
+            size: 200,
         });
 
         if (
             hasAppointmentConflict(
                 searchResp,
                 appointmentBody.startAppointment,
+                appointmentBody.endAppointment,
                 appointmentId,
             )
         ) {
@@ -527,6 +621,19 @@ async function processAppointmentUpdate(job) {
             `✅ Tu cita fue reagendada correctamente para ${appointmentBody.startAppointment}.`,
         );
     } catch (error) {
+        if (isSlotUnavailableError(error)) {
+            await markSaludtoolsJobFailed(
+                job.id,
+                `HORARIO_NO_DISPONIBLE: ${safeErrorMessage(error)}`,
+            );
+
+            await safeSendWhatsApp(
+                job.phone,
+                "El nuevo horario seleccionado ya no está disponible en SaludTools. Escribe *REAGENDAR* para escoger otra fecha y hora.",
+            );
+            return;
+        }
+
         await handleRetryOrFail({
             job,
             error,
