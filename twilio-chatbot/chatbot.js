@@ -10,7 +10,7 @@ import postSurgeryState from "./states/postSurgery.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 
 // 📌 Números autorizados como secretaría
-const SECRETARY_PHONES = ["573224811542"];
+const SECRETARY_PHONES = ["573153573131"];
 
 /**
  * Función principal del chatbot

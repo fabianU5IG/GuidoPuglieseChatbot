@@ -20,7 +20,7 @@ const { getTimeSlots } = timeUtils;
  *  CONFIG
  * =========================
  */
-const SECRETARY_PHONES = ["573224811542"];
+const SECRETARY_PHONES = ["573153573131"];
 const SECRETARY_CASES_PAGE_SIZE = 10;
 
 const APPOINTMENT_DURATION_MIN = Number(
