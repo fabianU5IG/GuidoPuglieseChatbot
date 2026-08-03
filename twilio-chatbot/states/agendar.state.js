@@ -668,6 +668,54 @@ async function normalizeAgendarMessage(msg, step, data) {
     const raw = String(msg || "").trim();
     if (!raw) return raw;
 
+    const key = normKey(raw);
+    const compactKey = key.replace(/\s+/g, "_");
+
+    // Resolver primero respuestas frecuentes y payloads de botones sin depender de IA.
+    if (
+        key === "menu" ||
+        key === "inicio" ||
+        key === "volver" ||
+        key === "volver al menu" ||
+        compactKey === "volver_menu" ||
+        compactKey === "menu_principal"
+    ) {
+        return "0";
+    }
+
+    const binarySteps = new Set([
+        "REG_CONFIRM_NAMES",
+        "REG_HABEAS",
+        "FILTRO_COLUMNA",
+        "FILTRO_CONFIRM",
+        "SHOW_COST_INFO",
+        "POST_CREATED",
+    ]);
+
+    if (binarySteps.has(step)) {
+        if (
+            key === "si" ||
+            key === "sí" ||
+            key === "confirmar" ||
+            key === "continuar" ||
+            compactKey === "columna_si" ||
+            compactKey === "dolor_columna_si" ||
+            compactKey === "filtro_columna_si"
+        ) {
+            return "1";
+        }
+
+        if (
+            key === "no" ||
+            key === "no continuar" ||
+            compactKey === "columna_no" ||
+            compactKey === "dolor_columna_no" ||
+            compactKey === "filtro_columna_no"
+        ) {
+            return "2";
+        }
+    }
+
     // Primero respetamos payloads exactos de botones/plantillas.
     if (/^(0|1|2|3|4|5|6|7)$/.test(raw)) return raw;
     if (/^hora[_\s-]*[1-6]$/i.test(raw)) return raw;

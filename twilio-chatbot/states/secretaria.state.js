@@ -1,5 +1,6 @@
 import { registerChatbotInteraction } from "../services/chatbot-db.service.js";
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
+import menuState from "./menu.state.js";
 
 function normalize(value = "") {
     return String(value || "")
@@ -15,6 +16,7 @@ function isMenuIntent(msg) {
         key === "0" ||
         key === "menu" ||
         key === "inicio" ||
+        key === "hola" ||
         key === "volver" ||
         key.includes("menu principal")
     );
@@ -23,7 +25,7 @@ function isMenuIntent(msg) {
 function waitingResponse(data = {}) {
     return {
         response:
-            "Tu solicitud está en espera de atención por la secretaria. No necesitas seleccionar ni enviar más opciones; te responderemos por este mismo medio.",
+            "Tu solicitud está en espera de atención por la secretaria. Te responderemos por este mismo medio. Puedes escribir *MENÚ* o *0* para volver al menú principal.",
         nextState: "SECRETARIA",
         data: {
             ...data,
@@ -35,11 +37,12 @@ function waitingResponse(data = {}) {
 
 export default async function secretariaState(msg, data = {}, context = {}) {
     if (isMenuIntent(msg)) {
-        return {
-            response: null,
-            nextState: "MENU",
-            data: { renderMenu: true },
-        };
+        return menuState("menu", {}, context);
+    }
+
+    const directMenuOption = normalize(msg);
+    if (["1", "2", "3", "4", "5"].includes(directMenuOption)) {
+        return menuState(directMenuOption, {}, context);
     }
 
     const note = String(context?.rawBody?.Body || msg || "").trim();

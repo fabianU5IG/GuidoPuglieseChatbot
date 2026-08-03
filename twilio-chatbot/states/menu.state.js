@@ -186,13 +186,15 @@ export default async function menuState(msg, data = {}, context = {}) {
 
         return {
             response:
-                "Tu solicitud fue enviada a la secretaria y quedó en espera. No necesitas seleccionar ni enviar más opciones; te responderemos por este mismo medio.",
-            nextState: "SECRETARIA",
-            data: {
-                reason: "GENERAL_SECRETARY_SUPPORT",
-                waitingForSecretary: true,
-                secretaryNotified: true,
-            },
+                "Tu solicitud fue enviada a la secretaria y te responderemos por este mismo medio.\n\n" +
+                "Mientras esperas, puedes seguir usando el menú:\n\n" +
+                "1️⃣ Agendar o gestionar mi cita\n" +
+                "2️⃣ Información general y costos\n" +
+                "3️⃣ Teleconsulta (lectura de estudios)\n" +
+                "4️⃣ Soy paciente postquirúrgico\n" +
+                "5️⃣ Hablar con la secretaria",
+            nextState: "MENU",
+            data: {},
         };
     }
 

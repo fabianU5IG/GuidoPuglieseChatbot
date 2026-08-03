@@ -23,9 +23,17 @@ export default async function chatbotResponse(message, session, context = {}) {
     let state;
     let data;
 
-    if (SECRETARY_PHONES.includes(userPhone)) {
+    const isSecretary = SECRETARY_PHONES.includes(userPhone);
+    const dashboardIntent = [
+        "dashboard",
+        "panel",
+        "panel secretaria",
+        "panel de secretaria",
+    ].includes(msg);
+
+    if (isSecretary && (session.isNew || dashboardIntent)) {
         state = "DASHBOARD";
-        data = session.data || {};
+        data = { step: "MENU" };
     } else {
         state = session.state || "MENU";
         data = session.data || {};

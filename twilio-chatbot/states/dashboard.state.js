@@ -5,9 +5,9 @@ import {
     markReScheduled,
     registerChatbotInteraction,
     logAppointmentMessage,
-    createDashboardQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
+import { SALUDTOOLS } from "../constants.js";
 import {
     parseDashboardAppointmentsAI,
     summarizeSecretaryCasesAI,
@@ -22,18 +22,27 @@ const { getTimeSlots } = timeUtils;
  */
 const SECRETARY_PHONES = ["573153573131"];
 const SECRETARY_CASES_PAGE_SIZE = 10;
+const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 
 const APPOINTMENT_DURATION_MIN = Number(
-    process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN || 30,
+    process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
+        SALUDTOOLS.APPOINTMENT_DURATION_MIN ||
+        30,
 );
 
 const DOCTOR_DOCUMENT_TYPE = Number(
-    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE || 1,
+    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE ||
+        SALUDTOOLS.DOCTOR_DOCUMENT_TYPE ||
+        1,
 );
 const DOCTOR_DOCUMENT_NUMBER = String(
-    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "99988877711",
+    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER ||
+        SALUDTOOLS.DOCTOR_DOCUMENT_NUMBER ||
+        "72134079",
 );
-const CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 8);
+const CLINIC_ID = Number(
+    process.env.SALUDTOOLS_CLINIC_ID || SALUDTOOLS.CLINIC_ID || 18569,
+);
 
 const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
@@ -45,6 +54,19 @@ const DASHBOARD_MENU_TEXT =
     "2️⃣ Ver casos pendientes\n" +
     "3️⃣ Resumen IA de pendientes\n\n" +
     "0️⃣ Salir";
+
+function returnToMainMenu() {
+    return {
+        response: null,
+        nextState: "MENU",
+        data: {},
+        sendTemplate: true,
+        template: {
+            contentSid: TEMPLATE_MENU_PRINCIPAL,
+            variables: null,
+        },
+    };
+}
 
 function capitalizeWords(str = "") {
     return String(str)
@@ -169,6 +191,7 @@ function ddmmToYmd(ddmm) {
     const [day, month] = ddmm.split("/").map(Number);
 
     const today = new Date();
+    today.setHours(0, 0, 0, 0);
     let year = today.getFullYear();
 
     const candidate = new Date(year, month - 1, day);
@@ -190,7 +213,13 @@ function isValidDateDDMM(value) {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    return !isNaN(date) && date >= today;
+    return (
+        !isNaN(date) &&
+        date.getFullYear() === year &&
+        date.getMonth() === month - 1 &&
+        date.getDate() === day &&
+        date >= today
+    );
 }
 function isHoliday(ymd) {
     const holidays = [
@@ -229,7 +258,7 @@ function mapQuickDocType(docTypeRaw = "") {
     const map = {
         cc: 1,
         ce: 2,
-        ti: 3,
+        ti: 6,
     };
 
     return map[value] || null;
@@ -672,11 +701,7 @@ export default async function dashboardState(msg, data = {}, context) {
     switch (data.step) {
         case "MENU": {
             if (msg === "0") {
-                return {
-                    response: "👋 Saliendo del dashboard",
-                    nextState: "MENU",
-                    data: { renderMenu: true },
-                };
+                return returnToMainMenu();
             }
 
             if (msg === "1") {
@@ -795,48 +820,51 @@ export default async function dashboardState(msg, data = {}, context) {
                         continue;
                     }
 
-                    const rawPayload = {
-                        source: "SECRETARY_DASHBOARD",
-                        origin: "dashboard",
-                        eventType: "CREADA_DESDE_DASHBOARD",
-                        appointmentBody: {
-                            startAppointment: `${ymd} ${item.timeLabel}`,
-                            endAppointment: `${end.ymd} ${end.hm}`,
-                            patientDocumentType: item.patientDocumentType,
-                            patientDocumentNumber: item.patientDocumentNumber,
-                            doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
-                            doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                            modality:
-                                item.modality === "LLAMADA"
-                                    ? "LLAMADA"
-                                    : APPOINTMENT_MODALITY,
-                            stateAppointment: APPOINTMENT_STATE,
-                            appointmentType: "Creada desde dashboard",
-                            clinic: CLINIC_ID,
-                            comment: `Creada desde dashboard - ${item.modality}`,
-                        },
-                    };
+                    const end = addMinutesToYmdHm(
+                        ymd,
+                        item.timeLabel,
+                        APPOINTMENT_DURATION_MIN,
+                    );
 
-                    const insertedId = await createDashboardQuickAppointment({
-                        saludtoolsId: Number(
-                            `${Date.now()}${String(item.lineNumber).padStart(2, "0")}`,
-                        ),
-                        eventType: "CREADA_DESDE_DASHBOARD",
-                        status: APPOINTMENT_STATE,
-                        startDate: ymd,
-                        startTime: `${item.timeLabel}:00`,
-                        endDate: end.ymd,
-                        endTime: `${end.hm}:00`,
-                        doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                    const appointmentBody = {
+                        startAppointment: `${ymd} ${item.timeLabel}`,
+                        endAppointment: `${end.ymd} ${end.hm}`,
                         patientDocumentType: item.patientDocumentType,
                         patientDocumentNumber: item.patientDocumentNumber,
-                        clinic: String(CLINIC_ID),
-                        rawPayload,
+                        doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                        doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                        modality:
+                            item.modality === "LLAMADA"
+                                ? "LLAMADA"
+                                : APPOINTMENT_MODALITY,
+                        stateAppointment: APPOINTMENT_STATE,
+                        appointmentType: "Creada desde dashboard",
+                        clinic: CLINIC_ID,
+                        comment: `Creada desde dashboard - ${item.modality}`,
+                    };
+
+                    const jobId = await createSaludtoolsJob({
+                        jobType: "APPOINTMENT_CREATE",
+                        phone: context?.from || from,
+                        appointmentId: null,
+                        dedupeKey:
+                            `dashboard-create:${item.patientDocumentType}:` +
+                            `${item.patientDocumentNumber}:${ymd}:${item.timeLabel}:${item.modality}`,
+                        payload: {
+                            fullName: `Paciente ${item.patientDocumentNumber}`,
+                            dateLabel: item.dateLabel,
+                            timeLabel: item.timeLabel,
+                            patientExistsLocal: true,
+                            patientBody: null,
+                            source: "SECRETARY_DASHBOARD",
+                            appointmentBody,
+                        },
+                        priority: 90,
                     });
 
                     inserted.push({
                         lineNumber: item.lineNumber,
-                        id: insertedId,
+                        id: jobId,
                         modality: item.modality,
                         dateLabel: item.dateLabel,
                         timeLabel: item.timeLabel,
@@ -853,13 +881,13 @@ export default async function dashboardState(msg, data = {}, context) {
             }
 
             let response =
-                `✅ Insertadas: ${inserted.length}\n` +
+                `✅ Encoladas para SaludTools: ${inserted.length}\n` +
                 `❌ Con error: ${invalid.length + failed.length}\n\n`;
 
             if (inserted.length) {
                 response +=
                     (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
-                    "Citas guardadas:\n";
+                    "Citas enviadas a procesamiento:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
@@ -908,11 +936,7 @@ export default async function dashboardState(msg, data = {}, context) {
 
         case "SELECT_CASE": {
             if (msg === "0") {
-                return {
-                    response: "👋 Saliendo del dashboard",
-                    nextState: "MENU",
-                    data: {},
-                };
+                return returnToMainMenu();
             }
 
             const allCases = Array.isArray(data.cases) ? data.cases : [];
@@ -1323,11 +1347,7 @@ export default async function dashboardState(msg, data = {}, context) {
 
         case "AFTER_ACTION": {
             if (msg === "1") {
-                return {
-                    response: "✅ Proceso finalizado",
-                    nextState: "END",
-                    data: {},
-                };
+                return returnToMainMenu();
             }
 
             if (msg === "2") {

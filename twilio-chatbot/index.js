@@ -43,6 +43,7 @@ app.post("/webhook", async (req, res) => {
             sessions[phone] = {
                 state: "MENU",
                 data: {},
+                isNew: true,
             };
         }
 
@@ -61,6 +62,7 @@ app.post("/webhook", async (req, res) => {
 
         session.state = result.nextState;
         session.data = result.data || {};
+        session.isNew = false;
 
         res.set("Content-Type", "text/xml");
 
