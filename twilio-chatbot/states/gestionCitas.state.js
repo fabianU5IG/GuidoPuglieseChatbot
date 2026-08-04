@@ -86,9 +86,15 @@ export default function gestionCitasState(msg, data = {}) {
         return {
             response:
                 "Perfecto ✅ Vamos a iniciar el proceso de agendamiento.\n\n" +
+                "La IA podrá ayudarte a priorizar fechas y horas disponibles según tus preferencias.\n\n" +
                 "Por favor escribe tu nombre completo:",
             nextState: "AGENDAR",
-            data: { step: "ASK_NAME" },
+            data: {
+                step: "ASK_NAME",
+                origin: "CONSULTA_GENERAL",
+                consultationMode: "PRESENCIAL",
+                aiSchedulingEnabled: true,
+            },
         };
     }
 

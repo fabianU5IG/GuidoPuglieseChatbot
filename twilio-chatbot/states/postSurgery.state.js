@@ -38,10 +38,15 @@ function buildPostSurgeryQuestion() {
 function startPostOperativeAppointment(data = {}) {
     return {
         response:
-            "Perfecto. Como ya han pasado 15 días o más desde la cirugía, vamos a agendar tu cita posoperatoria.\n\nPor favor escribe tu nombre completo:",
+            "Perfecto. Como ya han pasado 15 días o más desde la cirugía, vamos a agendar tu cita posoperatoria.\n\n" +
+            "La IA podrá recomendarte fechas y horarios disponibles según tus preferencias.\n\n" +
+            "Por favor escribe tu nombre completo:",
         nextState: "AGENDAR",
         data: {
             step: "ASK_NAME",
+            origin: "POSOPERATORIO",
+            consultationMode: "PRESENCIAL",
+            aiSchedulingEnabled: true,
             appointmentType: "Cita posoperatoria",
             appointmentReason: "POSOPERATORIO_15_DIAS",
             isPostOperative: true,

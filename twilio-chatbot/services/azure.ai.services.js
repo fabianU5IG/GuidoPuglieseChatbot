@@ -181,3 +181,151 @@ export async function summarizeSecretaryCasesAI(cases = []) {
         return "";
     }
 }
+
+/**
+ * Ordena y explica opciones reales de agenda. La IA no crea fechas ni horas:
+ * únicamente puede seleccionar elementos recibidos en `candidates`.
+ */
+export async function recommendAppointmentOptionsAI({
+    message = "",
+    candidates = [],
+    consultationMode = "PRESENCIAL",
+}) {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    try {
+        const raw = await chatCompletion({
+            temperature: 0.1,
+            maxTokens: 500,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un asistente de agenda médica. Devuelve únicamente JSON válido, sin markdown. " +
+                        "Tu función es ordenar opciones REALES suministradas por el sistema según la preferencia del usuario. " +
+                        "No inventes fechas, horas, disponibilidad, diagnósticos ni recomendaciones clínicas. " +
+                        "Cada opción elegida debe conservar exactamente candidateId, dateLabel y timeLabel. " +
+                        "Formato: {\"intro\":\"texto breve\",\"options\":[{\"candidateId\":\"...\",\"dateLabel\":\"DD/MM\",\"timeLabel\":\"HH:MM\",\"reason\":\"motivo operativo breve\"}],\"note\":\"texto breve\"}. " +
+                        "Devuelve máximo 3 opciones.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({
+                        userPreference: message || "Sin preferencia indicada",
+                        consultationMode,
+                        candidates,
+                    }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        if (!parsed || !Array.isArray(parsed.options)) return null;
+
+        const allowed = new Map(
+            candidates.map((item) => [String(item.candidateId), item]),
+        );
+        const used = new Set();
+        const options = [];
+
+        for (const option of parsed.options) {
+            const candidate = allowed.get(String(option?.candidateId || ""));
+            if (!candidate || used.has(String(candidate.candidateId))) continue;
+
+            used.add(String(candidate.candidateId));
+            const rawReason = String(
+                option?.reason || "Horario disponible",
+            ).slice(0, 120);
+            const reason = /diagn[oó]st|medic|tratamiento|dosis|s[ií]ntoma|urgenc/i.test(
+                rawReason,
+            )
+                ? "Disponibilidad próxima según la preferencia indicada"
+                : rawReason;
+
+            options.push({
+                ...candidate,
+                reason,
+            });
+            if (options.length >= 3) break;
+        }
+
+        if (!options.length) return null;
+
+        return {
+            intro: String(parsed.intro || "Estas son las opciones más convenientes:").slice(
+                0,
+                180,
+            ),
+            options,
+            note: String(
+                parsed.note ||
+                    "La disponibilidad puede cambiar hasta que confirmes la selección.",
+            ).slice(0, 180),
+        };
+    } catch (error) {
+        console.error(
+            "Azure AI recommendAppointmentOptionsAI Error:",
+            error?.message || error,
+        );
+        return null;
+    }
+}
+
+/**
+ * Genera consejos logísticos de preparación. No entrega indicaciones médicas,
+ * diagnósticos, triage ni cambios de tratamiento.
+ */
+export async function generateAppointmentPreparationTipsAI({
+    consultationMode = "PRESENCIAL",
+    attentionType = "",
+    appointmentDate = "",
+    appointmentTime = "",
+}) {
+    try {
+        const raw = await chatCompletion({
+            temperature: 0.2,
+            maxTokens: 280,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un asistente administrativo de un consultorio de ortopedia. " +
+                        "Genera exactamente 3 recomendaciones logísticas breves para preparar una cita. " +
+                        "No des diagnósticos, medicamentos, tratamientos, interpretaciones de síntomas ni instrucciones de urgencia. " +
+                        "Puedes recomendar tener documentos, autorizaciones, estudios previos, conexión a internet o llegar con anticipación. " +
+                        "Devuelve únicamente JSON válido: {\"tips\":[\"...\",\"...\",\"...\"]}.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({
+                        consultationMode,
+                        attentionType,
+                        appointmentDate,
+                        appointmentTime,
+                    }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        const forbiddenClinicalContent =
+            /diagn[oó]st|medicamento|medicaci[oó]n|tratamiento|dosis|tomar|suspender|urgenc|s[ií]ntoma/i;
+        const tips = Array.isArray(parsed?.tips)
+            ? parsed.tips
+                  .map((tip) => String(tip || "").trim())
+                  .filter(
+                      (tip) =>
+                          Boolean(tip) && !forbiddenClinicalContent.test(tip),
+                  )
+                  .slice(0, 3)
+            : [];
+
+        return tips.length === 3 ? tips : null;
+    } catch (error) {
+        console.error(
+            "Azure AI generateAppointmentPreparationTipsAI Error:",
+            error?.message || error,
+        );
+        return null;
+    }
+}

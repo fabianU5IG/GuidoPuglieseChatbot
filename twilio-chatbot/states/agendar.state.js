@@ -6,7 +6,11 @@ import {
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { EPS_CONVENIO } from "../constants.js";
-import { normalizeAppointmentInputAI } from "../services/azure.ai.services.js";
+import {
+    generateAppointmentPreparationTipsAI,
+    normalizeAppointmentInputAI,
+    recommendAppointmentOptionsAI,
+} from "../services/azure.ai.services.js";
 import { db } from "../db/mysql.js";
 
 const DOCTOR_DOCUMENT_TYPE = Number(
@@ -26,6 +30,12 @@ const APPOINTMENT_TYPE_DEFAULT =
 const SALUDTOOLS_DEBUG =
     String(process.env.SALUDTOOLS_DEBUG || "").toLowerCase() === "true" ||
     process.env.SALUDTOOLS_DEBUG === "1";
+
+const AI_GLOBAL_SCHEDULING_ENABLED = !["false", "0", "off", "no"].includes(
+    String(process.env.AI_GLOBAL_SCHEDULING_ENABLED || "true")
+        .trim()
+        .toLowerCase(),
+);
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_ASK_DOC_NUMBER = "HX81850303bf6a4fb7807fe02bf293d497";
@@ -59,6 +69,21 @@ function normKey(s) {
         .replace(/[_-]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+}
+
+function initializeGlobalSchedulingContext(data = {}) {
+    if (!data.consultationMode) data.consultationMode = "PRESENCIAL";
+
+    if (!data.origin) {
+        data.origin = data.isPostOperative
+            ? "POSOPERATORIO"
+            : "CONSULTA_GENERAL";
+    }
+
+    data.aiSchedulingEnabled =
+        AI_GLOBAL_SCHEDULING_ENABLED && data.aiSchedulingEnabled !== false;
+
+    return data;
 }
 
 function parseHourButton(msg) {
@@ -599,7 +624,406 @@ function getSlotsForDate(ymd, page = 0) {
     return all.slice(from, from + pageSize);
 }
 
+function ymdToDateLabel(ymd) {
+    const [, month, day] = String(ymd || "").split("-");
+    return `${day}/${month}`;
+}
+
+function formatDateForRecommendation(ymd) {
+    const [year, month, day] = String(ymd || "").split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    const weekday = new Intl.DateTimeFormat("es-CO", {
+        weekday: "long",
+    }).format(date);
+    return `${weekday} ${pad2(day)}/${pad2(month)}`;
+}
+
+function isRecommendationRequest(value) {
+    const key = normKey(value);
+    return (
+        key === "recomendar" ||
+        key === "recomendacion" ||
+        key === "sugerir" ||
+        key === "sugerencia" ||
+        key.includes("recomiend") ||
+        key.includes("recomend") ||
+        key.includes("sugier") ||
+        key.includes("mejor horario") ||
+        key.includes("mejor fecha") ||
+        key.includes("proxima disponibilidad") ||
+        key.includes("primera disponibilidad") ||
+        key.includes("lo mas pronto") ||
+        key.includes("cita mas cercana") ||
+        key.includes("cualquier horario") ||
+        key.includes("cualquier dia") ||
+        key.includes("esta semana") ||
+        key.includes("proxima semana") ||
+        key.includes("la semana que viene") ||
+        key.includes("por la manana") ||
+        key.includes("en la manana") ||
+        key.includes("por la tarde") ||
+        key.includes("en la tarde") ||
+        key.includes("despues de las") ||
+        key.includes("antes de las") ||
+        /\b(lunes|martes|miercoles|jueves|viernes)\b/.test(key)
+    );
+}
+
+function detectDayPartPreference(value) {
+    const key = normKey(value);
+    if (key.includes("tarde")) return "AFTERNOON";
+    if (key.includes("manana") || key.includes("temprano")) return "MORNING";
+    return "ANY";
+}
+
+function orderSlotsByPreference(slots, preference) {
+    const morning = slots.filter((slot) => Number(slot.slice(0, 2)) < 12);
+    const afternoon = slots.filter((slot) => Number(slot.slice(0, 2)) >= 12);
+
+    if (preference === "AFTERNOON") return [...afternoon, ...morning];
+    if (preference === "MORNING") return [...morning, ...afternoon];
+    return slots;
+}
+
+function addDays(date, days) {
+    const copy = new Date(date);
+    copy.setDate(copy.getDate() + days);
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+}
+
+function maxDate(a, b) {
+    return a > b ? a : b;
+}
+
+function getSchedulingDateWindow(value) {
+    const key = normKey(value);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const minDate = addDays(today, 2);
+
+    if (key.includes("proxima semana") || key.includes("la semana que viene")) {
+        const daysUntilNextMonday = ((8 - today.getDay()) % 7) || 7;
+        const start = addDays(today, daysUntilNextMonday);
+        return { start: maxDate(start, minDate), end: addDays(start, 6) };
+    }
+
+    if (key.includes("esta semana")) {
+        const end = addDays(today, 7 - today.getDay());
+        return { start: minDate, end };
+    }
+
+    const weekdayMap = {
+        domingo: 0,
+        lunes: 1,
+        martes: 2,
+        miercoles: 3,
+        jueves: 4,
+        viernes: 5,
+        sabado: 6,
+    };
+    const weekdayName = Object.keys(weekdayMap).find((name) =>
+        new RegExp(`\\b${name}\\b`).test(key),
+    );
+
+    if (weekdayName) {
+        const targetDow = weekdayMap[weekdayName];
+        const startFrom = key.includes(`proximo ${weekdayName}`)
+            ? addDays(today, 1)
+            : minDate;
+        let target = new Date(startFrom);
+
+        for (let index = 0; index < 14; index += 1) {
+            if (target.getDay() === targetDow && target >= minDate) {
+                return { start: target, end: target };
+            }
+            target = addDays(target, 1);
+        }
+    }
+
+    return { start: minDate, end: null };
+}
+
+function filterSlotsByTimeConstraint(slots, value) {
+    const key = normKey(value);
+    const parseHour = (match, assumeAfternoon = false) => {
+        if (!match) return null;
+        let hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        if (assumeAfternoon && hour >= 1 && hour <= 7) hour += 12;
+        return hour * 60 + minute;
+    };
+
+    const afterMatch = key.match(/despues de las?\s+(\d{1,2})(?::(\d{2}))?/);
+    const beforeMatch = key.match(/antes de las?\s+(\d{1,2})(?::(\d{2}))?/);
+    const afterMinutes = parseHour(afterMatch, true);
+    const beforeMinutes = parseHour(beforeMatch, false);
+
+    const filtered = slots.filter((slot) => {
+        const minutes = hmToMinutes(slot);
+        if (minutes == null) return false;
+        if (afterMinutes != null && minutes < afterMinutes) return false;
+        if (beforeMinutes != null && minutes >= beforeMinutes) return false;
+        return true;
+    });
+
+    return filtered.length ? filtered : slots;
+}
+
+async function findRealAppointmentCandidates(message, maxCandidates = 9) {
+    const preference = detectDayPartPreference(message);
+    const candidates = [];
+    const dateWindow = getSchedulingDateWindow(message);
+    const cursor = new Date(dateWindow.start);
+
+    for (let offset = 0; offset < 75 && candidates.length < maxCandidates; offset += 1) {
+        const date = new Date(cursor);
+        date.setDate(cursor.getDate() + offset);
+
+        if (dateWindow.end && date > dateWindow.end) break;
+
+        const ymd = [
+            date.getFullYear(),
+            pad2(date.getMonth() + 1),
+            pad2(date.getDate()),
+        ].join("-");
+        const schedule = getScheduleForYmd(ymd);
+        if (!schedule) continue;
+
+        let booked = [];
+        try {
+            booked = await getBookedHmFromDb({
+                ymd,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+            });
+        } catch (error) {
+            if (SALUDTOOLS_DEBUG) {
+                console.error("DB recommendation slots error:", error);
+            }
+        }
+
+        const bookedSet = new Set(Array.isArray(booked) ? booked : []);
+        const freeSlots = orderSlotsByPreference(
+            filterSlotsByTimeConstraint(
+                buildSlots(schedule.start, schedule.end, SLOT_MIN).filter(
+                    (slot) => !bookedSet.has(slot),
+                ),
+                message,
+            ),
+            preference,
+        );
+
+        // Máximo dos alternativas por fecha para mantener diversidad.
+        for (const slot of freeSlots.slice(0, 2)) {
+            candidates.push({
+                candidateId: `candidate_${candidates.length + 1}`,
+                ymd,
+                dateLabel: ymdToDateLabel(ymd),
+                dateText: formatDateForRecommendation(ymd),
+                timeLabel: slot,
+                dayPart:
+                    Number(slot.slice(0, 2)) < 12 ? "MORNING" : "AFTERNOON",
+            });
+            if (candidates.length >= maxCandidates) break;
+        }
+    }
+
+    return candidates;
+}
+
+async function buildRecommendedAppointmentResponse(message, data) {
+    if (!data.aiSchedulingEnabled) {
+        return {
+            response:
+                "La recomendación automática de horarios está desactivada temporalmente.\n\n" +
+                "Escribe la fecha en formato DD/MM para continuar.",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    const candidates = await findRealAppointmentCandidates(message);
+    if (!candidates.length) {
+        data.aiRecommendations = [];
+        return {
+            response:
+                "No encontré disponibilidad próxima para recomendarte en este momento.\n\n" +
+                "Escribe una fecha en formato DD/MM o vuelve a intentarlo más tarde.",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    const aiResult = await recommendAppointmentOptionsAI({
+        message,
+        candidates,
+        consultationMode: data.consultationMode || "PRESENCIAL",
+    });
+
+    const selected = (aiResult?.options?.length
+        ? aiResult.options
+        : candidates.slice(0, 3)
+    ).slice(0, 3);
+
+    data.aiRecommendations = selected.map((item) => ({
+        candidateId: item.candidateId,
+        ymd: item.ymd,
+        date: item.dateLabel,
+        dateText: item.dateText,
+        time: item.timeLabel,
+        reason: item.reason || "Primera disponibilidad encontrada",
+    }));
+
+    const intro = aiResult?.intro || "Encontré estas opciones de agenda para ti:";
+    const lines = data.aiRecommendations.map(
+        (item, index) =>
+            `${index + 1}️⃣ ${item.dateText} a las ${item.time} — ${item.reason}`,
+    );
+
+    return {
+        response:
+            `🤖 ${intro}\n\n` +
+            `${lines.join("\n")}\n\n` +
+            "Responde 1, 2 o 3 para elegir una opción. También puedes escribir otra fecha en formato DD/MM.\n\n" +
+            `${aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar."}\n\n` +
+            "0️⃣ Volver al menú",
+        nextState: "AGENDAR",
+        data,
+    };
+}
+
+async function buildRecommendedTimeResponse(message, data) {
+    if (!data.aiSchedulingEnabled) {
+        return {
+            response:
+                "La recomendación automática de horarios está desactivada temporalmente.\n\n" +
+                "Selecciona una de las horas disponibles o escribe otra fecha en formato DD/MM.",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    const schedule = getScheduleForYmd(data.ymd);
+    if (!schedule) {
+        return {
+            response:
+                `El Dr. no tiene atención el día ${data.date}.\n\n` +
+                "Escribe otra fecha en formato DD/MM o pide una recomendación de fecha.",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    let booked = [];
+    try {
+        booked = await getBookedHmFromDb({
+            ymd: data.ymd,
+            doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+        });
+    } catch (error) {
+        if (SALUDTOOLS_DEBUG) {
+            console.error("DB recommended time slots error:", error);
+        }
+    }
+
+    const bookedSet = new Set(Array.isArray(booked) ? booked : []);
+    const availableSlots = orderSlotsByPreference(
+        filterSlotsByTimeConstraint(
+            buildSlots(schedule.start, schedule.end, SLOT_MIN).filter(
+                (slot) => !bookedSet.has(slot),
+            ),
+            message,
+        ),
+        detectDayPartPreference(message),
+    );
+
+    const candidates = availableSlots.slice(0, 9).map((slot, index) => ({
+        candidateId: `time_candidate_${index + 1}`,
+        ymd: data.ymd,
+        dateLabel: data.date,
+        dateText: formatDateForRecommendation(data.ymd),
+        timeLabel: slot,
+        dayPart: Number(slot.slice(0, 2)) < 12 ? "MORNING" : "AFTERNOON",
+    }));
+
+    if (!candidates.length) {
+        data.aiTimeRecommendations = [];
+        data.aiTimeRecommendationActive = false;
+        return {
+            response:
+                `No encontré horarios disponibles para ${data.date}.\n\n` +
+                "Escribe otra fecha en formato DD/MM o pide una recomendación de fecha.",
+            nextState: "AGENDAR",
+            data,
+        };
+    }
+
+    const aiResult = await recommendAppointmentOptionsAI({
+        message,
+        candidates,
+        consultationMode: data.consultationMode || "PRESENCIAL",
+    });
+
+    const selected = (aiResult?.options?.length
+        ? aiResult.options
+        : candidates.slice(0, 3)
+    ).slice(0, 3);
+
+    data.aiTimeRecommendations = selected.map((item) => ({
+        candidateId: item.candidateId,
+        ymd: item.ymd,
+        date: item.dateLabel,
+        time: item.timeLabel,
+        reason: item.reason || "Horario disponible según tu preferencia",
+    }));
+    data.aiTimeRecommendationActive = true;
+
+    const lines = data.aiTimeRecommendations.map(
+        (item, index) => `${index + 1}️⃣ ${item.time} — ${item.reason}`,
+    );
+
+    return {
+        response:
+            `🤖 Para el ${data.date}, estas son las opciones más convenientes:\n\n` +
+            `${lines.join("\n")}\n\n` +
+            "Responde 1, 2 o 3 para elegir. También puedes escribir otra fecha en formato DD/MM.\n\n" +
+            `${aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar."}\n\n` +
+            "0️⃣ Volver al menú",
+        nextState: "AGENDAR",
+        data,
+    };
+}
+
+function buildAskDateMessage() {
+    return (
+        "¿Para qué fecha deseas agendar la cita?\n\n" +
+        "• Escribe la fecha en formato DD/MM.\n" +
+        "• También puedes describir tu preferencia con lenguaje natural, por ejemplo: ‘lo más pronto posible’, ‘la próxima semana en la tarde’ o ‘recomiéndame en la mañana’.\n" +
+        "• La IA solo ordenará horarios que el sistema haya verificado como disponibles.\n\n" +
+        "0️⃣ Volver al menú"
+    );
+}
+
+function fallbackPreparationTips(data) {
+    if (data.consultationMode === "TELECONSULTA") {
+        return [
+            "Ten listos tus estudios e informes en formato digital.",
+            "Verifica tu conexión a internet y busca un espacio con buena iluminación.",
+            "Mantén a la mano tu documento y las preguntas que deseas revisar.",
+        ];
+    }
+
+    return [
+        "Ten a la mano tu documento y los estudios o informes previos.",
+        "Si utilizas póliza o medicina prepagada, verifica previamente la autorización.",
+        "Procura llegar con 15 minutos de anticipación.",
+    ];
+}
+
 function buildTimeResponse(data) {
+    data.aiTimeRecommendations = [];
+    data.aiTimeRecommendationActive = false;
+
     const ymd = data.ymd;
     const page = Number(data.page || 0);
     const slotsAll = getSlotsForDate(ymd, page);
@@ -721,6 +1145,20 @@ async function normalizeAgendarMessage(msg, step, data) {
     if (/^hora[_\s-]*[1-6]$/i.test(raw)) return raw;
     if (/^mas[_\s-]*horarios$/i.test(raw)) return "mas_horarios";
     if (/^\d{2}\/\d{2}$/.test(raw)) return raw;
+    if (
+        step === "ASK_DATE" &&
+        (compactKey === "agenda_escribir_fecha" ||
+            compactKey === "escribir_fecha" ||
+            key === "escribir fecha")
+    ) {
+        return "ESCRIBIR_FECHA";
+    }
+    if (
+        (step === "ASK_DATE" || step === "ASK_TIME") &&
+        isRecommendationRequest(raw)
+    ) {
+        return `RECOMENDAR:${raw}`;
+    }
     if (step === "REG_BIRTHDATE") return normalizeBirthDateInput(raw);
 
     const parsed = await normalizeAppointmentInputAI({ message: raw, step, data });
@@ -751,6 +1189,8 @@ async function normalizeAgendarMessage(msg, step, data) {
 
 export default async function agendarState(msg, data, context = {}) {
     const phone = context.from || "UNKNOWN";
+
+    data = initializeGlobalSchedulingContext(data || {});
 
     if (data?.step) {
         msg = await normalizeAgendarMessage(msg, data.step, data);
@@ -1143,8 +1583,7 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "1") {
                 data.step = "ASK_DATE";
                 return {
-                    response:
-                        "¿Para qué fecha deseas agendar la cita?\n(DD/MM)",
+                    response: buildAskDateMessage(),
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1176,8 +1615,7 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "1") {
                 data.step = "ASK_DATE";
                 return {
-                    response:
-                        "¿Para qué fecha deseas agendar la cita?\n(DD/MM)",
+                    response: buildAskDateMessage(),
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1191,6 +1629,63 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "ASK_DATE": {
+            if (msg === "ESCRIBIR_FECHA") {
+                return {
+                    response: buildAskDateMessage(),
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            if (String(msg || "").startsWith("RECOMENDAR:")) {
+                const preferenceMessage = String(msg).slice("RECOMENDAR:".length);
+                return buildRecommendedAppointmentResponse(preferenceMessage, data);
+            }
+
+            if (/^[1-3]$/.test(String(msg || "")) && data.aiRecommendations?.length) {
+                const selected = data.aiRecommendations[Number(msg) - 1];
+                if (!selected) {
+                    return {
+                        response:
+                            "Selecciona una de las opciones recomendadas disponibles o escribe una fecha en formato DD/MM.",
+                        nextState: "AGENDAR",
+                        data,
+                    };
+                }
+
+                let bookedNow = false;
+                try {
+                    bookedNow = await isSlotBookedInDb({
+                        ymd: selected.ymd,
+                        hm: selected.time,
+                        doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                    });
+                } catch (error) {
+                    if (SALUDTOOLS_DEBUG) {
+                        console.error("DB recommended slot check error:", error);
+                    }
+                }
+
+                if (bookedNow) {
+                    data.aiRecommendations = [];
+                    return {
+                        response:
+                            "La opción recomendada acaba de ocuparse. Escribe RECOMENDAR para consultar nuevas alternativas o ingresa otra fecha en formato DD/MM.",
+                        nextState: "AGENDAR",
+                        data,
+                    };
+                }
+
+                data.date = selected.date;
+                data.ymd = selected.ymd;
+                data.time = selected.time;
+                data.page = 0;
+                data.aiRecommendationSelected = true;
+                data.step = "ASK_TYPE";
+
+                return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
+            }
+
             if (!isValidDateDDMM(msg)) {
                 return {
                     response:
@@ -1208,6 +1703,7 @@ export default async function agendarState(msg, data, context = {}) {
             data.date = msg;
             data.ymd = ddmmToYmd(msg);
             data.page = 0;
+            data.aiRecommendations = [];
 
             try {
                 const booked = await getBookedHmFromDb({
@@ -1228,6 +1724,56 @@ export default async function agendarState(msg, data, context = {}) {
 
         case "ASK_TIME": {
             if (msg === "0") return returnToMenu();
+
+            if (String(msg || "").startsWith("RECOMENDAR:")) {
+                const preferenceMessage = String(msg).slice("RECOMENDAR:".length);
+                return buildRecommendedTimeResponse(preferenceMessage, data);
+            }
+
+            if (
+                /^[1-3]$/.test(String(msg || "")) &&
+                data.aiTimeRecommendationActive &&
+                data.aiTimeRecommendations?.length
+            ) {
+                const selected = data.aiTimeRecommendations[Number(msg) - 1];
+                if (!selected) {
+                    return {
+                        response:
+                            "Selecciona una de las opciones recomendadas o escribe otra fecha en formato DD/MM.",
+                        nextState: "AGENDAR",
+                        data,
+                    };
+                }
+
+                let bookedNow = false;
+                try {
+                    bookedNow = await isSlotBookedInDb({
+                        ymd: selected.ymd,
+                        hm: selected.time,
+                        doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                    });
+                } catch (error) {
+                    if (SALUDTOOLS_DEBUG) {
+                        console.error("DB AI time slot check error:", error);
+                    }
+                }
+
+                if (bookedNow) {
+                    data.aiTimeRecommendations = [];
+                    data.aiTimeRecommendationActive = false;
+                    return {
+                        response:
+                            "La opción recomendada acaba de ocuparse. Escribe RECOMENDAR para consultar nuevas alternativas o selecciona otro horario.",
+                        nextState: "AGENDAR",
+                        data,
+                    };
+                }
+
+                data.time = selected.time;
+                data.aiTimeRecommendationActive = false;
+                data.step = "ASK_TYPE";
+                return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
+            }
 
             if (isValidDateDDMM(msg)) {
                 data.date = msg;
@@ -1268,6 +1814,7 @@ export default async function agendarState(msg, data, context = {}) {
                     response:
                         `Elige una opción válida (1 a ${slots.length}).\n\n` +
                         "También puedes escribir otra fecha en formato DD/MM.\n\n" +
+                        "O escribe ‘recomiéndame en la mañana’ o ‘recomiéndame en la tarde’.\n\n" +
                         "Pulsa Más horarios para ver más opciones.\n" +
                         "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
@@ -1336,23 +1883,41 @@ export default async function agendarState(msg, data, context = {}) {
                 return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
             }
 
+            const aiPreparationTips = await generateAppointmentPreparationTipsAI({
+                consultationMode: data.consultationMode || "PRESENCIAL",
+                attentionType: data.attentionType,
+                appointmentDate: data.date,
+                appointmentTime: data.time,
+            });
+            const preparationTips = aiPreparationTips || fallbackPreparationTips(data);
+            data.preparationTips = preparationTips;
+
+            const preparationLabel = aiPreparationTips
+                ? "🤖 Recomendaciones personalizadas de preparación:"
+                : "Recomendaciones de preparación:";
+            const preparationText = preparationTips
+                .map((tip) => `• ${tip}`)
+                .join("\n");
+
             data.step = "SHOW_COST_INFO";
             return {
                 response:
-                     "El Dr. atiende pacientes de las siguientes entidades:\n" +
-                        "• ARL\n" +
-                        "• Allianz\n" +
-                        "• AXA\n" +
-                        "• Colpatria\n" +
-                        "• Colmedica\n" +
-                        "• Colsanitas\n" +
-                        "• Coomeva\n" +
-                        "• Suramericana\n" +
-                        "• Medisanitas\n" +
-                        "• Medplus\n\n" +
+                    "El Dr. atiende pacientes de las siguientes entidades:\n" +
+                    "• ARL\n" +
+                    "• Allianz\n" +
+                    "• AXA\n" +
+                    "• Colpatria\n" +
+                    "• Colmedica\n" +
+                    "• Colsanitas\n" +
+                    "• Coomeva\n" +
+                    "• Suramericana\n" +
+                    "• Medisanitas\n" +
+                    "• Medplus\n\n" +
                     "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
                     "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
                     "Los descuentos son autorizados directamente por el Dr.\n\n" +
+                    `${preparationLabel}\n${preparationText}\n\n` +
+                    "Estas recomendaciones son administrativas y no reemplazan la valoración médica.\n\n" +
                     "1️⃣ Continuar\n" +
                     "0️⃣ Volver al menú",
                 nextState: "AGENDAR",
@@ -1409,10 +1974,19 @@ export default async function agendarState(msg, data, context = {}) {
             );
             await logAppointmentMessage(
                 appointmentId,
+                `Modalidad solicitada: ${data.consultationMode || "PRESENCIAL"}`,
+            );
+            await logAppointmentMessage(
+                appointmentId,
                 "Solicitud encolada para procesamiento completo en worker",
             );
 
-            const ymd = ddmmToYmd(data.date);
+            const ymd = data.ymd || ddmmToYmd(data.date);
+            const appointmentModality =
+                data.consultationMode === "TELECONSULTA"
+                    ? process.env.SALUDTOOLS_TELECONSULTATION_MODALITY ||
+                      APPOINTMENT_MODALITY
+                    : APPOINTMENT_MODALITY;
             const end = addMinutesToYmdHm(
                 ymd,
                 data.time,
@@ -1431,7 +2005,6 @@ export default async function agendarState(msg, data, context = {}) {
                     gender: Number(data.regPatient?.gender || 0),
                     documentType: Number(data.patientDocumentType),
                     documentNumber: String(data.patientDocumentNumber),
-                    phone: data.regPatient.phone,
                     phone: data.regPatient.phone,
                     cellPhone: data.regPatient.phone || parsePhoneE164ToDigits(phone),
                     email: data.regPatient?.email || "",
@@ -1474,13 +2047,16 @@ export default async function agendarState(msg, data, context = {}) {
                         ),
                         doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
                         doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                        modality: APPOINTMENT_MODALITY,
+                        modality: appointmentModality,
                         stateAppointment: APPOINTMENT_STATE,
                         appointmentType:
                             data.appointmentType || APPOINTMENT_TYPE_DEFAULT,
                         clinic: CLINIC_ID,
                         comment:
                             `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}` +
+                            (data.consultationMode === "TELECONSULTA"
+                                ? ". Modalidad solicitada: teleconsulta / lectura de estudios"
+                                : "") +
                             (data.isPostOperative
                                 ? ". Motivo: cita posoperatoria desde los 15 días posteriores a cirugía"
                                 : ""),
@@ -1522,9 +2098,11 @@ export default async function agendarState(msg, data, context = {}) {
         default:
             return {
                 response:
-                    "Vamos a iniciar el agendamiento.\n\n¿Cuál es tu nombre completo?",
+                    "Vamos a iniciar el agendamiento.\n\n" +
+                    "La IA podrá ayudarte a escoger entre fechas y horas verificadas como disponibles.\n\n" +
+                    "¿Cuál es tu nombre completo?",
                 nextState: "AGENDAR",
-                data: { step: "ASK_NAME" },
+                data: initializeGlobalSchedulingContext({ step: "ASK_NAME" }),
             };
     }
 }

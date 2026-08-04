@@ -170,9 +170,17 @@ export default function infoCostosState(msg, data = {}) {
     // botones como "Agendar consulta" caigan de nuevo en la plantilla de costos.
     if (isScheduleIntent(normalizedMsg, compactMsg)) {
         return {
-            response: "Vamos a iniciar el agendamiento.\n\n¿Cuál es tu nombre completo?",
+            response:
+                "Vamos a iniciar el agendamiento.\n\n" +
+                "La IA podrá recomendarte opciones disponibles según la fecha y el horario que prefieras.\n\n" +
+                "¿Cuál es tu nombre completo?",
             nextState: "AGENDAR",
-            data: { step: "ASK_NAME" },
+            data: {
+                step: "ASK_NAME",
+                origin: "CONSULTA_GENERAL",
+                consultationMode: "PRESENCIAL",
+                aiSchedulingEnabled: true,
+            },
         };
     }
 

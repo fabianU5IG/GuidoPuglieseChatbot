@@ -7,6 +7,7 @@ import dashboardState from "./states/dashboard.state.js";
 import gestionCitasState from "./states/gestionCitas.state.js";
 import soporteCitaState from "./states/soporteCita.state.js";
 import postSurgeryState from "./states/postSurgery.state.js";
+import teleconsultaState from "./states/teleconsulta.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 
 // 📌 Números autorizados como secretaría
@@ -82,6 +83,10 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     if (state === "POST_SURGERY" || state === "POST_SURGERY_WAIT_IMAGE") {
         return postSurgeryState(msg, data, context);
+    }
+
+    if (state === "TELECONSULTA") {
+        return teleconsultaState(msg, data, context);
     }
 
     return menuState(msg, data, context);
