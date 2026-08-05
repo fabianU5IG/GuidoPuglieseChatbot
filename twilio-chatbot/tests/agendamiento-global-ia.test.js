@@ -22,6 +22,42 @@ const { default: teleconsultaState } = await import(
     "../states/teleconsulta.state.js"
 );
 const { default: agendarState } = await import("../states/agendar.state.js");
+const { default: chatbotResponse } = await import("../chatbot.js");
+
+test("el menú detecta una solicitud directa de cita con fecha escrita", async () => {
+    const result = await chatbotResponse(
+        "citas para jueves 13 de agosto",
+        { state: "MENU", data: {}, isNew: false },
+        { from: "+573203269984", numMedia: 0 },
+    );
+
+    assert.equal(result.nextState, "AGENDAR");
+    assert.equal(result.data.step, "ASK_NAME");
+    assert.equal(result.data.pendingDateInput, "13/08");
+    assert.equal(result.data.aiSchedulingEnabled, true);
+    assert.match(result.response, /13\/08/);
+});
+
+test("la fecha escrita en el menú se usa al terminar el filtro de columna", async () => {
+    const result = await agendarState(
+        "1",
+        {
+            step: "FILTRO_COLUMNA",
+            pendingDateInput: "13/08",
+            consultationMode: "PRESENCIAL",
+            aiSchedulingEnabled: true,
+        },
+        { from: "+573203269984" },
+    );
+
+    assert.equal(result.nextState, "AGENDAR");
+    assert.equal(result.data.date, "13/08");
+    assert.equal(result.data.ymd, "2026-08-13");
+    assert.equal(result.data.pendingDateInput, undefined);
+    assert.equal(result.data.step, "ASK_TIME");
+    assert.equal(result.sendTemplate, true);
+    assert.equal(result.template.variables["1"], "13/08");
+});
 
 test("el agendamiento principal activa IA global", async () => {
     const result = await menuState("agendar_cita", {}, {});

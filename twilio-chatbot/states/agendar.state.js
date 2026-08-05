@@ -1582,6 +1582,13 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (msg === "1") {
                 data.step = "ASK_DATE";
+
+                if (data.pendingDateInput) {
+                    const pendingDateInput = data.pendingDateInput;
+                    delete data.pendingDateInput;
+                    return agendarState(pendingDateInput, data, context);
+                }
+
                 return {
                     response: buildAskDateMessage(),
                     nextState: "AGENDAR",
@@ -1614,6 +1621,13 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (msg === "1") {
                 data.step = "ASK_DATE";
+
+                if (data.pendingDateInput) {
+                    const pendingDateInput = data.pendingDateInput;
+                    delete data.pendingDateInput;
+                    return agendarState(pendingDateInput, data, context);
+                }
+
                 return {
                     response: buildAskDateMessage(),
                     nextState: "AGENDAR",

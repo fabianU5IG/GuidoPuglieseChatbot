@@ -35,6 +35,66 @@ function compact(value = "") {
     return normalizeOption(value).replace(/\s+/g, "_");
 }
 
+const MONTH_NUMBER_BY_NAME = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    setiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+};
+
+function extractRequestedDateDDMM(normalizedMsg = "") {
+    const numericDate = normalizedMsg.match(
+        /\b([0-3]?\d)[\/-]([01]?\d)(?:[\/-](\d{4}))?\b/,
+    );
+
+    if (numericDate) {
+        const day = Number(numericDate[1]);
+        const month = Number(numericDate[2]);
+        if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+            return `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}`;
+        }
+    }
+
+    const monthNames = Object.keys(MONTH_NUMBER_BY_NAME).join("|");
+    const writtenDate = normalizedMsg.match(
+        new RegExp(`\\b([0-3]?\\d)\\s+(?:de\\s+)?(${monthNames})\\b`, "i"),
+    );
+
+    if (!writtenDate) return null;
+
+    const day = Number(writtenDate[1]);
+    const month = MONTH_NUMBER_BY_NAME[writtenDate[2].toLowerCase()];
+    if (!month || day < 1 || day > 31) return null;
+
+    return `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}`;
+}
+
+function isDirectScheduleRequest(normalizedMsg = "") {
+    const hasAppointmentWord =
+        /\b(cita|citas|consulta|consultas|agendar|agenda|reservar|separar)\b/.test(
+            normalizedMsg,
+        );
+    const isManagementRequest =
+        /\b(cancelar|cancela|reagendar|reprogramar|cambiar|mover|eliminar)\b/.test(
+            normalizedMsg,
+        );
+
+    return Boolean(
+        hasAppointmentWord &&
+            !isManagementRequest &&
+            extractRequestedDateDDMM(normalizedMsg),
+    );
+}
+
 function isScheduleIntent(normalizedMsg, compactMsg) {
     return (
         normalizedMsg === "agendar" ||
@@ -149,6 +209,29 @@ export default async function menuState(msg, data = {}, context = {}) {
         normalizedMsg.includes("menu principal")
     ) {
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
+    }
+
+    // Permite iniciar una cita directamente desde lenguaje natural en el menú,
+    // conservando la fecha indicada para usarla al llegar a la selección de agenda.
+    // Ejemplo: "citas para jueves 13 de agosto".
+    if (isDirectScheduleRequest(normalizedMsg)) {
+        const pendingDateInput = extractRequestedDateDDMM(normalizedMsg);
+
+        return {
+            response:
+                `Entendido. Guardé tu solicitud de cita para el ${pendingDateInput}.\n\n` +
+                "Primero necesito validar tus datos para consultar la disponibilidad real.\n\n" +
+                "¿Cuál es tu nombre completo?",
+            nextState: "AGENDAR",
+            data: {
+                step: "ASK_NAME",
+                origin: "CONSULTA_GENERAL",
+                consultationMode: "PRESENCIAL",
+                aiSchedulingEnabled: true,
+                pendingDateInput,
+                pendingSchedulingRequest: String(msg || "").trim(),
+            },
+        };
     }
 
     // Botón / payload del menú principal: gestionar cita.
