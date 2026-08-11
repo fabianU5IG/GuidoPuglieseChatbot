@@ -1124,7 +1124,8 @@ async function normalizeAgendarMessage(msg, step, data) {
             key === "continuar" ||
             compactKey === "columna_si" ||
             compactKey === "dolor_columna_si" ||
-            compactKey === "filtro_columna_si"
+            compactKey === "filtro_columna_si" ||
+            compactKey === "consulta_cervical" 
         ) {
             return "1";
         }
@@ -1134,7 +1135,8 @@ async function normalizeAgendarMessage(msg, step, data) {
             key === "no continuar" ||
             compactKey === "columna_no" ||
             compactKey === "dolor_columna_no" ||
-            compactKey === "filtro_columna_no"
+            compactKey === "filtro_columna_no" ||
+            compactKey === "consulta_no_cervical" 
         ) {
             return "2";
         }
