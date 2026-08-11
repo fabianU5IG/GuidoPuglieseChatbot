@@ -1,7 +1,7 @@
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
-const TEMPLATE_GESTION_CITA = "HX4148f8bb8a8e0312b0f58302b1cd48d7";
+const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
