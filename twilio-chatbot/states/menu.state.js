@@ -1,6 +1,7 @@
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
@@ -15,7 +16,12 @@ const GESTION_CITAS_MENU_TEXT =
     "2️⃣ Reagendar cita\n" +
     "3️⃣ Cancelar cita\n" +
     "0️⃣ Volver al menú principal";
-function sendTemplate(contentSid, nextState = "MENU", data = {}, variables = null) {
+function sendTemplate(
+    contentSid,
+    nextState = "MENU",
+    data = {},
+    variables = null,
+) {
     return {
         response: null,
         nextState,
@@ -99,8 +105,8 @@ function isDirectScheduleRequest(normalizedMsg = "") {
 
     return Boolean(
         hasAppointmentWord &&
-            !isManagementRequest &&
-            extractRequestedDateDDMM(normalizedMsg),
+        !isManagementRequest &&
+        extractRequestedDateDDMM(normalizedMsg),
     );
 }
 
@@ -285,7 +291,9 @@ export default async function menuState(msg, data = {}, context = {}) {
 
     // Botón / payload del menú principal: información y costos.
     if (isInfoIntent(normalizedMsg, compactMsg)) {
-        return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", { rendered: true });
+        return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", {
+            rendered: true,
+        });
     }
 
     // Teleconsulta tiene una plantilla y un flujo independientes.
@@ -321,7 +329,10 @@ export default async function menuState(msg, data = {}, context = {}) {
                 note: String(context.rawBody?.Body || "").trim(),
             });
         } catch (error) {
-            console.error("❌ No fue posible notificar a la secretaria:", error);
+            console.error(
+                "❌ No fue posible notificar a la secretaria:",
+                error,
+            );
         }
 
         return {
