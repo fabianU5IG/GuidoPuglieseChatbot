@@ -1,4 +1,5 @@
 import { db } from "../db/mysql.js";
+import { createHash } from "node:crypto";
 
 function normalizeDdMmToYmd(value) {
     const raw = String(value || "").trim();
@@ -366,6 +367,118 @@ export async function createProposedAppointment({
     );
 
     return appointmentId;
+}
+
+/**
+ * Guarda una cita creada desde el dashboard únicamente en la base de datos
+ * interna. No crea jobs ni realiza llamadas a SaludTools.
+ *
+ * Como la tabla `patients` no tiene columnas de documento, se utiliza un
+ * identificador estable derivado del tipo y número de documento en el campo
+ * `phone`. Así se puede reutilizar el mismo paciente sin exponer el documento
+ * completo como teléfono ni crear duplicados por cada carga.
+ */
+export async function createSecretaryQuickAppointment({
+    date,
+    time,
+    durationMinutes = 20,
+    patientDocumentType,
+    patientDocumentNumber,
+    modality = "PRESENCIAL",
+}) {
+    const scheduledDate = String(date || "").trim();
+    const scheduledTime = String(time || "").trim().slice(0, 8);
+    const documentType = Number(patientDocumentType);
+    const documentNumber = String(patientDocumentNumber || "").trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate)) {
+        throw new Error("Fecha inválida para cita rápida");
+    }
+
+    if (!/^\d{2}:\d{2}(?::\d{2})?$/.test(scheduledTime)) {
+        throw new Error("Hora inválida para cita rápida");
+    }
+
+    if (!Number.isInteger(documentType) || documentType <= 0) {
+        throw new Error("Tipo de documento inválido para cita rápida");
+    }
+
+    if (!/^\d{5,20}$/.test(documentNumber)) {
+        throw new Error("Número de documento inválido para cita rápida");
+    }
+
+    const patientKey = createHash("sha256")
+        .update(`${documentType}:${documentNumber}`)
+        .digest("hex")
+        .slice(0, 16);
+    const internalPhone = `QD-${patientKey}`;
+    const documentLabel =
+        documentType === 1 ? "CC" : documentType === 2 ? "CE" : "TI";
+    const patientName = `Paciente ${documentLabel} ${documentNumber}`;
+    const patientId = await getOrCreatePatient(internalPhone, patientName);
+
+    const [existingRows] = await db.query(
+        `
+        SELECT id
+        FROM appointments
+        WHERE patient_id = ?
+          AND scheduled_date = ?
+          AND TIME(scheduled_time) = TIME(?)
+          AND source = 'SECRETARY'
+          AND status <> 'CANCELLED'
+        LIMIT 1
+        `,
+        [patientId, scheduledDate, scheduledTime],
+    );
+
+    if (existingRows.length) {
+        return {
+            appointmentId: existingRows[0].id,
+            created: false,
+        };
+    }
+
+    const [appointmentResult] = await db.query(
+        `
+        INSERT INTO appointments
+        (patient_id, scheduled_date, scheduled_time, duration_minutes, status, source)
+        VALUES (?, ?, ?, ?, 'CONFIRMED', 'SECRETARY')
+        `,
+        [
+            patientId,
+            scheduledDate,
+            scheduledTime,
+            Number(durationMinutes) || 20,
+        ],
+    );
+
+    const appointmentId = appointmentResult.insertId;
+
+    await db.query(
+        `
+        INSERT INTO appointment_status_history
+        (appointment_id, previous_status, new_status, changed_by)
+        VALUES (?, NULL, 'CONFIRMED', 'HUMAN')
+        `,
+        [appointmentId],
+    );
+
+    await db.query(
+        `
+        INSERT INTO appointment_messages
+        (appointment_id, direction, message, channel, provider)
+        VALUES (?, 'IN', ?, 'SYSTEM', 'HUMAN')
+        `,
+        [
+            appointmentId,
+            `Cita rápida creada desde dashboard. Documento: ${documentLabel} ${documentNumber}. Modalidad: ${String(modality || "PRESENCIAL").toUpperCase()}.`,
+        ],
+    );
+
+    return {
+        appointmentId,
+        created: true,
+    };
 }
 
 export async function logAppointmentMessage(appointmentId, message) {

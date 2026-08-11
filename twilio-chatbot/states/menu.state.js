@@ -1,11 +1,20 @@
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
-const TEMPLATE_GESTION_CITA = "HX4148f8bb8a8e0312b0f58302b1cd48d7";
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
     "HX18e7c4eb9b23f2fbb53b37f1c2520bed";
+
+const GESTION_CITAS_MENU_TEXT =
+    "Antes de continuar, ten en cuenta:\n\n" +
+    "• No realizamos consultas domiciliarias.\n" +
+    "• No prestamos servicio de urgencias.\n\n" +
+    "Selecciona una opción:\n\n" +
+    "1️⃣ Agendar nueva consulta\n" +
+    "2️⃣ Reagendar cita\n" +
+    "3️⃣ Cancelar cita\n" +
+    "0️⃣ Volver al menú principal";
 function sendTemplate(contentSid, nextState = "MENU", data = {}, variables = null) {
     return {
         response: null,
@@ -144,9 +153,25 @@ function isPostSurgeryIntent(normalizedMsg, compactMsg) {
         normalizedMsg === "4" ||
         normalizedMsg === "soy paciente postquirurgico" ||
         normalizedMsg === "postquirurgico" ||
+        normalizedMsg === "soy paciente postoperatorio" ||
+        normalizedMsg === "soy paciente posoperatorio" ||
+        normalizedMsg === "postoperatorio" ||
+        normalizedMsg === "posoperatorio" ||
+        normalizedMsg === "postoperatoria" ||
+        normalizedMsg === "posoperatoria" ||
+        normalizedMsg === "postoperativo" ||
         compactMsg === "menu_postquirurgico" ||
+        compactMsg === "menu_postoperatorio" ||
+        compactMsg === "menu_posoperatorio" ||
+        compactMsg === "paciente_postoperatorio" ||
+        compactMsg === "paciente_posoperatorio" ||
         compactMsg === "post_surgery" ||
-        normalizedMsg.includes("postquirurg")
+        normalizedMsg.includes("postquirurg") ||
+        normalizedMsg.includes("postoperator") ||
+        normalizedMsg.includes("posoperator") ||
+        normalizedMsg.includes("postoperat") ||
+        normalizedMsg.includes("despues de cirugia") ||
+        normalizedMsg.includes("después de cirugia")
     );
 }
 
@@ -211,6 +236,21 @@ export default async function menuState(msg, data = {}, context = {}) {
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
     }
 
+    // Se evalúa antes de cualquier solicitud general de cita para evitar que
+    // payloads como "agendar cita postoperatoria" entren al flujo equivocado.
+    if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
+        return {
+            response:
+                "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
+                "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
+                "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
+                "3️⃣ Hablar con la secretaria\n" +
+                "0️⃣ Volver al menú",
+            nextState: "POST_SURGERY",
+            data: { step: "ASK_POST_SURGERY_DAYS" },
+        };
+    }
+
     // Permite iniciar una cita directamente desde lenguaje natural en el menú,
     // conservando la fecha indicada para usarla al llegar a la selección de agenda.
     // Ejemplo: "citas para jueves 13 de agosto".
@@ -236,7 +276,11 @@ export default async function menuState(msg, data = {}, context = {}) {
 
     // Botón / payload del menú principal: gestionar cita.
     if (isManageAppointmentIntent(normalizedMsg, compactMsg)) {
-        return sendTemplate(TEMPLATE_GESTION_CITA, "GESTION_CITAS", { rendered: true });
+        return {
+            response: GESTION_CITAS_MENU_TEXT,
+            nextState: "GESTION_CITAS",
+            data: { rendered: true },
+        };
     }
 
     // Botón / payload del menú principal: información y costos.
@@ -291,19 +335,6 @@ export default async function menuState(msg, data = {}, context = {}) {
                 "5️⃣ Hablar con la secretaria",
             nextState: "MENU",
             data: {},
-        };
-    }
-
-    if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
-        return {
-            response:
-                "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
-                "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
-                "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
-                "3️⃣ Hablar con la secretaria\n" +
-                "0️⃣ Volver al menú",
-            nextState: "POST_SURGERY",
-            data: { step: "ASK_POST_SURGERY_DAYS" },
         };
     }
 

@@ -1273,15 +1273,18 @@ export default async function agendarState(msg, data, context = {}) {
                 if (local) {
                     data.patientExistsLocal = true;
                     data.patientStatus = "ACTIVE";
-                    data.step = "FILTRO_COLUMNA";
+                    data.step = "ASK_DATE";
+
+                    if (data.pendingDateInput) {
+                        const pendingDateInput = data.pendingDateInput;
+                        delete data.pendingDateInput;
+                        return agendarState(pendingDateInput, data, context);
+                    }
 
                     return {
                         response:
                             "Perfecto, ya encontré tu registro.\n\n" +
-                            "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
-                            "1️⃣ Sí\n" +
-                            "2️⃣ No\n\n" +
-                            "0️⃣ Volver al menú",
+                            buildAskDateMessage(),
                         nextState: "AGENDAR",
                         data,
                     };
@@ -1563,24 +1566,29 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.regPatient.habeasData = msg === "1";
-            data.step = "FILTRO_COLUMNA";
+            data.step = "ASK_DATE";
+
+            if (data.pendingDateInput) {
+                const pendingDateInput = data.pendingDateInput;
+                delete data.pendingDateInput;
+                return agendarState(pendingDateInput, data, context);
+            }
 
             return {
                 response:
                     "Gracias. Continuemos con el agendamiento.\n\n" +
-                    "¿Tu consulta está relacionada con dolor lumbar, cervical o problemas de columna?\n\n" +
-                    "1️⃣ Sí\n" +
-                    "2️⃣ No\n\n" +
-                    "0️⃣ Volver al menú",
+                    buildAskDateMessage(),
                 nextState: "AGENDAR",
                 data,
             };
         }
 
+        // Compatibilidad con sesiones que quedaron guardadas antes de retirar
+        // el filtro de columna. Tanto "Sí" como "No" deben continuar.
         case "FILTRO_COLUMNA": {
             if (msg === "0") return returnToMenu();
 
-            if (msg === "1") {
+            if (msg === "1" || msg === "2") {
                 data.step = "ASK_DATE";
 
                 if (data.pendingDateInput) {
@@ -1591,19 +1599,6 @@ export default async function agendarState(msg, data, context = {}) {
 
                 return {
                     response: buildAskDateMessage(),
-                    nextState: "AGENDAR",
-                    data,
-                };
-            }
-
-            if (msg === "2") {
-                data.step = "FILTRO_CONFIRM";
-                return {
-                    response:
-                        "El Dr. se especializa principalmente en problemas de columna.\n\n" +
-                        "¿Deseas continuar con el agendamiento?\n\n" +
-                        "1️⃣ Sí\n" +
-                        "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1619,7 +1614,7 @@ export default async function agendarState(msg, data, context = {}) {
         case "FILTRO_CONFIRM": {
             if (msg === "0") return returnToMenu();
 
-            if (msg === "1") {
+            if (msg === "1" || msg === "2") {
                 data.step = "ASK_DATE";
 
                 if (data.pendingDateInput) {
@@ -1636,7 +1631,7 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             return {
-                response: "Responde 1 para continuar o 0 para volver al menú.",
+                response: "Responde 1 o 2 para continuar, o 0 para volver al menú.",
                 nextState: "AGENDAR",
                 data,
             };

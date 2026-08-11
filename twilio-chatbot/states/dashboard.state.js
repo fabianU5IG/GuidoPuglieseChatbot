@@ -5,6 +5,7 @@ import {
     markReScheduled,
     registerChatbotInteraction,
     logAppointmentMessage,
+    createSecretaryQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS } from "../constants.js";
@@ -20,7 +21,7 @@ const { getTimeSlots } = timeUtils;
  *  CONFIG
  * =========================
  */
-const SECRETARY_PHONES = ["573153573131"];
+const SECRETARY_PHONES = ["573153573132"];
 const SECRETARY_CASES_PAGE_SIZE = 10;
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 
@@ -820,51 +821,21 @@ export default async function dashboardState(msg, data = {}, context) {
                         continue;
                     }
 
-                    const end = addMinutesToYmdHm(
-                        ymd,
-                        item.timeLabel,
-                        APPOINTMENT_DURATION_MIN,
-                    );
-
-                    const appointmentBody = {
-                        startAppointment: `${ymd} ${item.timeLabel}`,
-                        endAppointment: `${end.ymd} ${end.hm}`,
-                        patientDocumentType: item.patientDocumentType,
-                        patientDocumentNumber: item.patientDocumentNumber,
-                        doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
-                        doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
-                        modality:
-                            item.modality === "LLAMADA"
-                                ? "LLAMADA"
-                                : APPOINTMENT_MODALITY,
-                        stateAppointment: APPOINTMENT_STATE,
-                        appointmentType: "Creada desde dashboard",
-                        clinic: CLINIC_ID,
-                        comment: `Creada desde dashboard - ${item.modality}`,
-                    };
-
-                    const jobId = await createSaludtoolsJob({
-                        jobType: "APPOINTMENT_CREATE",
-                        phone: context?.from || from,
-                        appointmentId: null,
-                        dedupeKey:
-                            `dashboard-create:${item.patientDocumentType}:` +
-                            `${item.patientDocumentNumber}:${ymd}:${item.timeLabel}:${item.modality}`,
-                        payload: {
-                            fullName: `Paciente ${item.patientDocumentNumber}`,
-                            dateLabel: item.dateLabel,
-                            timeLabel: item.timeLabel,
-                            patientExistsLocal: true,
-                            patientBody: null,
-                            source: "SECRETARY_DASHBOARD",
-                            appointmentBody,
-                        },
-                        priority: 90,
-                    });
+                    const localResult =
+                        await createSecretaryQuickAppointment({
+                            date: ymd,
+                            time: item.timeLabel,
+                            durationMinutes: APPOINTMENT_DURATION_MIN,
+                            patientDocumentType: item.patientDocumentType,
+                            patientDocumentNumber:
+                                item.patientDocumentNumber,
+                            modality: item.modality,
+                        });
 
                     inserted.push({
                         lineNumber: item.lineNumber,
-                        id: jobId,
+                        id: localResult.appointmentId,
+                        created: localResult.created,
                         modality: item.modality,
                         dateLabel: item.dateLabel,
                         timeLabel: item.timeLabel,
@@ -880,19 +851,23 @@ export default async function dashboardState(msg, data = {}, context) {
                 }
             }
 
+            const createdCount = inserted.filter((item) => item.created).length;
+            const duplicateCount = inserted.length - createdCount;
+
             let response =
-                `✅ Encoladas para SaludTools: ${inserted.length}\n` +
+                `✅ Guardadas en la base de datos: ${createdCount}\n` +
+                `ℹ️ Ya existentes: ${duplicateCount}\n` +
                 `❌ Con error: ${invalid.length + failed.length}\n\n`;
 
             if (inserted.length) {
                 response +=
                     (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
-                    "Citas enviadas a procesamiento:\n";
+                    "Citas registradas localmente:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
                         `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
-                        `(${item.modality})\n`;
+                        `(${item.modality})${item.created ? "" : " - ya existía"}\n`;
                 });
                 response += "\n";
             }

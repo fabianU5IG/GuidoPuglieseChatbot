@@ -11,7 +11,7 @@ import teleconsultaState from "./states/teleconsulta.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 
 // 📌 Números autorizados como secretaría
-const SECRETARY_PHONES = ["573153573131"];
+const SECRETARY_PHONES = ["573153573132"];
 
 /**
  * Función principal del chatbot
