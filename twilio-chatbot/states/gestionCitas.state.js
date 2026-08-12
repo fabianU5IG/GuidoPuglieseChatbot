@@ -61,13 +61,6 @@ export default function gestionCitasState(msg, data = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
-    /*if (!data.rendered && !normalizedMsg) {
-        return {
-            response: textoMenu,
-            nextState: "GESTION_CITAS",
-            data: { rendered: true },
-        };
-    }*/
     if (!data.rendered && !normalizedMsg) {
         return sendTemplate(
             TEMPLATE_GESTION_CITA,
@@ -77,13 +70,6 @@ export default function gestionCitasState(msg, data = {}) {
     }
 
     // Payloads de botones que pueden llegar desde el menú principal.
-    /*if (compactMsg === "menu_cita" || compactMsg === "gestionar_cita") {
-        return {
-            response: textoMenu,
-            nextState: "GESTION_CITAS",
-            data: { rendered: true },
-        };
-    }*/
     if (compactMsg === "menu_cita" || compactMsg === "gestionar_cita") {
         return sendTemplate(
             TEMPLATE_GESTION_CITA,
