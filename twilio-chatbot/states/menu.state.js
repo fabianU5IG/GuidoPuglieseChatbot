@@ -281,12 +281,19 @@ export default async function menuState(msg, data = {}, context = {}) {
     }
 
     // Botón / payload del menú principal: gestionar cita.
-    if (isManageAppointmentIntent(normalizedMsg, compactMsg)) {
+    /*if (isManageAppointmentIntent(normalizedMsg, compactMsg)) {
         return {
             response: GESTION_CITAS_MENU_TEXT,
             nextState: "GESTION_CITAS",
             data: { rendered: true },
         };
+    }*/
+    if (isManageAppointmentIntent(normalizedMsg, compactMsg)) {
+        return sendTemplate(
+            TEMPLATE_GESTION_CITA,
+            "GESTION_CITAS",
+            { rendered: true }
+        );
     }
 
     // Botón / payload del menú principal: información y costos.

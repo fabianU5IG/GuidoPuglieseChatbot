@@ -1,4 +1,5 @@
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
 const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
@@ -60,21 +61,35 @@ export default function gestionCitasState(msg, data = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
-    if (!data.rendered && !normalizedMsg) {
+    /*if (!data.rendered && !normalizedMsg) {
         return {
             response: textoMenu,
             nextState: "GESTION_CITAS",
             data: { rendered: true },
         };
+    }*/
+    if (!data.rendered && !normalizedMsg) {
+        return sendTemplate(
+            TEMPLATE_GESTION_CITA,
+            "GESTION_CITAS",
+            { rendered: true }
+        );
     }
 
     // Payloads de botones que pueden llegar desde el menú principal.
-    if (compactMsg === "menu_cita" || compactMsg === "gestionar_cita") {
+    /*if (compactMsg === "menu_cita" || compactMsg === "gestionar_cita") {
         return {
             response: textoMenu,
             nextState: "GESTION_CITAS",
             data: { rendered: true },
         };
+    }*/
+    if (compactMsg === "menu_cita" || compactMsg === "gestionar_cita") {
+        return sendTemplate(
+            TEMPLATE_GESTION_CITA,
+            "GESTION_CITAS",
+            { rendered: true }
+        );
     }
 
     // Agendar nueva consulta.
