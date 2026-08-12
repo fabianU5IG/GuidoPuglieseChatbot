@@ -39,7 +39,7 @@ const AI_GLOBAL_SCHEDULING_ENABLED = !["false", "0", "off", "no"].includes(
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_ASK_DOC_NUMBER = "HX81850303bf6a4fb7807fe02bf293d497";
-const TEMPLATE_ASK_ATTENTION_TYPE = "HXcda5ec9a090db786740c644ddd809cbb";
+const TEMPLATE_ASK_ATTENTION_TYPE = "HX91e5d2cc86e00782a2ca350967eabf43";
 const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
 
 function sendTemplate(contentSid, nextState = "AGENDAR", data = {}, variables = null) {
