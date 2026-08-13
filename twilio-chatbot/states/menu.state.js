@@ -135,6 +135,7 @@ function isAdvisorIntent(normalizedMsg, compactMsg) {
         normalizedMsg === "secretaria" ||
         normalizedMsg === "hablar con secretaria" ||
         normalizedMsg === "hablar con la secretaria" ||
+        compactMsg === "costos_secretaria" ||
         compactMsg === "menu_secretaria" ||
         compactMsg === "hablar_secretaria" ||
         compactMsg === "hablar_con_secretaria" ||
@@ -194,6 +195,16 @@ function isManageAppointmentIntent(normalizedMsg, compactMsg) {
         normalizedMsg.includes("gestionar mi cita") ||
         normalizedMsg.includes("agendar o gestionar") ||
         normalizedMsg.includes("gestion citas")
+    );
+}
+
+// Botón "Agendar consulta" desde la plantilla de información y costos.
+// Redirige al menú de gestión de citas.
+if (compactMsg === "costos_agendar") {
+    return sendTemplate(
+        TEMPLATE_GESTION_CITA,
+        "GESTION_CITAS",
+        { rendered: true }
     );
 }
 
