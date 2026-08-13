@@ -198,16 +198,6 @@ function isManageAppointmentIntent(normalizedMsg, compactMsg) {
     );
 }
 
-// Botón "Agendar consulta" desde la plantilla de información y costos.
-// Redirige al menú de gestión de citas.
-if (compactMsg === "costos_agendar") {
-    return sendTemplate(
-        TEMPLATE_GESTION_CITA,
-        "GESTION_CITAS",
-        { rendered: true }
-    );
-}
-
 function isInfoIntent(normalizedMsg, compactMsg) {
     return (
         normalizedMsg === "2" ||
@@ -299,6 +289,15 @@ export default async function menuState(msg, data = {}, context = {}) {
             { rendered: true }
         );
     }
+
+    // Botón "Agendar consulta" desde Información general y costos.
+        if (compactMsg === "costos_agendar") {
+            return sendTemplate(
+                TEMPLATE_GESTION_CITA,
+                "GESTION_CITAS",
+                { rendered: true }
+            );
+        }
 
     // Botón / payload del menú principal: información y costos.
     if (isInfoIntent(normalizedMsg, compactMsg)) {
