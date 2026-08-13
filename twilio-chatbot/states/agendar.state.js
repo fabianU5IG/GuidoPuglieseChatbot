@@ -653,6 +653,17 @@ function isRecommendationRequest(value) {
         key.includes("proxima disponibilidad") ||
         key.includes("primera disponibilidad") ||
         key.includes("lo mas pronto") ||
+        key.includes("la mas proxima") ||
+        key.includes("mas proxima") ||
+        key.includes("la proxima") ||
+        key.includes("proxima cita") ||
+        key.includes("proximo horario") ||
+        key.includes("proxima fecha") ||
+        key.includes("lo antes posible") ||
+        key.includes("cuanto antes") ||
+        key.includes("primera que haya") ||
+        key.includes("primera que tenga") ||
+        key.includes("cuando haya") ||
         key.includes("cita mas cercana") ||
         key.includes("cualquier horario") ||
         key.includes("cualquier dia") ||
