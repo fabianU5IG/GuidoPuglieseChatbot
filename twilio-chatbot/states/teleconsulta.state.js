@@ -42,6 +42,7 @@ function isBackIntent(normalizedMsg, compactMsg) {
         compactMsg === "volver_menu" ||
         compactMsg === "menu_principal" ||
         compactMsg === "teleconsulta_volver_menu" ||
+        compactMsg === "teleconsulta_no" ||
         normalizedMsg.includes("volver al menu")
     );
 }
@@ -56,6 +57,7 @@ function isScheduleIntent(normalizedMsg, compactMsg) {
         compactMsg === "agendar_teleconsulta" ||
         compactMsg === "tele_agendar" ||
         compactMsg === "btn_teleconsulta_agendar" ||
+        compactMsg === "teleconsulta_si" ||
         normalizedMsg.includes("agendar teleconsulta")
     );
 }
