@@ -13,7 +13,7 @@ const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
-    "HXb7f86251fabd4b572ccde29a86f348ff";
+    "HX81850303bf6a4fb7807fe02bf293d497";
 const TEMPLATE_AVAILABLE_HOURS =
     process.env.TWILIO_TEMPLATE_SUPPORT_AVAILABLE_HOURS_SID ||
     process.env.TWILIO_TEMPLATE_AVAILABLE_HOURS_SID ||
@@ -76,6 +76,7 @@ function normalizeDocType(input) {
     const t = normalizeOption(input);
     const c = compact(input);
 
+    // CC -> Saludtools 1
     if (
         t === "1" ||
         t === "cc" ||
@@ -89,6 +90,7 @@ function normalizeDocType(input) {
         return 1;
     }
 
+    // CE -> Saludtools 2
     if (
         t === "2" ||
         t === "ce" ||
@@ -100,6 +102,44 @@ function normalizeDocType(input) {
         t.includes("cedula de extranjeria")
     ) {
         return 2;
+    }
+
+    // Pasaporte -> Saludtools 4
+    if (
+        t === "3" ||
+        t === "pasaporte" ||
+        c === "doc_pasaporte" ||
+        c === "tipo_pasaporte" ||
+        c === "documento_pasaporte"
+    ) {
+        return 4;
+    }
+
+    // Registro Civil -> Saludtools 5
+    if (
+        t === "4" ||
+        t === "rc" ||
+        t === "r c" ||
+        c === "doc_rc" ||
+        c === "tipo_rc" ||
+        c === "documento_rc" ||
+        t.includes("registro civil")
+    ) {
+        return 5;
+    }
+
+    // Tarjeta de Identidad -> Saludtools 6
+    if (
+        t === "5" ||
+        t === "ti" ||
+        t === "t i" ||
+        c === "doc_ti" ||
+        c === "tipo_ti" ||
+        c === "documento_ti" ||
+        t.includes("tarjeta identidad") ||
+        t.includes("tarjeta de identidad")
+    ) {
+        return 6;
     }
 
     return null;
