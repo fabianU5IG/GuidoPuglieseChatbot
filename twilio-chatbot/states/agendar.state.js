@@ -653,10 +653,6 @@ function isRecommendationRequest(value) {
         key.includes("proxima disponibilidad") ||
         key.includes("primera disponibilidad") ||
         key.includes("lo mas pronto") ||
-        key.includes("la mas proxima") ||
-        key.includes("mas proxima") ||
-        key.includes("la proxima") ||
-        key.includes("proxima cita") ||
         key.includes("proximo horario") ||
         key.includes("proxima fecha") ||
         key.includes("lo antes posible") ||
@@ -1195,6 +1191,8 @@ async function normalizeAgendarMessage(msg, step, data) {
             return "mas_horarios";
         case "ATTENTION_TYPE":
             return String(parsed.value || raw);
+        case "RECOMMENDATION":
+            return `RECOMENDAR:${raw}`;
         default:
             return raw;
     }
