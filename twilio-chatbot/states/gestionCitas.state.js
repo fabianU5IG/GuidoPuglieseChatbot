@@ -3,7 +3,7 @@ const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
 const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
-    "HX81850303bf6a4fb7807fe02bf293d497";
+    "HX3b07c0984e3fc8c6d2f96630752ef101";
 
 function sendTemplate(contentSid, nextState, data = {}, variables = null) {
     return {
