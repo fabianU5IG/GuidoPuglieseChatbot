@@ -136,22 +136,28 @@ export default async function teleconsultaState(msg, data = {}, context = {}) {
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
     }
 
-    if (isScheduleIntent(normalizedMsg, compactMsg)) {
+   if (isScheduleIntent(normalizedMsg, compactMsg)) {
+        try {
+            await notifySecretarySupportRequest({
+                patientPhone: context.from,
+                patientName: data.fullName || data.patientName || "Paciente",
+                reason: "Solicitud de agendamiento de teleconsulta",
+                note:
+                    "El paciente solicita agendar una teleconsulta / lectura de estudios.",
+            });
+        } catch (error) {
+            console.error(
+                "❌ No fue posible notificar a la secretaria por teleconsulta:",
+                error,
+            );
+        }
+
         return {
             response:
-                "Vamos a iniciar el agendamiento de tu teleconsulta.\n\n" +
-                "La IA podrá ayudarte a escoger entre horarios disponibles según tus preferencias.\n\n" +
-                "¿Cuál es tu nombre completo?",
-            nextState: "AGENDAR",
-            data: {
-                step: "ASK_NAME",
-                origin: "TELECONSULTA",
-                consultationMode: "TELECONSULTA",
-                aiSchedulingEnabled: true,
-                appointmentType:
-                    process.env.SALUDTOOLS_TELECONSULTATION_APPOINTMENT_TYPE ||
-                    "Teleconsulta / lectura de estudios",
-            },
+                "Gracias. Hemos recibido tu solicitud para agendar una teleconsulta.\n\n" +
+                "La secretaria revisará la disponibilidad y se comunicará contigo por este mismo medio para continuar con el proceso.",
+            nextState: "MENU",
+            data: { renderMenu: true },
         };
     }
 
