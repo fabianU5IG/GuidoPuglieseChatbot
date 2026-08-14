@@ -376,7 +376,7 @@ async function processAppointmentCreate(job) {
             startAppointment: appointmentBody.startAppointment,
             endAppointment: appointmentBody.endAppointment,
             page: 0,
-            size: 200,
+            size: 19,
         });
 
         if (
@@ -566,7 +566,7 @@ async function processAppointmentUpdate(job) {
             startAppointment: appointmentBody.startAppointment,
             endAppointment: appointmentBody.endAppointment,
             page: 0,
-            size: 200,
+            size: 19,
         });
 
         if (
