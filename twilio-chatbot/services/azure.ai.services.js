@@ -92,7 +92,11 @@ export async function normalizeAppointmentInputAI({ message, step, data = {} }) 
                         "Devuelve únicamente JSON válido, sin markdown. " +
                         "No inventes datos. Si no hay certeza, usa null. " +
                         "Campos permitidos: intent, value, confidence. " +
-                        "intent puede ser: YES, NO, BACK_MENU, DOC_TYPE, DATE_DDMM, HOUR_BUTTON, MORE_HOURS, ATTENTION_TYPE, CONTINUE, UNKNOWN. " +
+                        "intent puede ser: YES, NO, BACK_MENU, DOC_TYPE, DATE_DDMM, HOUR_BUTTON, MORE_HOURS, ATTENTION_TYPE, CONTINUE, RECOMMENDATION, UNKNOWN. " +
+                        "Usa RECOMMENDATION cuando el usuario solicite una fecha u hora disponible mediante lenguaje natural, aunque no use palabras exactas. " +
+                        "Ejemplos: 'lo más pronto', 'lo más pronto posible', 'la más próxima', 'la próxima que tenga', 'la primera que haya', " +
+                        "'cualquier hora', 'alguna en la tarde', 'la próxima semana', 'el jueves en la mañana' o expresiones equivalentes. " +
+                        "En RECOMMENDATION, value debe conservar la preferencia original del usuario o ser null." +
                         "value debe ser el valor normalizado: 1/2, DD/MM, hora_1..hora_6, mas_horarios, particular, prepagada, o null.",
                 },
                 {
