@@ -1,9 +1,20 @@
 import OpenAI from "openai";
 
-const client = new OpenAI({
-    baseURL: process.env.AZURE_OPENAI_ENDPOINT,
-    apiKey: process.env.AZURE_OPENAI_API_KEY,
-});
+// El cliente se crea solo la primera vez que realmente se necesita (no al
+// importar el módulo). Así, si falta o es inválida la configuración de Azure
+// OpenAI, solo fallan las funciones que dependen de IA (con su propio
+// try/catch) en vez de tumbar todo el proceso del bot al iniciar.
+let client = null;
+
+function getClient() {
+    if (!client) {
+        client = new OpenAI({
+            baseURL: process.env.AZURE_OPENAI_ENDPOINT,
+            apiKey: process.env.AZURE_OPENAI_API_KEY,
+        });
+    }
+    return client;
+}
 
 function isAIEnabled() {
     return Boolean(
@@ -18,7 +29,7 @@ async function chatCompletion({ messages, temperature = 0.2, maxTokens = 500 }) 
         throw new Error("Azure OpenAI no está configurado");
     }
 
-    const completion = await client.chat.completions.create({
+    const completion = await getClient().chat.completions.create({
         model: process.env.AZURE_OPENAI_DEPLOYMENT,
         messages,
         temperature,
@@ -26,6 +37,15 @@ async function chatCompletion({ messages, temperature = 0.2, maxTokens = 500 }) 
     });
 
     return completion.choices?.[0]?.message?.content || "";
+}
+
+function truncateAtWordBoundary(text = "", maxLen = 180) {
+    const value = String(text || "");
+    if (value.length <= maxLen) return value;
+
+    const cut = value.slice(0, maxLen);
+    const lastSpace = cut.lastIndexOf(" ");
+    return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trim() + "…";
 }
 
 function extractJson(raw = "") {
@@ -237,9 +257,10 @@ export async function recommendAppointmentOptionsAI({
             if (!candidate || used.has(String(candidate.candidateId))) continue;
 
             used.add(String(candidate.candidateId));
-            const rawReason = String(
+            const rawReason = truncateAtWordBoundary(
                 option?.reason || "Horario disponible",
-            ).slice(0, 120);
+                120,
+            );
             const reason = /diagn[oó]st|medic|tratamiento|dosis|s[ií]ntoma|urgenc/i.test(
                 rawReason,
             )
@@ -256,15 +277,16 @@ export async function recommendAppointmentOptionsAI({
         if (!options.length) return null;
 
         return {
-            intro: String(parsed.intro || "Estas son las opciones más convenientes:").slice(
-                0,
+            intro: truncateAtWordBoundary(
+                parsed.intro || "Estas son las opciones más convenientes:",
                 180,
             ),
             options,
-            note: String(
+            note: truncateAtWordBoundary(
                 parsed.note ||
                     "La disponibilidad puede cambiar hasta que confirmes la selección.",
-            ).slice(0, 180),
+                180,
+            ),
         };
     } catch (error) {
         console.error(

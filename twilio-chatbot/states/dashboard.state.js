@@ -1234,6 +1234,11 @@ export default async function dashboardState(msg, data = {}, context) {
             try {
                 if (!data?.skipSaludtools && saludId) {
                     const ymd = ddmmToYmd(data.newDate);
+                    const end = addMinutesToYmdHm(
+                        ymd,
+                        data.newTime,
+                        APPOINTMENT_DURATION_MIN,
+                    );
 
                     if (isHoliday(ymd)) {
                         return {

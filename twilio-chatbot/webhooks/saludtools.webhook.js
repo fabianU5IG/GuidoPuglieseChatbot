@@ -1,7 +1,41 @@
 import express from "express";
+import { timingSafeEqual } from "node:crypto";
 import { syncSaludtoolsAppointment, syncSaludtoolsPatient } from "../services/saludtools-sync.service.js";
 
 const router = express.Router();
+
+const WEBHOOK_SECRET = process.env.SALUDTOOLS_WEBHOOK_SECRET || "";
+
+if (!WEBHOOK_SECRET) {
+  console.warn(
+    "⚠️  SALUDTOOLS_WEBHOOK_SECRET no está configurado: /webhook/saludtools/* " +
+      "acepta solicitudes sin autenticación. Configúralo aquí y en el panel de " +
+      "Saludtools (encabezado X-Saludtools-Secret) para cerrar este hueco.",
+  );
+}
+
+function verifySaludtoolsSecret(req, res, next) {
+  if (!WEBHOOK_SECRET) return next();
+
+  const provided = String(req.headers["x-saludtools-secret"] || "");
+  const expected = WEBHOOK_SECRET;
+
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+
+  const valid =
+    providedBuf.length === expectedBuf.length &&
+    timingSafeEqual(providedBuf, expectedBuf);
+
+  if (!valid) {
+    console.warn("🚫 Webhook de Saludtools rechazado: secreto inválido o ausente.");
+    return res.sendStatus(401);
+  }
+
+  return next();
+}
+
+router.use(verifySaludtoolsSecret);
 
 function logWebhook(label, req) {
   console.log(`\n========== SALUDTOOLS WEBHOOK: ${label} ==========`);

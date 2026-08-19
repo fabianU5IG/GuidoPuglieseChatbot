@@ -7,8 +7,16 @@ import {
 } from "../services/whatsapp.service.js";
 import { uploadPatientImageToSupabase } from "../services/supabase.service.js";
 
+const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+
 function returnMenu() {
-    return { response: null, nextState: "MENU", data: { renderMenu: true } };
+    return {
+        response: null,
+        nextState: "MENU",
+        data: {},
+        sendTemplate: true,
+        template: { contentSid: TEMPLATE_MENU_PRINCIPAL, variables: null },
+    };
 }
 
 function normalize(value = "") {

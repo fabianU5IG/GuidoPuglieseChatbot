@@ -1,22 +1,30 @@
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const bucketName = process.env.SUPABASE_BUCKET || "post-surgery";
 
-if (!supabaseUrl || !supabaseKey) {
-    throw new Error(
-        "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en variables de entorno.",
-    );
-}
+// El cliente se crea solo la primera vez que realmente se necesita (al subir
+// una imagen postquirúrgica), no al importar el módulo. Así, si falta la
+// configuración de Supabase, solo falla esa función puntual en vez de tumbar
+// todo el proceso del bot al iniciar (Supabase no hace falta para el resto
+// de los flujos: menú, agendamiento, gestión de citas, teleconsulta, etc.).
+let supabase = null;
 
-const supabase = createClient(supabaseUrl, supabaseKey);
-console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
-console.log(
-    "SUPABASE_SERVICE_ROLE_KEY cargada:",
-    !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-);
-console.log("SUPABASE_BUCKET:", process.env.SUPABASE_BUCKET);
+function getSupabaseClient() {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+        throw new Error(
+            "Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en variables de entorno.",
+        );
+    }
+
+    if (!supabase) {
+        supabase = createClient(supabaseUrl, supabaseKey);
+    }
+
+    return supabase;
+}
 
 function buildSafeFileName(patientPhone = "unknown", originalExt = "jpg") {
     const cleanPhone = String(patientPhone).replace(/\D/g, "") || "unknown";
@@ -43,6 +51,7 @@ export async function uploadPatientImageToSupabase({
 }) {
     const extension = getExtensionFromContentType(contentType);
     const filePath = buildSafeFileName(patientPhone, extension);
+    const supabase = getSupabaseClient();
 
     const { error: uploadError } = await supabase.storage
         .from(bucketName)

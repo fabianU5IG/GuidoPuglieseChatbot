@@ -8,10 +8,9 @@ import gestionCitasState from "./states/gestionCitas.state.js";
 import soporteCitaState from "./states/soporteCita.state.js";
 import postSurgeryState from "./states/postSurgery.state.js";
 import teleconsultaState from "./states/teleconsulta.state.js";
+import infoCostosState from "./states/infoCostos.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
-
-// 📌 Números autorizados como secretaría
-const SECRETARY_PHONES = ["573153573132"];
+import { SECRETARY_PHONES } from "./constants.js";
 
 /**
  * Función principal del chatbot
@@ -51,11 +50,18 @@ export default async function chatbotResponse(message, session, context = {}) {
         context.numMedia || 0,
     );
 
-    await registerChatbotInteraction({
-        phone: userPhone,
-        message: rawMsg,
-        state,
-    });
+    try {
+        // Se usa context.from (mismo formato "+<código><número>" que usan todos los
+        // estados para leer/guardar el paciente) y no userPhone, para no crear un
+        // registro de paciente duplicado por una diferencia de formato del teléfono.
+        await registerChatbotInteraction({
+            phone: context.from,
+            message: rawMsg,
+            state,
+        });
+    } catch (error) {
+        console.error("❌ No fue posible registrar la interacción en la BD:", error);
+    }
 
     if (state === "DASHBOARD") {
         return dashboardState(msg, data, context);
@@ -75,6 +81,10 @@ export default async function chatbotResponse(message, session, context = {}) {
 
     if (state === "GESTION_CITAS") {
         return gestionCitasState(msg, data, context);
+    }
+
+    if (state === "INFO_COSTOS") {
+        return infoCostosState(msg, data, context);
     }
 
     if (state === "SOPORTE_CITA") {

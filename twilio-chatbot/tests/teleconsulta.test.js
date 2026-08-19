@@ -29,13 +29,14 @@ test("el estado de teleconsulta vuelve a mostrar su plantilla", async () => {
     assert.equal(result.nextState, "TELECONSULTA");
 });
 
-test("el botón de agendar conserva el origen teleconsulta", async () => {
+test("el botón de agendar notifica a la secretaría (commit 612ff2b, 13-ago)", async () => {
+    // Desde el 13 de agosto, "Agendar teleconsulta" ya no abre el flujo de IA:
+    // notifica a la secretaría y vuelve al menú. Ver states/teleconsulta.state.js.
     const result = await teleconsultaState("teleconsulta_agendar", {}, {});
 
-    assert.equal(result.nextState, "AGENDAR");
-    assert.equal(result.data.step, "ASK_NAME");
-    assert.equal(result.data.origin, "TELECONSULTA");
-    assert.equal(result.data.consultationMode, "TELECONSULTA");
+    assert.equal(result.nextState, "MENU");
+    assert.equal(result.data.renderMenu, true);
+    assert.match(result.response, /secretaria/i);
 });
 
 test("el botón de requisitos permanece dentro del flujo", async () => {

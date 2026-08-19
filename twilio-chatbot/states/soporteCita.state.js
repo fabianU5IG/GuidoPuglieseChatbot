@@ -1,8 +1,14 @@
 import { db } from "../db/mysql.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
+import { SALUDTOOLS } from "../constants.js";
 
-const APPOINTMENT_DURATION_MIN = 20;
-const SLOT_MIN = 20;
+const APPOINTMENT_DURATION_MIN = Number(
+    process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
+        SALUDTOOLS.APPOINTMENT_DURATION_MIN,
+);
+// Debe ser igual a APPOINTMENT_DURATION_MIN: cada slot ofrecido debe durar exactamente
+// lo mismo que la cita que va a ocupar, para que no queden huecos ni cruces.
+const SLOT_MIN = APPOINTMENT_DURATION_MIN;
 const DOCTOR_DOCUMENT_NUMBER =
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079";
 const DEFAULT_CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 18569);

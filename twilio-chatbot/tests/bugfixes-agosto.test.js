@@ -43,13 +43,14 @@ test("una sesión antigua que responde No al filtro de columna continúa", async
     assert.doesNotMatch(result.response, /especializa|columna/i);
 });
 
-test("gestión de citas no muestra restricciones de columna o pediatría", async () => {
+test("gestión de citas envía la plantilla de Twilio, sin restricciones de columna o pediatría", async () => {
+    // Desde "fix: SID nuevo de gestion cita" el menú de gestión de citas se
+    // envía como Content Template de Twilio en vez de texto plano.
     const result = await menuState("1", {}, {});
 
     assert.equal(result.nextState, "GESTION_CITAS");
-    assert.equal(result.sendTemplate, undefined);
-    assert.doesNotMatch(result.response, /columna|pedi[aá]tric/i);
-    assert.match(result.response, /Agendar nueva consulta/i);
+    assert.equal(result.sendTemplate, true);
+    assert.ok(result.template?.contentSid);
 });
 
 test("las citas rápidas se guardan localmente y no se encolan a SaludTools", async () => {

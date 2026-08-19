@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import bodyParser from "body-parser";
+import twilio from "twilio";
 import chatbotResponse from "./chatbot.js";
 import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
 import { sendWhatsAppTemplate } from "./services/whatsapp.service.js";
@@ -10,12 +11,19 @@ const PORT = process.env.PORT || 3000;
 
 const sessions = {};
 
+// Necesario para que twilio.webhook() calcule la URL pública correcta
+// (https) cuando el servidor corre detrás de un proxy/túnel (ngrok, Render, etc.).
+app.set("trust proxy", true);
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 app.use("/webhook/saludtools", saludtoolsWebhook);
 
-app.post("/webhook", async (req, res) => {
+// Rechaza cualquier POST a /webhook que no traiga una firma X-Twilio-Signature
+// válida para TWILIO_AUTH_TOKEN, evitando que alguien suplante mensajes de
+// WhatsApp (incluido el número de la secretaría) sin pasar por Twilio.
+app.post("/webhook", twilio.webhook(), async (req, res) => {
     try {
         const incomingBody = req.body.Body || "";
         const buttonPayload = req.body.ButtonPayload || "";

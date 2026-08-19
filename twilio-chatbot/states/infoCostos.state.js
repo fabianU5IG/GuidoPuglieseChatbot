@@ -1,5 +1,6 @@
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
-const TEMPLATE_INFO_COSTOS = "HXbefe23f2c63f385dd20bf6c2d4d0d714";
+// Debe coincidir con la plantilla que envía menu.state.js para "Información y costos".
+const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const SECRETARY_WHATSAPP_NUMBER = process.env.SECRETARY_WHATSAPP_NUMBER || "+573224811542";
 
 function buildSecretaryWhatsappLink() {
@@ -63,6 +64,7 @@ function isScheduleIntent(normalizedMsg, compactMsg) {
         compactMsg === "nueva_consulta" ||
         compactMsg === "btn_agendar_consulta" ||
         compactMsg === "teleconsulta_agendar" ||
+        compactMsg === "costos_agendar" ||
         normalizedMsg.includes("agendar consulta") ||
         normalizedMsg.includes("agendar cita") ||
         normalizedMsg.includes("nueva consulta") ||

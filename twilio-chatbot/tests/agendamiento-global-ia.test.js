@@ -24,26 +24,62 @@ const { default: teleconsultaState } = await import(
 const { default: agendarState } = await import("../states/agendar.state.js");
 const { default: chatbotResponse } = await import("../chatbot.js");
 
+// Se calcula en cada corrida (en vez de usar una fecha fija) para que estos
+// tests no se rompan solos con el paso del tiempo: se busca el próximo
+// lunes, martes o jueves (días de atención completos) con al menos T+3.
+const MESES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+];
+const DIAS_SEMANA = [
+    "domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado",
+];
+
+function nextFullScheduleDate(daysAhead = 3) {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    date.setDate(date.getDate() + daysAhead);
+
+    while (![1, 2, 4].includes(date.getDay())) {
+        date.setDate(date.getDate() + 1);
+    }
+
+    const day = date.getDate();
+    const month = date.getMonth() + 1;
+    const ymd = `${date.getFullYear()}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const ddmm = `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}`;
+
+    return {
+        ymd,
+        ddmm,
+        weekdayName: DIAS_SEMANA[date.getDay()],
+        monthName: MESES[date.getMonth()],
+        day,
+    };
+}
+
 test("el menú detecta una solicitud directa de cita con fecha escrita", async () => {
+    const target = nextFullScheduleDate();
     const result = await chatbotResponse(
-        "citas para jueves 13 de agosto",
+        `citas para ${target.weekdayName} ${target.day} de ${target.monthName}`,
         { state: "MENU", data: {}, isNew: false },
         { from: "+573203269984", numMedia: 0 },
     );
 
     assert.equal(result.nextState, "AGENDAR");
     assert.equal(result.data.step, "ASK_NAME");
-    assert.equal(result.data.pendingDateInput, "13/08");
+    assert.equal(result.data.pendingDateInput, target.ddmm);
     assert.equal(result.data.aiSchedulingEnabled, true);
-    assert.match(result.response, /13\/08/);
+    assert.match(result.response, new RegExp(target.ddmm.replace("/", "\\/")));
 });
 
 test("la fecha escrita en el menú se usa al terminar el filtro de columna", async () => {
+    const target = nextFullScheduleDate();
     const result = await agendarState(
         "1",
         {
             step: "FILTRO_COLUMNA",
-            pendingDateInput: "13/08",
+            pendingDateInput: target.ddmm,
             consultationMode: "PRESENCIAL",
             aiSchedulingEnabled: true,
         },
@@ -51,12 +87,12 @@ test("la fecha escrita en el menú se usa al terminar el filtro de columna", asy
     );
 
     assert.equal(result.nextState, "AGENDAR");
-    assert.equal(result.data.date, "13/08");
-    assert.equal(result.data.ymd, "2026-08-13");
+    assert.equal(result.data.date, target.ddmm);
+    assert.equal(result.data.ymd, target.ymd);
     assert.equal(result.data.pendingDateInput, undefined);
     assert.equal(result.data.step, "ASK_TIME");
     assert.equal(result.sendTemplate, true);
-    assert.equal(result.template.variables["1"], "13/08");
+    assert.equal(result.template.variables["1"], target.ddmm);
 });
 
 test("el agendamiento principal activa IA global", async () => {
@@ -93,12 +129,12 @@ test("cita posoperatoria usa la misma IA global", async () => {
     assert.equal(result.data.isPostOperative, true);
 });
 
-test("teleconsulta conserva modalidad y comparte IA global", async () => {
+test("teleconsulta notifica a la secretaría en vez de abrir agendamiento con IA (commit 612ff2b, 13-ago)", async () => {
     const result = await teleconsultaState("teleconsulta_agendar", {}, {});
 
-    assert.equal(result.nextState, "AGENDAR");
-    assert.equal(result.data.consultationMode, "TELECONSULTA");
-    assert.equal(result.data.aiSchedulingEnabled, true);
+    assert.equal(result.nextState, "MENU");
+    assert.equal(result.data.renderMenu, true);
+    assert.match(result.response, /secretaria/i);
 });
 
 test("una preferencia natural activa recomendaciones globales de fecha", async () => {

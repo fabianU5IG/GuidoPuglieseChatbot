@@ -5,7 +5,7 @@ import {
     updateAppointmentStatusById,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
-import { EPS_CONVENIO } from "../constants.js";
+import { EPS_CONVENIO, SALUDTOOLS } from "../constants.js";
 import {
     generateAppointmentPreparationTipsAI,
     normalizeAppointmentInputAI,
@@ -20,7 +20,10 @@ const DOCTOR_DOCUMENT_NUMBER =
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079";
 const CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 18569);
 
-const APPOINTMENT_DURATION_MIN = 20;
+const APPOINTMENT_DURATION_MIN = Number(
+    process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
+        SALUDTOOLS.APPOINTMENT_DURATION_MIN,
+);
 const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
@@ -574,7 +577,9 @@ function validateAndNormalizePatientBody(patientBody) {
     return { ok: true, body: b };
 }
 
-const SLOT_MIN = 20;
+// Debe ser igual a APPOINTMENT_DURATION_MIN: cada slot ofrecido debe durar exactamente
+// lo mismo que la cita que va a ocupar, para que no queden huecos ni cruces.
+const SLOT_MIN = APPOINTMENT_DURATION_MIN;
 
 function pad2(n) {
     return String(n).padStart(2, "0");
@@ -1169,6 +1174,23 @@ async function normalizeAgendarMessage(msg, step, data) {
         return `RECOMENDAR:${raw}`;
     }
     if (step === "REG_BIRTHDATE") return normalizeBirthDateInput(raw);
+
+    // Estos pasos son texto libre (nombre, documento, contacto) que el propio
+    // "case" del switch valida directamente con su propia regla; no dependen del
+    // resultado de la IA en ningún caso, así que se excluyen para no gastar una
+    // llamada real a Azure OpenAI (2-3 segundos extra) sin ningún beneficio.
+    const FREE_TEXT_NO_AI_STEPS = new Set([
+        "ASK_NAME",
+        "ASK_DOC_NUMBER",
+        "REG_FIRSTNAME",
+        "REG_SECONDNAME",
+        "REG_FIRSTLASTNAME",
+        "REG_SECONDLASTNAME",
+        "REG_EMAIL",
+        "REG_PHONE",
+        "REG_EPS",
+    ]);
+    if (FREE_TEXT_NO_AI_STEPS.has(step)) return raw;
 
     const parsed = await normalizeAppointmentInputAI({ message: raw, step, data });
     if (!parsed || parsed.confidence < 0.7) return raw;

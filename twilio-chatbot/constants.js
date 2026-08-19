@@ -1,19 +1,10 @@
-// constants.js
-// constants.j
-//
-/*export const DOCTORALIA = {
-    DOCTOR_ID: "115097",
-    ADDRESS_ID: "120780",
-    SPECIALTY_ID: "457265",
-    // Timezone Colombia
-    TIMEZONE_OFFSET: "-05:00",
-};
-*/
 export const SALUDTOOLS = {
   DOCTOR_DOCUMENT_TYPE: 1,
   DOCTOR_DOCUMENT_NUMBER: "72134079",
   CLINIC_ID: 18569,
-  APPOINTMENT_DURATION_MIN: 30,
+  // Debe coincidir con SLOT_MIN en agendar.state.js / soporteCita.state.js
+  // (la grilla de horarios que se le ofrece al paciente es cada 20 minutos).
+  APPOINTMENT_DURATION_MIN: 20,
   MODALITY_DEFAULT: "CONVENTIONAL",
   STATE_DEFAULT: "PENDING",
 };
@@ -30,3 +21,10 @@ export const EPS_CONVENIO = {
 
 // si Saludtools NO tiene EPS “Particular”, entonces usamos 0
 export const EPS_PARTICULAR_ID = 0;
+
+// Números autorizados como secretaría (solo dígitos, sin "+" ni "whatsapp:").
+// Se puede sobreescribir con SECRETARY_PHONES="numero1,numero2" en variables de entorno.
+export const SECRETARY_PHONES = (process.env.SECRETARY_PHONES || "573153573132")
+  .split(",")
+  .map((phone) => phone.trim())
+  .filter(Boolean);
