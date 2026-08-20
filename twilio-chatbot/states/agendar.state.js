@@ -11,6 +11,7 @@ import {
     normalizeAppointmentInputAI,
     recommendAppointmentOptionsAI,
 } from "../services/azure.ai.services.js";
+import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
 import { db } from "../db/mysql.js";
 
 const DOCTOR_DOCUMENT_TYPE = Number(
@@ -44,6 +45,28 @@ const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_ASK_DOC_NUMBER = "HX81850303bf6a4fb7807fe02bf293d497";
 const TEMPLATE_ASK_ATTENTION_TYPE = "HX91e5d2cc86e00782a2ca350967eabf43";
 const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
+
+// Plantillas del flujo de registro de paciente nuevo (botones reales de WhatsApp).
+// SIDs actualizados a la versión "copy_..." con el texto mejorado (agosto 2026).
+const TEMPLATE_REG_CONFIRM_NAMES = "HXb82d4efe6c8e953e769007d97e1b7683";
+const TEMPLATE_REG_DOCUMENT_NUMBER = "HX2011f109e313590373f9c99a64136112";
+const TEMPLATE_REG_FIRSTNAME = "HXef564c5e031c89c509865f9ad0cc2671";
+const TEMPLATE_REG_SECONDNAME = "HXf0c0b5145ad2c66b0dc2ee6016edcb08";
+const TEMPLATE_REG_BIRTHDATE = "HXd9b8fa306aa4c104781028d08cb2f5be";
+const TEMPLATE_REG_GENDER = "HX2c7ba0ad6b58366a172c0cfb11098e0f";
+const TEMPLATE_REG_EPS = "HXbb5aca08c0cdb066a18f498bb1008777";
+const TEMPLATE_REG_PHONE = "HX4b3a4c4c8156d55b10784d96d65a8767";
+const TEMPLATE_REG_EMAIL = "HX2c186ee128f8b00e3e76af2ca8ab19d2";
+const TEMPLATE_REG_HABEAS = "HX606fb740ee66367afa3c387aa8c35e14";
+
+// Plantillas nuevas: confirmación final de cita y cierre del flujo de agendamiento.
+const TEMPLATE_CONFIRM_CITA = "HXcc96f44990e9c311650fe93e71b3b1bc";
+const TEMPLATE_SOLICITUD_REGISTRADA = "HXf424f63c3ee61d734604063ecc214b10";
+
+// Recomendación de fecha/hora de la IA, una plantilla por cantidad de opciones.
+const TEMPLATE_RECOMENDACION_1 = "HX99f2473708d3a747691d12c7844376a6";
+const TEMPLATE_RECOMENDACION_2 = "HX95ea998332a873f75d2b983698e71c4a";
+const TEMPLATE_RECOMENDACION_3 = "HXd07499f9bf2d1fe24f69226be43a4026";
 
 function sendTemplate(contentSid, nextState = "AGENDAR", data = {}, variables = null) {
     return {
@@ -645,6 +668,19 @@ function formatDateForRecommendation(ymd) {
 
 function isRecommendationRequest(value) {
     const key = normKey(value);
+
+    // No debe interpretar como "recomiéndame una fecha" un mensaje donde el
+    // paciente en realidad está desistiendo o pidiendo cancelar, ej: "ya no
+    // necesito la cita" o "necesito cancelar la cita ya".
+    if (
+        /\b(cancelar|cancela|reagendar|reprogramar)\b/.test(key) ||
+        /\bya\s+no\b/.test(key) ||
+        /\bno\s+necesito\b/.test(key) ||
+        /\bno\s+quiero\b/.test(key)
+    ) {
+        return false;
+    }
+
     return (
         key === "recomendar" ||
         key === "recomendacion" ||
@@ -666,6 +702,12 @@ function isRecommendationRequest(value) {
         key.includes("primera que tenga") ||
         key.includes("cuando haya") ||
         key.includes("cita mas cercana") ||
+        key.includes("fecha mas cercana") ||
+        key.includes("primera cita disponible") ||
+        key.includes("urgente") ||
+        /\bpara\s+ya\b/.test(key) ||
+        /\bya\s+mismo\b/.test(key) ||
+        (/\bnecesito\b/.test(key) && /\bcita\b/.test(key) && /\bya\b/.test(key)) ||
         key.includes("cualquier horario") ||
         key.includes("cualquier dia") ||
         key.includes("esta semana") ||
@@ -887,21 +929,46 @@ async function buildRecommendedAppointmentResponse(message, data) {
     }));
 
     const intro = aiResult?.intro || "Encontré estas opciones de agenda para ti:";
-    const lines = data.aiRecommendations.map(
-        (item, index) =>
-            `${index + 1}️⃣ ${item.dateText} a las ${item.time} — ${item.reason}`,
-    );
+    const note = aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar.";
+    const recs = data.aiRecommendations;
 
-    return {
-        response:
-            `🤖 ${intro}\n\n` +
-            `${lines.join("\n")}\n\n` +
-            "Responde 1, 2 o 3 para elegir una opción. También puedes escribir otra fecha en formato DD/MM.\n\n" +
-            `${aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar."}\n\n` +
-            "0️⃣ Volver al menú",
-        nextState: "AGENDAR",
-        data,
-    };
+    // Plantilla con botones reales según cuántas opciones encontró la IA (1 a
+    // 3 — es lo máximo que se recomienda). El número de opciones cambia cada
+    // vez, así que hace falta una plantilla distinta por cada cantidad.
+    if (recs.length === 1) {
+        return sendTemplate(TEMPLATE_RECOMENDACION_1, "AGENDAR", data, {
+            "1": intro,
+            "2": recs[0].dateText,
+            "3": recs[0].time,
+            "4": recs[0].reason,
+            "5": note,
+        });
+    }
+    if (recs.length === 2) {
+        return sendTemplate(TEMPLATE_RECOMENDACION_2, "AGENDAR", data, {
+            "1": intro,
+            "2": recs[0].dateText,
+            "3": recs[0].time,
+            "4": recs[0].reason,
+            "5": recs[1].dateText,
+            "6": recs[1].time,
+            "7": recs[1].reason,
+            "8": note,
+        });
+    }
+    return sendTemplate(TEMPLATE_RECOMENDACION_3, "AGENDAR", data, {
+        "1": intro,
+        "2": recs[0].dateText,
+        "3": recs[0].time,
+        "4": recs[0].reason,
+        "5": recs[1].dateText,
+        "6": recs[1].time,
+        "7": recs[1].reason,
+        "8": recs[2].dateText,
+        "9": recs[2].time,
+        "10": recs[2].reason,
+        "11": note,
+    });
 }
 
 async function buildRecommendedTimeResponse(message, data) {
@@ -1088,6 +1155,21 @@ function buildTimeResponse(data) {
     return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "AGENDAR", data, variables);
 }
 
+// Evita que texto pegado por error (varios mensajes del bot copiados, botones,
+// etc.) quede guardado como el nombre del paciente. Un nombre real: solo
+// letras/espacios/guiones/apóstrofes, sin saltos de línea, y un número
+// razonable de palabras.
+function isValidFullName(msg, minLength = 3) {
+    const raw = String(msg || "").trim();
+    if (raw.length < minLength || raw.length > 60) return false;
+    if (/[\n\r]/.test(raw)) return false;
+    if (!/^[A-Za-zÀ-ÖØ-öø-ÿÑñ]+(?:[\s'-]+[A-Za-zÀ-ÖØ-öø-ÿÑñ]+)*$/.test(raw)) {
+        return false;
+    }
+    if (raw.split(/\s+/).length > 6) return false;
+    return true;
+}
+
 function capitalize(str) {
     if (!str) return "";
     return String(str)
@@ -1241,9 +1323,10 @@ export default async function agendarState(msg, data, context = {}) {
 
     switch (data.step) {
         case "ASK_NAME": {
-            if (!msg || msg.trim().length < 3) {
+            if (!isValidFullName(msg)) {
                 return {
-                    response: "Por favor ingresa tu nombre completo.",
+                    response:
+                        "No reconocí eso como un nombre válido. Por favor escribe solo tu nombre completo (ej: Juan Pérez), sin pegar otro texto:",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1271,13 +1354,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.patientDocumentType = t;
             data.step = "ASK_DOC_NUMBER";
-            return {
-                response:
-                    "Perfecto. Ahora escribe tu número de documento, solo números:\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_DOCUMENT_NUMBER, "AGENDAR", data);
         }
 
         case "ASK_DOC_NUMBER": {
@@ -1345,21 +1422,12 @@ export default async function agendarState(msg, data, context = {}) {
             };
 
             data.step = "REG_CONFIRM_NAMES";
-            return {
-                response:
-                    "No encontré tu registro local. Vamos a registrarte antes de agendar.\n\n" +
-                    `Tengo estos datos de tu nombre:\n` +
-                    `• Primer nombre: ${capitalize(data.regPatient.firstName) || "(vacío)"}\n` +
-                    `• Segundo nombre: ${capitalize(data.regPatient.secondName) || "(vacío)"}\n` +
-                    `• Primer apellido: ${capitalize(data.regPatient.firstLastName) || "(vacío)"}\n` +
-                    `• Segundo apellido: ${capitalize(data.regPatient.secondLastName) || "(vacío)"}\n\n` +
-                    "¿Están correctos?\n\n" +
-                    "1️⃣ Sí\n" +
-                    "2️⃣ No, quiero editarlos\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_CONFIRM_NAMES, "AGENDAR", data, {
+                "1": capitalize(data.regPatient.firstName) || "(vacío)",
+                "2": capitalize(data.regPatient.secondName) || "(vacío)",
+                "3": capitalize(data.regPatient.firstLastName) || "(vacío)",
+                "4": capitalize(data.regPatient.secondLastName) || "(vacío)",
+            });
         }
 
         case "REG_CONFIRM_NAMES": {
@@ -1367,21 +1435,12 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (msg === "1") {
                 data.step = "REG_BIRTHDATE";
-                return {
-                    response:
-                        "Fecha de nacimiento (YYYY-MM-DD). Ej: 1967-12-05",
-                    nextState: "AGENDAR",
-                    data,
-                };
+                return sendTemplate(TEMPLATE_REG_BIRTHDATE, "AGENDAR", data);
             }
 
             if (msg === "2") {
                 data.step = "REG_FIRSTNAME";
-                return {
-                    response: "Primer nombre:",
-                    nextState: "AGENDAR",
-                    data,
-                };
+                return sendTemplate(TEMPLATE_REG_FIRSTNAME, "AGENDAR", data);
             }
 
             return {
@@ -1395,9 +1454,10 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "0") return returnToMenu();
             const v = String(msg || "").trim();
 
-            if (v.length < 2) {
+            if (!isValidFullName(v, 2)) {
                 return {
-                    response: "Primer nombre inválido. Intenta de nuevo:",
+                    response:
+                        "Primer nombre inválido. Escribe solo tu primer nombre, sin pegar otro texto:",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1405,26 +1465,34 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.regPatient.firstName = capitalize(v);
             data.step = "REG_SECONDNAME";
-            return {
-                response: "Segundo nombre (si no tienes, escribe 0):",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_SECONDNAME, "AGENDAR", data);
         }
 
         case "REG_SECONDNAME": {
-            if (msg === "0") data.regPatient.secondName = "";
-            else data.regPatient.secondName = capitalize(msg);
+            if (msg === "0") {
+                data.regPatient.secondName = "";
+            } else if (isValidFullName(msg, 2)) {
+                data.regPatient.secondName = capitalize(msg);
+            } else {
+                return {
+                    response:
+                        "No reconocí eso como un nombre. Escribe tu segundo nombre, o 0 si no tienes:",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
 
             data.step = "REG_FIRSTLASTNAME";
             return { response: "Primer apellido:", nextState: "AGENDAR", data };
         }
 
         case "REG_FIRSTLASTNAME": {
+            if (msg === "0") return returnToMenu();
             const v = String(msg || "").trim();
-            if (v.length < 2) {
+            if (!isValidFullName(v, 2)) {
                 return {
-                    response: "Apellido inválido. Intenta de nuevo:",
+                    response:
+                        "Apellido inválido. Escribe solo tu primer apellido, sin pegar otro texto:",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1440,15 +1508,21 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_SECONDLASTNAME": {
-            if (msg === "0") data.regPatient.secondLastName = "";
-            else data.regPatient.secondLastName = capitalize(msg);
+            if (msg === "0") {
+                data.regPatient.secondLastName = "";
+            } else if (isValidFullName(msg, 2)) {
+                data.regPatient.secondLastName = capitalize(msg);
+            } else {
+                return {
+                    response:
+                        "No reconocí eso como un apellido. Escribe tu segundo apellido, o 0 si no tienes:",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
 
             data.step = "REG_BIRTHDATE";
-            return {
-                response: "Fecha de nacimiento (YYYY-MM-DD). Ej: 1967-12-05",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_BIRTHDATE, "AGENDAR", data);
         }
 
         case "REG_BIRTHDATE": {
@@ -1467,15 +1541,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.regPatient.birthDate = v;
             data.step = "REG_GENDER";
-            return {
-                response:
-                    "Género:\n\n" +
-                    "1️⃣ Masculino\n" +
-                    "2️⃣ Femenino\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_GENDER, "AGENDAR", data);
         }
 
         case "REG_GENDER": {
@@ -1491,11 +1557,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.regPatient.gender = Number(msg);
             data.step = "REG_EMAIL";
-            return {
-                response: "Correo electrónico (si no tienes, escribe 0):",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_EMAIL, "AGENDAR", data);
         }
 
         case "REG_EMAIL": {
@@ -1514,14 +1576,7 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.step = "REG_PHONE";
-            return {
-                response:
-                    "¿Cuál es tu teléfono de contacto?\n\n" +
-                    "Escribe solo números.\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_PHONE, "AGENDAR", data);
         }
 
         case "REG_PHONE": {
@@ -1543,15 +1598,7 @@ export default async function agendarState(msg, data, context = {}) {
 
             data.step = "REG_EPS";
 
-            return {
-                response:
-                    "¿Cuál es tu seguro médico?\n\n" +
-                    "Escribe el nombre (ej: Colsanitas, Sura).\n" +
-                    "Si es particular escribe PARTICULAR.\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_EPS, "AGENDAR", data);
         }
 
         case "REG_EPS": {
@@ -1576,15 +1623,7 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.step = "REG_HABEAS";
-            return {
-                response:
-                    "Autorización de tratamiento de datos (Habeas Data):\n\n" +
-                    "1️⃣ Sí, autorizo\n" +
-                    "2️⃣ No autorizo\n\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_REG_HABEAS, "AGENDAR", data);
         }
 
         case "REG_HABEAS": {
@@ -1671,6 +1710,8 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "ASK_DATE": {
+            if (msg === "0") return returnToMenu();
+
             if (msg === "ESCRIBIR_FECHA") {
                 return {
                     response: buildAskDateMessage(),
@@ -1942,29 +1983,35 @@ export default async function agendarState(msg, data, context = {}) {
                 .join("\n");
 
             data.step = "SHOW_COST_INFO";
-            return {
-                response:
+
+            // El texto de costos/EPS varía con cada tipo de atención (no cabe en
+            // el body fijo de una plantilla de WhatsApp), así que se manda como
+            // mensaje aparte; la pregunta de confirmar sí llega con botones reales.
+            try {
+                await sendWhatsAppMessage(
+                    phone,
                     "El Dr. atiende pacientes de las siguientes entidades:\n" +
-                    "• ARL\n" +
-                    "• Allianz\n" +
-                    "• AXA\n" +
-                    "• Colpatria\n" +
-                    "• Colmedica\n" +
-                    "• Colsanitas\n" +
-                    "• Coomeva\n" +
-                    "• Suramericana\n" +
-                    "• Medisanitas\n" +
-                    "• Medplus\n\n" +
-                    "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
-                    "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
-                    "Los descuentos son autorizados directamente por el Dr.\n\n" +
-                    `${preparationLabel}\n${preparationText}\n\n` +
-                    "Estas recomendaciones son administrativas y no reemplazan la valoración médica.\n\n" +
-                    "1️⃣ Continuar\n" +
-                    "0️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+                        "• ARL\n" +
+                        "• Allianz\n" +
+                        "• AXA\n" +
+                        "• Colpatria\n" +
+                        "• Colmedica\n" +
+                        "• Colsanitas\n" +
+                        "• Coomeva\n" +
+                        "• Suramericana\n" +
+                        "• Medisanitas\n" +
+                        "• Medplus\n\n" +
+                        "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
+                        "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
+                        "Los descuentos son autorizados directamente por el Dr.\n\n" +
+                        `${preparationLabel}\n${preparationText}\n\n` +
+                        "Estas recomendaciones son administrativas y no reemplazan la valoración médica.",
+                );
+            } catch (error) {
+                console.error("❌ No fue posible enviar el mensaje de costos/EPS:", error);
+            }
+
+            return sendTemplate(TEMPLATE_CONFIRM_CITA, "AGENDAR", data);
         }
 
         case "SHOW_COST_INFO": {
@@ -2108,18 +2155,10 @@ export default async function agendarState(msg, data, context = {}) {
             });
 
             data.step = "POST_CREATED";
-            return {
-                response:
-                    `Perfecto ${data.firstName}.\n\n` +
-                    `Tipo: *${data.attentionType}*\n\n` +
-                    "Tu solicitud quedó en proceso.\n\n" +
-                    "Te escribiremos por este medio cuando la validación del paciente y la cita queden procesadas.\n\n" +
-                    "Responde:\n" +
-                    "1️⃣ Entendido\n" +
-                    "2️⃣ Volver al menú",
-                nextState: "AGENDAR",
-                data,
-            };
+            return sendTemplate(TEMPLATE_SOLICITUD_REGISTRADA, "AGENDAR", data, {
+                "1": data.firstName,
+                "2": data.attentionType,
+            });
         }
 
         case "POST_CREATED": {

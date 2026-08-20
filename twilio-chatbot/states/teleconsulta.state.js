@@ -4,6 +4,8 @@ const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
     "HX18e7c4eb9b23f2fbb53b37f1c2520bed";
+const TEMPLATE_TELECONSULTA_REQUISITOS = "HXc09271c38baeaa3ba666f67352280bcc";
+const TEMPLATE_TELECONSULTA_INFO_GENERAL = "HX3d6f8d50fc9cbb42d1daf4874de00520";
 
 function sendTemplate(contentSid, nextState = "TELECONSULTA", data = {}, variables = null) {
     return {
@@ -100,30 +102,6 @@ function isSecretaryIntent(normalizedMsg, compactMsg) {
     );
 }
 
-function buildRequirementsMessage() {
-    return (
-        "Para la teleconsulta te recomendamos tener listos:\n\n" +
-        "• Documento de identidad del paciente.\n" +
-        "• Estudios, imágenes e informes médicos en formato digital.\n" +
-        "• Una conexión estable a internet y un lugar con buena iluminación.\n" +
-        "• La lista de preguntas que deseas revisar con el especialista.\n\n" +
-        "Estas indicaciones son de preparación y no sustituyen la valoración médica.\n\n" +
-        "1️⃣ Agendar teleconsulta\n" +
-        "0️⃣ Volver al menú"
-    );
-}
-
-function buildInfoMessage() {
-    return (
-        "La teleconsulta está orientada a la revisión de estudios y al seguimiento que pueda realizarse de forma remota. " +
-        "La pertinencia de la atención virtual será confirmada durante el proceso de agendamiento.\n\n" +
-        "1️⃣ Agendar teleconsulta\n" +
-        "2️⃣ Ver requisitos\n" +
-        "4️⃣ Hablar con la secretaria\n" +
-        "0️⃣ Volver al menú"
-    );
-}
-
 export default async function teleconsultaState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
@@ -162,19 +140,11 @@ export default async function teleconsultaState(msg, data = {}, context = {}) {
     }
 
     if (isRequirementsIntent(normalizedMsg, compactMsg)) {
-        return {
-            response: buildRequirementsMessage(),
-            nextState: "TELECONSULTA",
-            data: {},
-        };
+        return sendTemplate(TEMPLATE_TELECONSULTA_REQUISITOS, "TELECONSULTA", {});
     }
 
     if (isInfoIntent(normalizedMsg, compactMsg)) {
-        return {
-            response: buildInfoMessage(),
-            nextState: "TELECONSULTA",
-            data: {},
-        };
+        return sendTemplate(TEMPLATE_TELECONSULTA_INFO_GENERAL, "TELECONSULTA", {});
     }
 
     if (isSecretaryIntent(normalizedMsg, compactMsg)) {

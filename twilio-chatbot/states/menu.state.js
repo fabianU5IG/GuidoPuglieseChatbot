@@ -1,4 +1,7 @@
-import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
+import {
+    notifySecretarySupportRequest,
+    sendWhatsAppMessage,
+} from "../services/whatsapp.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
@@ -6,16 +9,9 @@ const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
     "HX18e7c4eb9b23f2fbb53b37f1c2520bed";
+const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HX1d4e991f32d11da12739d2d835110a60";
 
-const GESTION_CITAS_MENU_TEXT =
-    "Antes de continuar, ten en cuenta:\n\n" +
-    "• No realizamos consultas domiciliarias.\n" +
-    "• No prestamos servicio de urgencias.\n\n" +
-    "Selecciona una opción:\n\n" +
-    "1️⃣ Agendar nueva consulta\n" +
-    "2️⃣ Reagendar cita\n" +
-    "3️⃣ Cancelar cita\n" +
-    "0️⃣ Volver al menú principal";
 function sendTemplate(
     contentSid,
     nextState = "MENU",
@@ -91,6 +87,34 @@ function extractRequestedDateDDMM(normalizedMsg = "") {
     if (!month || day < 1 || day > 31) return null;
 
     return `${String(day).padStart(2, "0")}/${String(month).padStart(2, "0")}`;
+}
+
+function isExpressBookingIntent(normalizedMsg = "") {
+    // No debe capturar solicitudes de cancelar/reagendar (esas tienen su
+    // propio flujo) aunque el texto también incluya "cita" y alguna palabra
+    // de urgencia, ej: "necesito cancelar mi cita ya".
+    const isManagementRequest =
+        /\b(cancelar|cancela|reagendar|reprogramar|cambiar|mover|eliminar)\b/.test(
+            normalizedMsg,
+        );
+    if (isManagementRequest) return false;
+
+    if (
+        /(lo\s+mas\s+pronto\s+(posible|que\s+haya)|cuanto\s+antes|lo\s+antes\s+posible|\burgente\b|primera\s+(cita\s+)?disponible|fecha\s+mas\s+(cercana|pronta|proxima)|\bpara\s+ya\b|\bya\s+mismo\b)/.test(
+            normalizedMsg,
+        )
+    ) {
+        return true;
+    }
+
+    // Formas informales tipo "ayudaaa necesito una cita para ya" / "necesito
+    // cita ya": basta con que aparezcan las tres ideas (necesito + cita + ya)
+    // en cualquier orden, sin exigir una frase exacta.
+    return (
+        /\bnecesito\b/.test(normalizedMsg) &&
+        /\b(cita|consulta)\b/.test(normalizedMsg) &&
+        /\bya\b/.test(normalizedMsg)
+    );
 }
 
 function isDirectScheduleRequest(normalizedMsg = "") {
@@ -213,16 +237,6 @@ function isInfoIntent(normalizedMsg, compactMsg) {
 }
 
 export default async function menuState(msg, data = {}, context = {}) {
-    const mainMenu =
-        "Hola 👋\n\n" +
-        "Soy el asistente del consultorio del Dr. Guido Pugliese, Ortopedista – Traumatólogo.\n\n" +
-        "¿En qué puedo ayudarte hoy?\n\n" +
-        "1️⃣ Agendar o gestionar mi cita\n" +
-        "2️⃣ Información general y costos\n" +
-        "3️⃣ Teleconsulta (lectura de estudios)\n" +
-        "4️⃣ Soy paciente postquirúrgico\n" +
-        "5️⃣ Hablar con la secretaria";
-
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
@@ -246,16 +260,9 @@ export default async function menuState(msg, data = {}, context = {}) {
     // Se evalúa antes de cualquier solicitud general de cita para evitar que
     // payloads como "agendar cita postoperatoria" entren al flujo equivocado.
     if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
-        return {
-            response:
-                "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
-                "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
-                "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
-                "3️⃣ Hablar con la secretaria\n" +
-                "0️⃣ Volver al menú",
-            nextState: "POST_SURGERY",
-            data: { step: "ASK_POST_SURGERY_DAYS" },
-        };
+        return sendTemplate(TEMPLATE_POSTOP_TIEMPO_CIRUGIA, "POST_SURGERY", {
+            step: "ASK_POST_SURGERY_DAYS",
+        });
     }
 
     // Permite iniciar una cita directamente desde lenguaje natural en el menú,
@@ -277,6 +284,32 @@ export default async function menuState(msg, data = {}, context = {}) {
                 aiSchedulingEnabled: true,
                 pendingDateInput,
                 pendingSchedulingRequest: String(msg || "").trim(),
+            },
+        };
+    }
+
+    // "Quiero una cita para lo más pronto posible" / "cita urgente" / etc.:
+    // igual que arriba, pero en vez de guardar una fecha literal, se guarda la
+    // preferencia tal cual la escribió el paciente. Al llegar a ASK_DATE,
+    // agendarState() ya reconoce frases como "lo más pronto posible" o "urgente"
+    // (isRecommendationRequest) y las convierte en una solicitud de recomendación
+    // de IA — así que el registro se salta la pregunta de fecha por su cuenta,
+    // sin necesitar un caso especial aquí.
+    if (isExpressBookingIntent(normalizedMsg)) {
+        return {
+            response:
+                "Entendido, vamos a buscarte la cita disponible más pronto posible. 🩺\n\n" +
+                "Primero necesito validar tus datos para consultar la disponibilidad real.\n\n" +
+                "¿Cuál es tu nombre completo?",
+            nextState: "AGENDAR",
+            data: {
+                step: "ASK_NAME",
+                origin: "CONSULTA_GENERAL",
+                consultationMode: "PRESENCIAL",
+                aiSchedulingEnabled: true,
+                pendingDateInput: String(msg || "").trim(),
+                pendingSchedulingRequest: String(msg || "").trim(),
+                expressBooking: true,
             },
         };
     }
@@ -315,19 +348,12 @@ export default async function menuState(msg, data = {}, context = {}) {
 
     // Botón desde plantilla de costos: iniciar directamente agendamiento.
     if (isScheduleIntent(normalizedMsg, compactMsg)) {
-        return {
-            response:
-                "Vamos a iniciar el agendamiento.\n\n" +
-                "Durante el proceso podrás pedirle a la IA opciones como ‘lo más pronto posible’ o ‘la próxima semana en la tarde’.\n\n" +
-                "¿Cuál es tu nombre completo?",
-            nextState: "AGENDAR",
-            data: {
-                step: "ASK_NAME",
-                origin: "CONSULTA_GENERAL",
-                consultationMode: "PRESENCIAL",
-                aiSchedulingEnabled: true,
-            },
-        };
+        return sendTemplate(TEMPLATE_AGENDAMIENTO_INICIO, "AGENDAR", {
+            step: "ASK_NAME",
+            origin: "CONSULTA_GENERAL",
+            consultationMode: "PRESENCIAL",
+            aiSchedulingEnabled: true,
+        });
     }
 
     if (isAdvisorIntent(normalizedMsg, compactMsg)) {
@@ -345,19 +371,18 @@ export default async function menuState(msg, data = {}, context = {}) {
             );
         }
 
-        return {
-            response:
+        try {
+            await sendWhatsAppMessage(
+                context.from,
                 "Tu solicitud fue enviada a la secretaria y te responderemos por este mismo medio.\n\n" +
-                "Mientras esperas, puedes seguir usando el menú:\n\n" +
-                "1️⃣ Agendar o gestionar mi cita\n" +
-                "2️⃣ Información general y costos\n" +
-                "3️⃣ Teleconsulta (lectura de estudios)\n" +
-                "4️⃣ Soy paciente postquirúrgico\n" +
-                "5️⃣ Hablar con la secretaria",
-            nextState: "MENU",
-            data: {},
-        };
+                    "Mientras esperas, puedes seguir usando el menú:",
+            );
+        } catch (error) {
+            console.error("❌ No fue posible enviar el aviso de solicitud enviada:", error);
+        }
+
+        return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
     }
 
-    return { response: mainMenu, nextState: "MENU", data: {} };
+    return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
 }

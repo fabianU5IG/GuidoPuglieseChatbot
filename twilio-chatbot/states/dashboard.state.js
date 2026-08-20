@@ -1,4 +1,5 @@
 import timeUtils from "../utils/time.js";
+import { db } from "../db/mysql.js";
 import {
     getPendingCases,
     markCancelled,
@@ -8,7 +9,7 @@ import {
     createSecretaryQuickAppointment,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
-import { SALUDTOOLS } from "../constants.js";
+import { SALUDTOOLS, SECRETARY_PHONES } from "../constants.js";
 import {
     parseDashboardAppointmentsAI,
     summarizeSecretaryCasesAI,
@@ -21,7 +22,6 @@ const { getTimeSlots } = timeUtils;
  *  CONFIG
  * =========================
  */
-const SECRETARY_PHONES = ["573153573132"];
 const SECRETARY_CASES_PAGE_SIZE = 10;
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 
@@ -208,11 +208,18 @@ function isValidDateDDMM(value) {
     if (!/^\d{2}\/\d{2}$/.test(value)) return false;
 
     const [day, month] = value.split("/").map(Number);
-    const year = new Date().getFullYear();
-
-    const date = new Date(year, month - 1, day);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    // Igual que ddmmToYmd: si la fecha ya pasó este año, se asume el año
+    // siguiente (ej. escribir "15/01" en diciembre significa el próximo
+    // enero, no un enero que ya pasó).
+    let year = today.getFullYear();
+    let date = new Date(year, month - 1, day);
+    if (date < today) {
+        year++;
+        date = new Date(year, month - 1, day);
+    }
 
     return (
         !isNaN(date) &&
@@ -979,6 +986,11 @@ export default async function dashboardState(msg, data = {}, context) {
                     selectedCase,
                     cases: allCases,
                     page: currentPage,
+                    // Se conserva aparte de "page" porque el flujo de
+                    // reagendar reutiliza "page" para paginar horarios — sin
+                    // esto, "volver al listado" desde ahí perdería la página
+                    // real del listado de casos.
+                    inboxPage: currentPage,
                 },
             };
         }
@@ -1100,7 +1112,7 @@ export default async function dashboardState(msg, data = {}, context) {
             if (msg === "0") {
                 return returnToInbox(
                     "↩️ Volviendo al listado",
-                    Number(data.page || 0),
+                    Number(data.inboxPage ?? data.page ?? 0),
                 );
             }
 
@@ -1128,24 +1140,24 @@ export default async function dashboardState(msg, data = {}, context) {
             data.page = 0;
             data.step = "ASK_TIME";
 
-            return buildTimeResponseForDashboard(data);
+            return await buildTimeResponseForDashboard(data);
         }
 
         case "ASK_TIME": {
             if (msg === "0") {
                 return returnToInbox(
                     "↩️ Volviendo al listado",
-                    Number(data.page || 0),
+                    Number(data.inboxPage ?? data.page ?? 0),
                 );
             }
 
             if (msg === "7") {
                 data.page++;
-                return buildTimeResponseForDashboard(data);
+                return await buildTimeResponseForDashboard(data);
             }
 
             const index = parseInt(msg, 10) - 1;
-            const slots = getTimeSlots(data.page);
+            const slots = Array.isArray(data.availableSlots) ? data.availableSlots : [];
             const hour = slots[index];
 
             if (!hour) {
@@ -1178,7 +1190,7 @@ export default async function dashboardState(msg, data = {}, context) {
             if (msg === "0") {
                 return returnToInbox(
                     "↩️ Acción cancelada. Volviendo al listado.",
-                    Number(data.page || 0),
+                    Number(data.inboxPage ?? data.page ?? 0),
                 );
             }
 
@@ -1354,15 +1366,59 @@ export default async function dashboardState(msg, data = {}, context) {
     }
 }
 
-function buildTimeResponseForDashboard(data) {
-    const slots = getTimeSlots(data.page);
+// Consulta las horas ya ocupadas ese día (en Saludtools o localmente) para no
+// ofrecerle a la secretaría un horario que produciría un doble agendamiento.
+async function getBookedTimesForYmd(ymd) {
+    const [saludtoolsRows] = await db.query(
+        `SELECT start_time, status FROM saludtools_appointments
+         WHERE start_date = ? AND doctor_document_number = ?`,
+        [ymd, DOCTOR_DOCUMENT_NUMBER],
+    );
+
+    const [localRows] = await db.query(
+        `SELECT scheduled_time AS start_time, status FROM appointments
+         WHERE scheduled_date = ?
+           AND UPPER(status) IN ('CONFIRMED', 'RESCHEDULED', 'PROPOSED', 'QUEUED')`,
+        [ymd],
+    );
+
+    const booked = new Set();
+    for (const row of [...(saludtoolsRows || []), ...(localRows || [])]) {
+        const status = String(row.status || "").toUpperCase();
+        if (["CANCELLED", "CANCELED", "CANCELADO", "NO_SHOW", "FAILED"].includes(status)) {
+            continue;
+        }
+        const hm = String(row.start_time || "").slice(0, 5);
+        if (hm) booked.add(hm);
+    }
+    return booked;
+}
+
+async function buildTimeResponseForDashboard(data) {
+    const ymd = ddmmToYmd(data.newDate);
+    const booked = await getBookedTimesForYmd(ymd);
+
+    const pageSize = 6;
+    const availableSlots = getTimeSlots(0, 1000).filter((hm) => !booked.has(hm));
+    const pageStart = (data.page || 0) * pageSize;
+    const slots = availableSlots.slice(pageStart, pageStart + pageSize);
+
+    // Se guarda la misma lista filtrada que se muestra, para que al elegir un
+    // número (case ASK_TIME) se indexe exactamente sobre lo que la secretaría
+    // está viendo — y no sobre la lista completa sin filtrar.
+    data.availableSlots = slots;
+
     let response = "Horas disponibles:\n\n";
 
-    slots.forEach((h, i) => {
-        response += `${i + 1}️⃣ ${h}\n`;
-    });
+    if (!slots.length) {
+        response += "No quedan horarios libres en esta página.\n";
+    } else {
+        slots.forEach((h, i) => {
+            response += `${i + 1}️⃣ ${h}\n`;
+        });
+    }
 
-    if (getTimeSlots(data.page + 1).length) {
+    if (availableSlots.length > pageStart + pageSize) {
         response += "\n7️⃣ Más horarios";
     }
 

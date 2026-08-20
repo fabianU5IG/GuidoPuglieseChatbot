@@ -1,6 +1,9 @@
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 // Debe coincidir con la plantilla que envía menu.state.js para "Información y costos".
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
+const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
+const TEMPLATE_TELECONSULTA_DESDE_COSTOS = "HXb34097ce442aabbf9c4de7788c20ccca";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HX1d4e991f32d11da12739d2d835110a60";
 const SECRETARY_WHATSAPP_NUMBER = process.env.SECRETARY_WHATSAPP_NUMBER || "+573224811542";
 
 function buildSecretaryWhatsappLink() {
@@ -88,6 +91,16 @@ function isInfoIntent(normalizedMsg, compactMsg) {
     );
 }
 
+function isTeleconsultaIntent(normalizedMsg, compactMsg) {
+    return (
+        normalizedMsg === "teleconsulta" ||
+        compactMsg === "menu_teleconsulta" ||
+        compactMsg === "lectura_estudios" ||
+        normalizedMsg.includes("teleconsulta") ||
+        normalizedMsg.includes("lectura de estudios")
+    );
+}
+
 function isPostSurgeryIntent(normalizedMsg, compactMsg) {
     return (
         normalizedMsg === "3" ||
@@ -123,28 +136,6 @@ function isSecretaryIntent(normalizedMsg, compactMsg) {
     );
 }
 
-function buildPostSurgeryMenu() {
-    return (
-        "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
-        "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
-        "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
-        "3️⃣ Hablar con la secretaria\n" +
-        "0️⃣ Volver al menú"
-    );
-}
-
-function buildTeleconsultaMenu() {
-    return (
-        "🩺 Teleconsulta / lectura de estudios\n\n" +
-        "Este canal te permite iniciar una consulta para revisión de estudios o recibir orientación sobre el proceso.\n\n" +
-        "Selecciona una opción:\n\n" +
-        "1️⃣ Agendar consulta\n" +
-        "2️⃣ Información general\n" +
-        "3️⃣ Postoperatorio\n" +
-        "0️⃣ Volver al menú"
-    );
-}
-
 export default function infoCostosState(msg, data = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
@@ -152,11 +143,9 @@ export default function infoCostosState(msg, data = {}) {
 
     if (!normalizedMsg) {
         if (origin === "TELECONSULTA") {
-            return {
-                response: buildTeleconsultaMenu(),
-                nextState: "TELECONSULTA",
-                data: { origin: "TELECONSULTA" },
-            };
+            return sendTemplate(TEMPLATE_TELECONSULTA_DESDE_COSTOS, "TELECONSULTA", {
+                origin: "TELECONSULTA",
+            });
         }
 
         return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", {
@@ -171,27 +160,18 @@ export default function infoCostosState(msg, data = {}) {
     // Importante: agendar se evalúa antes de información para evitar que
     // botones como "Agendar consulta" caigan de nuevo en la plantilla de costos.
     if (isScheduleIntent(normalizedMsg, compactMsg)) {
-        return {
-            response:
-                "Vamos a iniciar el agendamiento.\n\n" +
-                "La IA podrá recomendarte opciones disponibles según la fecha y el horario que prefieras.\n\n" +
-                "¿Cuál es tu nombre completo?",
-            nextState: "AGENDAR",
-            data: {
-                step: "ASK_NAME",
-                origin: "CONSULTA_GENERAL",
-                consultationMode: "PRESENCIAL",
-                aiSchedulingEnabled: true,
-            },
-        };
+        return sendTemplate(TEMPLATE_AGENDAMIENTO_INICIO, "AGENDAR", {
+            step: "ASK_NAME",
+            origin: "CONSULTA_GENERAL",
+            consultationMode: "PRESENCIAL",
+            aiSchedulingEnabled: true,
+        });
     }
 
     if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
-        return {
-            response: buildPostSurgeryMenu(),
-            nextState: "POST_SURGERY",
-            data: {},
-        };
+        return sendTemplate(TEMPLATE_POSTOP_TIEMPO_CIRUGIA, "POST_SURGERY", {
+            step: "ASK_POST_SURGERY_DAYS",
+        });
     }
 
     if (isSecretaryIntent(normalizedMsg, compactMsg)) {
@@ -204,6 +184,12 @@ export default function infoCostosState(msg, data = {}) {
         };
     }
 
+    if (isTeleconsultaIntent(normalizedMsg, compactMsg)) {
+        return sendTemplate(TEMPLATE_TELECONSULTA_DESDE_COSTOS, "TELECONSULTA", {
+            origin: "TELECONSULTA",
+        });
+    }
+
     if (isInfoIntent(normalizedMsg, compactMsg)) {
         return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", {
             origin: "INFO_COSTOS",
@@ -211,11 +197,9 @@ export default function infoCostosState(msg, data = {}) {
     }
 
     if (origin === "TELECONSULTA") {
-        return {
-            response: buildTeleconsultaMenu(),
-            nextState: "TELECONSULTA",
-            data: { origin: "TELECONSULTA" },
-        };
+        return sendTemplate(TEMPLATE_TELECONSULTA_DESDE_COSTOS, "TELECONSULTA", {
+            origin: "TELECONSULTA",
+        });
     }
 
     return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", {

@@ -24,6 +24,10 @@ const TEMPLATE_AVAILABLE_HOURS =
     process.env.TWILIO_TEMPLATE_SUPPORT_AVAILABLE_HOURS_SID ||
     process.env.TWILIO_TEMPLATE_AVAILABLE_HOURS_SID ||
     "HX288f8c61244fb7ccd84dadc3a2b18085";
+const TEMPLATE_CITAS_LISTA_1 = "HX410801da590ca6d399a74197ef34bda0";
+const TEMPLATE_CITAS_LISTA_2 = "HXc2e53d2dacfe6c92c4a72b8e4b91e1e0";
+const TEMPLATE_CITAS_LISTA_3 = "HX072205031a720753efdab0d041c98f4f";
+const TEMPLATE_CONFIRMAR_ACCION = "HX61eb5556717309bd3b6d6b0eb78a76e0";
 
 function sendTemplate(contentSid, nextState = "SOPORTE_CITA", data = {}, variables = null) {
     return {
@@ -557,19 +561,46 @@ async function handleDocumentSearch({ text, data, phone }) {
         const lines = citas.map((it, idx) => formatAppointmentLine(it, idx));
         const actionText = data.tipo === "CANCELAR" ? "cancelar" : "reagendar";
 
+        const nextData = {
+            ...data,
+            step: "SELECT_APPOINTMENT",
+            documento,
+            patientDocumentType: Number(patient?.document_type || data.patientDocumentType || citas[0]?.patient_document_type || 1),
+            citas,
+        };
+
+        // Plantilla con botones reales para 1-3 citas (el caso normal); con 4 o
+        // más (raro) se mantiene como texto plano porque no hay una plantilla
+        // fija para una cantidad ilimitada de opciones.
+        if (citas.length === 1) {
+            return sendTemplate(TEMPLATE_CITAS_LISTA_1, "SOPORTE_CITA", nextData, {
+                "1": lines[0],
+                "2": actionText,
+            });
+        }
+        if (citas.length === 2) {
+            return sendTemplate(TEMPLATE_CITAS_LISTA_2, "SOPORTE_CITA", nextData, {
+                "1": lines[0],
+                "2": lines[1],
+                "3": actionText,
+            });
+        }
+        if (citas.length === 3) {
+            return sendTemplate(TEMPLATE_CITAS_LISTA_3, "SOPORTE_CITA", nextData, {
+                "1": lines[0],
+                "2": lines[1],
+                "3": lines[2],
+                "4": actionText,
+            });
+        }
+
         return {
             response:
                 "Encontramos estas citas asociadas a tu documento:\n\n" +
                 lines.join("\n") +
                 `\n\nEscribe el número de la cita que deseas ${actionText}.\n\n0️⃣ Volver al menú`,
             nextState: "SOPORTE_CITA",
-            data: {
-                ...data,
-                step: "SELECT_APPOINTMENT",
-                documento,
-                patientDocumentType: Number(patient?.document_type || data.patientDocumentType || citas[0]?.patient_document_type || 1),
-                citas,
-            },
+            data: nextData,
         };
     } catch (error) {
         console.error("Error en soporteCitaState (ASK_DOCUMENT):", error);
@@ -695,18 +726,14 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         }
 
         if (tipo === "CANCELAR") {
-            return {
-                response:
-                    `Vas a cancelar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.\n\n` +
-                    "Responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",
-                nextState: "SOPORTE_CITA",
-                data: {
-                    ...data,
-                    step: "CONFIRM_CANCEL",
-                    appointmentId,
-                    selectedIndex: idx,
+            return sendTemplate(
+                TEMPLATE_CONFIRMAR_ACCION,
+                "SOPORTE_CITA",
+                { ...data, step: "CONFIRM_CANCEL", appointmentId, selectedIndex: idx },
+                {
+                    "1": `Vas a cancelar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.`,
                 },
-            };
+            );
         }
 
         return {
@@ -824,13 +851,14 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             return buildTimeTemplateResponse({ ...data, bookedHm });
         }
 
-        return {
-            response:
-                `Confirmación: reagendar la cita para ${data.newDateLabel || formatYmdToDdMm(data.newDate)} a las ${selectedHour}.\n\n` +
-                "Responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",
-            nextState: "SOPORTE_CITA",
-            data: { ...data, step: "CONFIRM_RESCHEDULE", newTime: selectedHour },
-        };
+        return sendTemplate(
+            TEMPLATE_CONFIRMAR_ACCION,
+            "SOPORTE_CITA",
+            { ...data, step: "CONFIRM_RESCHEDULE", newTime: selectedHour },
+            {
+                "1": `Confirmación: reagendar la cita para ${data.newDateLabel || formatYmdToDdMm(data.newDate)} a las ${selectedHour}.`,
+            },
+        );
     }
 
     if (step === "CONFIRM_RESCHEDULE") {

@@ -4,6 +4,7 @@ const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
     "HX3b07c0984e3fc8c6d2f96630752ef101";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HX1d4e991f32d11da12739d2d835110a60";
 
 function sendTemplate(contentSid, nextState, data = {}, variables = null) {
     return {
@@ -48,16 +49,6 @@ function startAppointmentSupport(tipo) {
 }
 
 export default function gestionCitasState(msg, data = {}) {
-    const textoMenu =
-        "Antes de continuar, ten en cuenta:\n\n" +
-        "• No realizamos consultas domiciliarias.\n" +
-        "• No prestamos servicio de urgencias.\n\n" +
-        "Selecciona una opción:\n\n" +
-        "1️⃣ Agendar nueva consulta\n" +
-        "2️⃣ Reagendar cita\n" +
-        "3️⃣ Cancelar cita\n" +
-        "0️⃣ Volver al menú principal";
-
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
@@ -90,19 +81,12 @@ export default function gestionCitasState(msg, data = {}) {
         normalizedMsg === "agendar" ||
         normalizedMsg === "agendar cita"
     ) {
-        return {
-            response:
-                "Perfecto ✅ Vamos a iniciar el proceso de agendamiento.\n\n" +
-                "La IA podrá ayudarte a priorizar fechas y horas disponibles según tus preferencias.\n\n" +
-                "Por favor escribe tu nombre completo:",
-            nextState: "AGENDAR",
-            data: {
-                step: "ASK_NAME",
-                origin: "CONSULTA_GENERAL",
-                consultationMode: "PRESENCIAL",
-                aiSchedulingEnabled: true,
-            },
-        };
+        return sendTemplate(TEMPLATE_AGENDAMIENTO_INICIO, "AGENDAR", {
+            step: "ASK_NAME",
+            origin: "CONSULTA_GENERAL",
+            consultationMode: "PRESENCIAL",
+            aiSchedulingEnabled: true,
+        });
     }
 
     // Reagendar.

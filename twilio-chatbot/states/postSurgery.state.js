@@ -8,6 +8,7 @@ import {
 import { uploadPatientImageToSupabase } from "../services/supabase.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
 
 function returnMenu() {
     return {
@@ -33,14 +34,14 @@ function parsePostSurgeryDays(msg) {
     return match ? Number(match[1]) : null;
 }
 
-function buildPostSurgeryQuestion() {
-    return (
-        "Para orientarte correctamente, indícanos cuánto tiempo ha pasado desde la cirugía:\n\n" +
-        "1️⃣ Han pasado 15 días o más: agendar cita posoperatoria\n" +
-        "2️⃣ Han pasado menos de 15 días: enviar imágenes para revisión\n" +
-        "3️⃣ Hablar con la secretaria\n" +
-        "0️⃣ Volver al menú"
-    );
+function askPostSurgeryQuestion(data = {}) {
+    return {
+        response: null,
+        nextState: "POST_SURGERY",
+        data: { ...data, step: "ASK_POST_SURGERY_DAYS" },
+        sendTemplate: true,
+        template: { contentSid: TEMPLATE_POSTOP_TIEMPO_CIRUGIA, variables: null },
+    };
 }
 
 function startPostOperativeAppointment(data = {}) {
@@ -196,9 +197,5 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
         };
     }
 
-    return {
-        response: buildPostSurgeryQuestion(),
-        nextState: "POST_SURGERY",
-        data: { ...data, step: "ASK_POST_SURGERY_DAYS" },
-    };
+    return askPostSurgeryQuestion(data);
 }

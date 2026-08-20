@@ -43,6 +43,6 @@ test("el botón de requisitos permanece dentro del flujo", async () => {
     const result = await teleconsultaState("teleconsulta_requisitos", {}, {});
 
     assert.equal(result.nextState, "TELECONSULTA");
-    assert.match(result.response, /estudios/i);
-    assert.match(result.response, /conexión/i);
+    assert.equal(result.sendTemplate, true);
+    assert.match(result.template.contentSid, /^HX/);
 });

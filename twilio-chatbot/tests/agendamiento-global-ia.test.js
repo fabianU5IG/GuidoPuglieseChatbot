@@ -101,7 +101,8 @@ test("el agendamiento principal activa IA global", async () => {
     assert.equal(result.nextState, "AGENDAR");
     assert.equal(result.data.consultationMode, "PRESENCIAL");
     assert.equal(result.data.aiSchedulingEnabled, true);
-    assert.match(result.response, /IA/i);
+    assert.equal(result.sendTemplate, true);
+    assert.match(result.template.contentSid, /^HX/);
 });
 
 test("gestión de citas inicia agendamiento con IA global", async () => {
@@ -149,7 +150,8 @@ test("una preferencia natural activa recomendaciones globales de fecha", async (
     );
 
     assert.equal(result.nextState, "AGENDAR");
-    assert.match(result.response, /opciones de agenda|opciones más convenientes/i);
+    assert.equal(result.sendTemplate, true);
+    assert.match(result.template.contentSid, /^HX/);
     assert.ok(result.data.aiRecommendations.length >= 1);
 
     const today = new Date();

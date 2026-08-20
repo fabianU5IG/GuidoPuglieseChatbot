@@ -171,8 +171,12 @@ function isSlotUnavailableError(error) {
     return mentionsSlot && unavailable;
 }
 
+// Se manda una sola vez por solicitud (al 5to intento, ~5 minutos), no en cada
+// reintento — antes se repetía cada 5 intentos y el paciente podía recibir el
+// mismo aviso de "seguimos procesando" 5+ veces seguidas en una sola solicitud
+// que tardó en resolverse, lo cual se siente como spam en su WhatsApp.
 function shouldSendWaitingMessage(nextAttempts) {
-    return nextAttempts > 0 && nextAttempts % 5 === 0;
+    return nextAttempts === 5;
 }
 
 async function safeSendWhatsApp(phone, body) {
