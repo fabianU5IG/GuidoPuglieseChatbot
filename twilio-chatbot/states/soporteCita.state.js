@@ -478,8 +478,8 @@ function buildTimeTemplateResponse(data) {
     if (!slots.length) {
         return {
             response:
-                `No veo horarios disponibles para ${label} en esta página.\n\n` +
-                "Pulsa Más horarios o escribe otra fecha en formato DD/MM.",
+                `😊 Por el momento no encuentro más horarios disponibles para el ${label}.\n\n` +
+                "Puedes consultar otros horarios o escribir una fecha diferente en formato DD/MM.",
             nextState: "SOPORTE_CITA",
             data,
         };
@@ -607,7 +607,8 @@ async function handleDocumentSearch({ text, data, phone }) {
     } catch (error) {
         console.error("Error en soporteCitaState (ASK_DOCUMENT):", error);
         return returnToMenu(
-            "Ocurrió un error consultando tu información.\n\nPor favor intenta nuevamente o escribe *SECRETARIA*."
+            "😊 Tuvimos un inconveniente al consultar tu información.\n\n" +
+            "Puedes intentarlo nuevamente o escribir *SECRETARÍA* para que una persona de nuestro equipo te ayude."
         );
     }
 }
