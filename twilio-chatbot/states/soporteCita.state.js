@@ -725,6 +725,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         const citas = Array.isArray(data.citas) ? data.citas : [];
 
         if (!Number.isFinite(idx) || idx < 0 || idx >= citas.length) {
+            const aiFallback = await resolveFlowFallback({
+                message: text,
+                currentState: "SOPORTE_CITA",
+                currentStep: step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response:
                     "😊 No pude identificar la cita que seleccionaste.\n\n" +
@@ -775,6 +784,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
     if (step === "CONFIRM_CANCEL") {
         const yn = normalizeYesNo(text);
         if (!yn) {
+            const aiFallback = await resolveFlowFallback({
+                message: text,
+                currentState: "SOPORTE_CITA",
+                currentStep: step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response:
                     "😊 Para continuar, confirma qué deseas hacer:\n\n" +
@@ -846,6 +864,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         }
 
         if (!selectedHour) {
+            const aiFallback = await resolveFlowFallback({
+                message: text,
+                currentState: "SOPORTE_CITA",
+                currentStep: step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response:
                    "😊 No pude identificar el horario que seleccionaste.\n\n" +
@@ -892,6 +919,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
     if (step === "CONFIRM_RESCHEDULE") {
         const yn = normalizeYesNo(text);
         if (!yn) {
+            const aiFallback = await resolveFlowFallback({
+                message: text,
+                currentState: "SOPORTE_CITA",
+                currentStep: step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response:
                     "Por favor responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",

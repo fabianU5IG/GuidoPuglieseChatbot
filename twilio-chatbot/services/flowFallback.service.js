@@ -181,7 +181,44 @@ export async function resolveFlowFallback({
         // que el paso actual repita su propio mensaje en vez de retroceder.
         if (decision === "GO_SCHEDULE" && currentState === "AGENDAR") return null;
 
-        if (decision === "TALK_TO_HUMAN") {
+        // "Mejor cambio la fecha" a mitad de un agendamiento: NO es un
+        // GO_MENU/GO_SCHEDULE (eso reiniciaría o borraría el registro). Se
+        // conserva todo lo ya dado (nombre, documento, etc.) y solo se vuelve
+        // a preguntar la fecha.
+        if (decision === "CHANGE_DATE") {
+            if (currentState !== "AGENDAR") return null;
+
+            return {
+                response:
+                    "Claro, cambiemos la fecha. 😊\n\n" +
+                    "¿Para qué fecha te gustaría agendar la cita? Escríbela en formato DD/MM, o dime tu preferencia (ej: \"lo más pronto posible\").\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "AGENDAR",
+                data: { ...data, step: "ASK_DATE" },
+            };
+        }
+
+        // Preguntas de información (costos, teleconsulta, postoperatorio)
+        // hechas a mitad de un agendamiento ya en curso: tratarlas como "saltar
+        // de sección" perdería todo el registro que el paciente ya dio. Se
+        // responden en el mismo lugar, como una pregunta abierta cualquiera,
+        // sin abandonar el agendamiento (mientras no haya terminado: después
+        // de POST_CREATED ya no hay nada que conservar).
+        const isMidRegistration =
+            currentState === "AGENDAR" &&
+            currentStep &&
+            currentStep !== "POST_CREATED";
+        const infoSideTopics = new Set([
+            "GO_INFO_COSTOS",
+            "GO_TELECONSULTA",
+            "GO_POST_SURGERY",
+        ]);
+        const effectiveDecision =
+            isMidRegistration && infoSideTopics.has(decision)
+                ? "OPEN_QUESTION"
+                : decision;
+
+        if (effectiveDecision === "TALK_TO_HUMAN") {
             // No se notifica de una vez: se pregunta primero con la plantilla
             // aprobada "ia_redireccion_secretaria" (botones "Sí, comunicarme" /
             // "No, continuar aquí"). La confirmación real se maneja arriba,
@@ -198,7 +235,7 @@ export async function resolveFlowFallback({
             };
         }
 
-        if (decision === "OPEN_QUESTION") {
+        if (effectiveDecision === "OPEN_QUESTION") {
             // Si ya conocemos su nombre (por esta u otra operación en la misma
             // sesión, vía la memoria de Fabian), se lo hacemos saber a la IA
             // para que no le hable como a un desconocido.
@@ -206,13 +243,25 @@ export async function resolveFlowFallback({
                 data.firstName ||
                 (data.fullName ? String(data.fullName).split(/\s+/)[0] : null);
 
+            // Si ya hay una cita en curso/recién creada en esta sesión, se le
+            // pasa la fecha/hora reales a la IA para que pueda tranquilizar
+            // con datos concretos (ej: "no se ha agendado la cita, espera")
+            // en vez de una respuesta genérica.
+            const appointmentContext =
+                data.date && data.time
+                    ? ` El paciente ya tiene una solicitud de cita en curso para el ${data.date} a las ${data.time}` +
+                      (data.appointmentId ? " (quedó registrada en el sistema)" : "") +
+                      "."
+                    : "";
+
             const answer = await askAI(
                 message,
-                `\nEl paciente está en la sección "${currentState}" del chatbot.` +
+                `\nEl paciente está en la sección "${currentState}"${currentStep ? ` (paso "${currentStep}")` : ""} del chatbot.` +
+                    appointmentContext +
                     (knownFirstName
                         ? ` Ya sabes que se llama ${knownFirstName} (dato de esta sesión); puedes dirigirte a él/ella por su nombre si es natural, y no le pidas que se identifique de nuevo.`
                         : "") +
-                    ' Si su pregunta requiere agendar una cita, gestionar una cita existente o hablar con la secretaria, indícale brevemente cómo continuar (ej: escribir "agendar" o "0" para volver al menú), pero no inventes botones ni pasos que no existen.',
+                    ' El mensaje puede ser una pregunta o simplemente una duda/preocupación sobre lo que acaba de pasar (ej: si algo quedó guardado). Respóndele de forma concreta y tranquilizadora con lo que sepas del contexto. Si su mensaje requiere agendar una cita, gestionar una cita existente o hablar con la secretaria, indícale brevemente cómo continuar (ej: escribir "agendar" o "0" para volver al menú), pero no inventes botones, pasos ni datos que no te dieron.',
             );
 
             // Cierre alineado al texto ya aprobado por WhatsApp en la plantilla
@@ -228,7 +277,7 @@ export async function resolveFlowFallback({
             };
         }
 
-        return destinationFor(decision) || null;
+        return destinationFor(effectiveDecision) || null;
     } catch (error) {
         console.error("❌ resolveFlowFallback error inesperado:", error);
         return null;

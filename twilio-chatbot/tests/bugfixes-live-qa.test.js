@@ -92,3 +92,32 @@ test("cancelar/reagendar cita sin nombre conocido sigue saludando como 'Paciente
     assert.equal(result.data.firstName, undefined);
     assert.equal(result.template.variables?.["1"], "Paciente");
 });
+
+// Bug reportado en QA en vivo (transcripción real de WhatsApp): en REG_EPS,
+// cualquier texto no reconocido se guardaba tal cual como si fuera el nombre
+// de la EPS del paciente. Jorge escribió "uy me equivoqué en la pregunta
+// anterior que pena" (quería corregir el teléfono que acababa de dar) y el
+// bot lo guardó como epsName y siguió de largo hacia Habeas Data, sin darse
+// cuenta ni ofrecer forma de corregirlo.
+//
+// La detección de "quiere corregir un dato anterior" la decide la IA
+// (classifyRegistrationInputAI), no una lista fija de frases — sin
+// credenciales reales de Azure aquí, debe degradar exactamente al
+// comportamiento de antes (se acepta el texto tal cual) sin romperse.
+test("sin IA disponible, REG_EPS sigue aceptando el texto tal cual (degradación segura)", async () => {
+    const data = {
+        step: "REG_EPS",
+        regPatient: { phone: "1109660617" },
+        fullName: "Jorge Ramos",
+        firstName: "Jorge",
+    };
+
+    const result = await agendarState(
+        "uy me equivoqué en la pregunta anterior que pena",
+        data,
+        { from: "+573001112233" },
+    );
+
+    assert.equal(result.data.step, "REG_HABEAS");
+    assert.equal(result.sendTemplate, true);
+});

@@ -7,6 +7,7 @@ import {
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { EPS_CONVENIO, SALUDTOOLS } from "../constants.js";
 import {
+    classifyRegistrationInputAI,
     generateAppointmentPreparationTipsAI,
     normalizeAppointmentInputAI,
     recommendAppointmentOptionsAI,
@@ -1469,6 +1470,87 @@ async function normalizeAgendarMessage(msg, step, data) {
     }
 }
 
+// Antes, si el paciente escribía algo como "uy me equivoqué en la pregunta
+// anterior" en un paso de texto libre del registro (ej: REG_EPS), el bot no
+// tenía forma de reconocerlo: lo guardaba tal cual como si fuera la
+// respuesta válida de ese paso (ej: como nombre de la EPS) y seguía de
+// largo, sin ninguna manera de corregir un dato ya dado. Esto detecta esa
+// intención y retrocede un paso para volver a preguntarlo.
+const PREVIOUS_STEP_BY_STEP = {
+    ASK_DOC_TYPE: "ASK_NAME",
+    ASK_DOC_NUMBER: "ASK_DOC_TYPE",
+    REG_CONFIRM_NAMES: "ASK_DOC_NUMBER",
+    REG_FIRSTNAME: "REG_CONFIRM_NAMES",
+    REG_SECONDNAME: "REG_FIRSTNAME",
+    REG_FIRSTLASTNAME: "REG_SECONDNAME",
+    REG_SECONDLASTNAME: "REG_FIRSTLASTNAME",
+    REG_BIRTHDATE: "REG_CONFIRM_NAMES",
+    REG_GENDER: "REG_BIRTHDATE",
+    REG_EMAIL: "REG_GENDER",
+    REG_PHONE: "REG_EMAIL",
+    REG_EPS: "REG_PHONE",
+    REG_HABEAS: "REG_EPS",
+};
+
+// Filtro barato antes de gastar una llamada real a Azure OpenAI: una
+// respuesta normal en estos pasos (un nombre, un correo, un número, "cc",
+// "particular"...) es corta. Solo vale la pena preguntarle a la IA qué quiso
+// decir el paciente cuando el mensaje ya "se ve raro" para una respuesta
+// puntual: trae varias palabras o parece una pregunta.
+function looksLikeUnexpectedInput(msg) {
+    const raw = String(msg || "").trim();
+    if (!raw) return false;
+
+    const wordCount = raw.split(/\s+/).filter(Boolean).length;
+    return wordCount >= 4 || /[?¿]/.test(raw);
+}
+
+function buildStepPrompt(step, data) {
+    switch (step) {
+        case "ASK_NAME":
+            return {
+                response: "¿Cuál es tu nombre completo?",
+                nextState: "AGENDAR",
+                data,
+            };
+        case "ASK_DOC_TYPE":
+            return sendDocTypeTemplate(data);
+        case "ASK_DOC_NUMBER":
+            return sendTemplate(TEMPLATE_REG_DOCUMENT_NUMBER, "AGENDAR", data);
+        case "REG_CONFIRM_NAMES":
+            return sendTemplate(TEMPLATE_REG_CONFIRM_NAMES, "AGENDAR", data, {
+                "1": capitalize(data.regPatient?.firstName) || "(vacío)",
+                "2": capitalize(data.regPatient?.secondName) || "(vacío)",
+                "3": capitalize(data.regPatient?.firstLastName) || "(vacío)",
+                "4": capitalize(data.regPatient?.secondLastName) || "(vacío)",
+            });
+        case "REG_FIRSTNAME":
+            return sendTemplate(TEMPLATE_REG_FIRSTNAME, "AGENDAR", data);
+        case "REG_SECONDNAME":
+            return sendTemplate(TEMPLATE_REG_SECONDNAME, "AGENDAR", data);
+        case "REG_FIRSTLASTNAME":
+            return { response: "Primer apellido:", nextState: "AGENDAR", data };
+        case "REG_SECONDLASTNAME":
+            return {
+                response: "Segundo apellido (si no tienes, escribe 0):",
+                nextState: "AGENDAR",
+                data,
+            };
+        case "REG_BIRTHDATE":
+            return sendTemplate(TEMPLATE_REG_BIRTHDATE, "AGENDAR", data);
+        case "REG_GENDER":
+            return sendTemplate(TEMPLATE_REG_GENDER, "AGENDAR", data);
+        case "REG_EMAIL":
+            return sendTemplate(TEMPLATE_REG_EMAIL, "AGENDAR", data);
+        case "REG_PHONE":
+            return sendTemplate(TEMPLATE_REG_PHONE, "AGENDAR", data);
+        case "REG_EPS":
+            return sendTemplate(TEMPLATE_REG_EPS, "AGENDAR", data);
+        default:
+            return null;
+    }
+}
+
 export default async function agendarState(msg, data, context = {}) {
     const phone = context.from || "UNKNOWN";
 
@@ -1486,6 +1568,43 @@ export default async function agendarState(msg, data, context = {}) {
             nextState: "AGENDAR",
             data,
         };
+    }
+
+    const previousStep = PREVIOUS_STEP_BY_STEP[data.step];
+    const registrationCheck =
+        previousStep && looksLikeUnexpectedInput(msg)
+            ? await classifyRegistrationInputAI({ message: msg, step: data.step })
+            : null;
+
+    if (
+        registrationCheck?.intent === "CORRECT_PREVIOUS" &&
+        registrationCheck.confidence >= 0.7
+    ) {
+        data.step = previousStep;
+        const prompt = buildStepPrompt(previousStep, data);
+
+        if (prompt) {
+            if (prompt.response) {
+                return {
+                    ...prompt,
+                    response: `Sin problema, corrijamos eso. 😊\n\n${prompt.response}`,
+                };
+            }
+
+            try {
+                await sendWhatsAppMessage(
+                    phone,
+                    "Sin problema, vamos a corregir eso. 😊",
+                );
+            } catch (error) {
+                console.error(
+                    "❌ No fue posible enviar el aviso de corrección:",
+                    error,
+                );
+            }
+
+            return prompt;
+        }
     }
 
     switch (data.step) {
@@ -1634,6 +1753,15 @@ export default async function agendarState(msg, data, context = {}) {
                 return sendTemplate(TEMPLATE_REG_FIRSTNAME, "AGENDAR", data);
             }
 
+            const aiFallback = await resolveFlowFallback({
+                message: msg,
+                currentState: "AGENDAR",
+                currentStep: data.step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response: "Responde 1, 2 o 0.",
                 nextState: "AGENDAR",
@@ -1779,6 +1907,15 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "0") return returnToMenu();
 
             if (msg !== "1" && msg !== "2") {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response: "Elige 1 o 2, o 0 para volver al menú.",
                     nextState: "AGENDAR",
@@ -1879,6 +2016,15 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "0") return returnToMenu();
 
             if (msg !== "1" && msg !== "2") {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response: "Responde 1 o 2, o 0.",
                     nextState: "AGENDAR",
@@ -1925,6 +2071,15 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
+            const aiFallback = await resolveFlowFallback({
+                message: msg,
+                currentState: "AGENDAR",
+                currentStep: data.step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response: "Responde 1 o 2, o 0 para volver al menú.",
                 nextState: "AGENDAR",
@@ -1950,6 +2105,15 @@ export default async function agendarState(msg, data, context = {}) {
                     data,
                 };
             }
+
+            const aiFallback = await resolveFlowFallback({
+                message: msg,
+                currentState: "AGENDAR",
+                currentStep: data.step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
 
             return {
                 response: "Responde 1 o 2 para continuar, o 0 para volver al menú.",
@@ -2040,6 +2204,15 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             if (!isValidDateDDMM(msg)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "😊 Esa fecha no está disponible para agendamiento.\n\n" +
@@ -2247,6 +2420,17 @@ export default async function agendarState(msg, data, context = {}) {
                 );
             }
 
+            {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+            }
+
             return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
         }
 
@@ -2254,6 +2438,15 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "0") return returnToMenu();
 
             if (msg !== "1") {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "Responde 1 para continuar o 0 para volver al menú.",
@@ -2418,6 +2611,16 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             if (msg === "2") return returnToMenu();
+
+            const aiFallback = await resolveFlowFallback({
+                message: msg,
+                currentState: "AGENDAR",
+                currentStep: data.step,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return { response: "Responde 1 o 2.", nextState: "AGENDAR", data };
         }
 

@@ -154,6 +154,7 @@ const FLOW_FALLBACK_INTENTS = [
     "GO_POST_SURGERY",
     "TALK_TO_HUMAN",
     "OPEN_QUESTION",
+    "CHANGE_DATE",
     "UNKNOWN",
 ];
 
@@ -173,16 +174,17 @@ export async function classifyFlowIntentAI({
                         "Eres un clasificador JSON de intención de navegación para un chatbot médico de WhatsApp. " +
                         "El usuario escribió un mensaje que NO coincidió con ningún botón/palabra clave esperada en la sección actual del bot. " +
                         "Devuelve únicamente JSON válido, sin markdown: {\"intent\":\"...\",\"confidence\":0.0}. " +
-                        "intent debe ser exactamente uno de: GO_MENU, GO_SCHEDULE, GO_MANAGE_APPOINTMENT, GO_INFO_COSTOS, GO_TELECONSULTA, GO_POST_SURGERY, TALK_TO_HUMAN, OPEN_QUESTION, UNKNOWN. " +
-                        "GO_MENU: quiere volver al inicio/menú principal. " +
+                        "intent debe ser exactamente uno de: GO_MENU, GO_SCHEDULE, GO_MANAGE_APPOINTMENT, GO_INFO_COSTOS, GO_TELECONSULTA, GO_POST_SURGERY, TALK_TO_HUMAN, OPEN_QUESTION, CHANGE_DATE, UNKNOWN. " +
+                        "GO_MENU: quiere volver al inicio/menú principal (abandonar del todo lo que está haciendo). " +
                         "GO_SCHEDULE: quiere agendar una cita nueva (ej: 'necesito cita para mañana'). " +
                         "GO_MANAGE_APPOINTMENT: quiere cancelar, reagendar o revisar una cita que YA tiene. " +
                         "GO_INFO_COSTOS: pregunta por precios, costos o información general del consultorio. " +
                         "GO_TELECONSULTA: quiere teleconsulta o lectura de estudios (ej: 'quiero volver a teleconsulta'). " +
                         "GO_POST_SURGERY: es paciente postoperatorio/postquirúrgico. " +
                         "TALK_TO_HUMAN: quiere hablar con una persona/secretaria/asesor sin pedir algo específico (ej: 'quiero hablar con alguien'). " +
-                        "OPEN_QUESTION: pregunta genuina de salud/procedimiento/consultorio que no encaja arriba. " +
-                        "UNKNOWN: no hay certeza suficiente (usa confidence baja). No inventes intenciones fuera de la lista.",
+                        "OPEN_QUESTION: pregunta genuina de salud/procedimiento/consultorio, o cualquier comentario/duda/preocupación sobre lo que acaba de pasar en el chat que no encaje arriba (ej: 'espera, no sé si quedó bien', 'eso no era lo que quería decir', 'no entendí eso último'). " +
+                        "CHANGE_DATE: SOLO cuando currentState es AGENDAR y el paciente quiere cambiar la fecha/hora de la cita que está agendando AHORA MISMO, sin abandonar el registro que ya lleva (ej: 'mejor cambio la fecha', 'espera, prefiero otro día', 'esa hora no me sirve, otra por favor'). No uses GO_MENU ni GO_SCHEDULE para esto. " +
+                        "UNKNOWN: el mensaje no tiene relación con el consultorio ni con lo que está pasando en el chat (ej: saludos sueltos, spam, texto sin sentido). No inventes intenciones fuera de la lista.",
                 },
                 {
                     role: "user",
@@ -201,6 +203,59 @@ export async function classifyFlowIntentAI({
         return { intent, confidence: Number(parsed.confidence || 0) };
     } catch (error) {
         console.error("Azure AI classifyFlowIntentAI Error:", error?.message || error);
+        return null;
+    }
+}
+
+const REGISTRATION_INPUT_INTENTS = ["PROCEED", "CORRECT_PREVIOUS", "UNCLEAR"];
+
+/**
+ * Para los pasos de texto libre del registro de una cita (nombre, documento,
+ * correo, teléfono, EPS, etc.) donde no hay un botón que elegir. Solo se
+ * llama cuando el mensaje ya "se ve raro" para el paso actual (varias
+ * palabras, no el formato corto esperado) — no en cada respuesta normal, para
+ * no gastar una llamada real a Azure OpenAI cuando el dato ya vino bien.
+ * Decide si el paciente está: respondiendo la pregunta actual igual (aunque
+ * no tenga el formato exacto), pidiendo corregir un dato que YA dio antes, o
+ * si no hay certeza suficiente.
+ */
+export async function classifyRegistrationInputAI({ message, step }) {
+    try {
+        const raw = await chatCompletion({
+            temperature: 0,
+            maxTokens: 80,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un clasificador JSON para el registro de datos de un paciente en un chatbot médico de WhatsApp. " +
+                        "El paciente está respondiendo una pregunta puntual del registro (paso actual), pero el mensaje no tiene el formato corto esperado para ese campo. " +
+                        "Devuelve únicamente JSON válido, sin markdown: {\"intent\":\"...\",\"confidence\":0.0}. " +
+                        "intent debe ser exactamente uno de: PROCEED, CORRECT_PREVIOUS, UNCLEAR. " +
+                        "PROCEED: el mensaje sigue siendo, en el fondo, una respuesta válida a la pregunta actual (aunque venga con palabras de más). " +
+                        "CORRECT_PREVIOUS: el paciente dice que se equivocó, quiere corregir, cambiar o revisar un dato que YA había dado ANTES (no el de la pregunta actual). " +
+                        "UNCLEAR: no hay certeza suficiente, es una pregunta, o no encaja en las anteriores.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({ step, message }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+
+        const intent = REGISTRATION_INPUT_INTENTS.includes(parsed.intent)
+            ? parsed.intent
+            : "UNCLEAR";
+
+        return { intent, confidence: Number(parsed.confidence || 0) };
+    } catch (error) {
+        console.error(
+            "Azure AI classifyRegistrationInputAI Error:",
+            error?.message || error,
+        );
         return null;
     }
 }
