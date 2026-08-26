@@ -1,6 +1,6 @@
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
-const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 // Debe coincidir con la plantilla que envía menu.state.js para "Información y costos".
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";

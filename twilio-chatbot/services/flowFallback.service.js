@@ -7,8 +7,8 @@ import {
 // Duplicados a propósito: cada states/*.state.js ya repite estos mismos
 // contentSid en vez de importarlos de un módulo compartido. Se sigue el mismo
 // patrón aquí en vez de convertir menu.state.js en una fuente compartida.
-const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
-const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
+const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
+const TEMPLATE_GESTION_CITA = "HXe1da2f8036073f44fad55c7a72f9e155";
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||

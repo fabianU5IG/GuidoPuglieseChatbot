@@ -1,7 +1,7 @@
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
-const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
     "HX18e7c4eb9b23f2fbb53b37f1c2520bed";

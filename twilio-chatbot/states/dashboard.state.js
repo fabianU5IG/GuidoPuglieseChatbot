@@ -23,7 +23,7 @@ const { getTimeSlots } = timeUtils;
  * =========================
  */
 const SECRETARY_CASES_PAGE_SIZE = 10;
-const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
+const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
