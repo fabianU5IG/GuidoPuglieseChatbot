@@ -29,6 +29,7 @@ const TEMPLATE_CITAS_LISTA_1 = "HX410801da590ca6d399a74197ef34bda0";
 const TEMPLATE_CITAS_LISTA_2 = "HXc2e53d2dacfe6c92c4a72b8e4b91e1e0";
 const TEMPLATE_CITAS_LISTA_3 = "HX072205031a720753efdab0d041c98f4f";
 const TEMPLATE_CONFIRMAR_ACCION = "HX61eb5556717309bd3b6d6b0eb78a76e0";
+const TEMPLATE_REG_DOCUMENT_NUMBER = "HX6870e9d8c2a707250a7b7b6dd3657bba";
 
 function sendTemplate(contentSid, nextState = "SOPORTE_CITA", data = {}, variables = null) {
     return {
@@ -692,12 +693,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             return askDocType(data);
         }
 
-        return {
-            response:
-                "Perfecto. Ahora escribe tu número de documento, solo números:\n\n0️⃣ Volver al menú",
-            nextState: "SOPORTE_CITA",
-            data: { ...data, patientDocumentType: docType, step: "ASK_DOCUMENT" },
-        };
+        return sendTemplate(
+            TEMPLATE_REG_DOCUMENT_NUMBER,
+            "SOPORTE_CITA",
+            {
+                ...data,
+                patientDocumentType: docType,
+                step: "ASK_DOCUMENT",
+            }
+        );
     }
 
     if (step === "ASK_DOCUMENT") {
