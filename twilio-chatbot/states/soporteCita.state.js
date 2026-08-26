@@ -744,7 +744,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                 "SOPORTE_CITA",
                 { ...data, step: "CONFIRM_CANCEL", appointmentId, selectedIndex: idx },
                 {
-                    "1": `Vas a cancelar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.`,
+                    "1": `😊 Estás a punto de cancelar tu cita del ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.`,
                 },
             );
         }
