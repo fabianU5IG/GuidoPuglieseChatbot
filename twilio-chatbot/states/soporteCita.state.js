@@ -460,12 +460,13 @@ function buildTimeTemplateResponse(data) {
     const label = data.newDateLabel || formatYmdToDdMm(ymd);
     const slotsAll = getSlotsForDate(ymd, page);
 
-    if (!slotsAll.length) {
+   if (!slotsAll.length) {
         if (page > 0) data.page = 0;
         return {
             response:
-                `El Dr. no tiene atención disponible el día ${label}.\n\n` +
-                "Escribe otra fecha en formato DD/MM o 0 para volver al menú.",
+                `😊 Para el ${label} no tenemos horarios de atención disponibles.\n\n` +
+                "Puedes intentar con otra fecha en formato DD/MM.\n\n" +
+                "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data,
         };
@@ -618,9 +619,10 @@ async function prepareNewDate({ text, data }) {
     if (!parsed) {
         return {
             response:
-                "Fecha inválida o muy pronto. Escríbela en formato DD/MM o AAAA-MM-DD.\n\n" +
-                "Recuerda que no atendemos miércoles, sábados, domingos ni festivos.\n\n" +
-                "0️⃣ Volver al menú",
+                 "😊 Esa fecha no está disponible para reagendamiento.\n\n" +
+                    "Recuerda que las citas deben solicitarse con mínimo 2 días de anticipación y el Dr. no atiende miércoles, sábados, domingos ni festivos.\n\n" +
+                    "Por favor, intenta con otra fecha en formato DD/MM.\n\n" +
+                    "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data,
         };
@@ -630,8 +632,9 @@ async function prepareNewDate({ text, data }) {
     if (!schedule) {
         return {
             response:
-                `El Dr. no tiene atención el día ${parsed.label}.\n\n` +
-                "Escribe otra fecha en formato DD/MM o 0 para volver al menú.",
+                `😊 Para el ${parsed.label} no tenemos horarios de atención disponibles.\n\n` +
+                "Puedes intentar con otra fecha en formato DD/MM.\n\n" +
+                "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data,
         };
