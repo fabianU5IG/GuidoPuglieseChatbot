@@ -354,7 +354,7 @@ function isTooSoonDateRequest(value) {
     const key = normKey(value);
 
     // Lenguaje natural
-    if (key === "hoy" || key === "manana") {
+    if (/\b(hoy|manana)\b/.test(key)) {
         return true;
     }
 
@@ -1234,25 +1234,15 @@ async function finalizeAttentionType(data, phone, attentionType) {
     try {
         await sendWhatsAppMessage(
             phone,
-            "El Dr. atiende pacientes de las siguientes entidades:\n" +
-                "• ARL\n" +
-                "• Allianz\n" +
-                "• AXA\n" +
-                "• Colpatria\n" +
-                "• Colmedica\n" +
-                "• Colsanitas\n" +
-                "• Coomeva\n" +
-                "• Suramericana\n" +
-                "• Medisanitas\n" +
-                "• Medplus\n\n" +
-                "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
-                "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
-                "Los descuentos son autorizados directamente por el Dr.\n\n" +
-                `${preparationLabel}\n${preparationText}\n\n` +
+            `${preparationLabel}\n\n` +
+                `${preparationText}\n\n` +
                 "Estas recomendaciones son administrativas y no reemplazan la valoración médica.",
         );
     } catch (error) {
-        console.error("❌ No fue posible enviar el mensaje de costos/EPS:", error);
+        console.error(
+            "❌ No fue posible enviar las recomendaciones de preparación:",
+            error,
+        );
     }
 
     return sendTemplate(TEMPLATE_CONFIRM_CITA, "AGENDAR", data);
@@ -1416,6 +1406,9 @@ async function normalizeAgendarMessage(msg, step, data) {
             key === "escribir fecha")
     ) {
         return "ESCRIBIR_FECHA";
+    }
+    if (step === "ASK_DATE" && isTooSoonDateRequest(raw)) {
+        return raw;
     }
     if (
         (step === "ASK_DATE" || step === "ASK_TIME") &&
@@ -2610,7 +2603,7 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            if (msg === "2") return returnToMenu();
+            if (msg === "0" || msg === "2") return returnToMenu();
 
             const aiFallback = await resolveFlowFallback({
                 message: msg,
