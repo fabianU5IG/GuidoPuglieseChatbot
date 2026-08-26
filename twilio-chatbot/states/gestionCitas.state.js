@@ -37,16 +37,27 @@ function compact(value = "") {
     return normalizeOption(value).replace(/\s+/g, "_");
 }
 
-function startAppointmentSupport(tipo) {
+function startAppointmentSupport(tipo, data = {}) {
+    // "Paciente" es solo el saludo por defecto de la plantilla cuando no
+    // conocemos el nombre todavía. Antes se guardaba también en
+    // `data.firstName`, y eso terminaba en la memoria de sesión (Fabian),
+    // pisando el nombre real si el paciente ya se había registrado antes en
+    // la misma sesión (ej: "Perfecto, Paciente. Ya tengo tus datos..." en vez
+    // de su nombre real al intentar agendar otra cita después).
+    const greetingName =
+        data.firstName ||
+        (data.fullName ? String(data.fullName).trim().split(/\s+/)[0] : null) ||
+        "Paciente";
+
     return sendTemplate(
         TEMPLATE_ASK_DOC_TYPE,
         "SOPORTE_CITA",
         {
+            ...data,
             tipo,
             step: "ASK_DOC_TYPE",
-            firstName: "Paciente",
         },
-        { "1": "Paciente" },
+        { "1": greetingName },
     );
 }
 
@@ -101,7 +112,7 @@ export default async function gestionCitasState(msg, data = {}, context = {}) {
         normalizedMsg.includes("reprogramar") ||
         normalizedMsg.includes("cambiar cita")
     ) {
-        return startAppointmentSupport("REAGENDAR");
+        return startAppointmentSupport("REAGENDAR", data);
     }
 
     // Cancelar.
@@ -112,7 +123,7 @@ export default async function gestionCitasState(msg, data = {}, context = {}) {
         normalizedMsg.includes("cancelar") ||
         normalizedMsg.includes("anular cita")
     ) {
-        return startAppointmentSupport("CANCELAR");
+        return startAppointmentSupport("CANCELAR", data);
     }
 
     // Volver al menú.

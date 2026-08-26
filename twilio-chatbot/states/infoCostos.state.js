@@ -50,6 +50,9 @@ function isBackIntent(normalizedMsg, compactMsg) {
         compactMsg === "volver_menu" ||
         compactMsg === "menu_principal" ||
         compactMsg === "volver_al_menu" ||
+        // Botón "Volver" real de la plantilla de info/costos (HX5256580c...);
+        // su id es "costos_volver", no "volver" a secas.
+        compactMsg === "costos_volver" ||
         normalizedMsg === "volver" ||
         normalizedMsg.includes("volver al menu") ||
         normalizedMsg.includes("volver menu") ||

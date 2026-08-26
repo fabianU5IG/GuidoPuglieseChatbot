@@ -98,6 +98,13 @@ function normKey(s) {
         .trim();
 }
 
+// Muchos escriben su c\u00e9dula con puntos de miles ("12.345.678") o espacios
+// ("1 2 3 4 5 6 7 8"); antes eso se rechazaba de una porque el regex exig\u00eda
+// d\u00edgitos pegados. Se limpian esos separadores antes de validar.
+function normalizeDocumentDigits(raw) {
+    return String(raw || "").replace(/[.\s-]+/g, "");
+}
+
 // `isValidFullName` solo valida forma (letras y espacios), no significado:
 // frases como "volver al inicio" o "no tengo" pasan esa validaci\u00f3n como si
 // fueran un nombre real. Se detectan aparte, ANTES de aceptar el dato, para
@@ -470,6 +477,26 @@ async function findSaludtoolsPatientInDb({ docType, docNum }) {
     );
 
     return rows?.[0] || null;
+}
+
+// El worker (saludtools.worker.js) procesa el job de creación en segundo plano
+// y puede terminar (y avisarle al paciente "Tu cita fue creada correctamente")
+// antes de que el paciente alcance a responder "Entendido" a esta plantilla.
+// Sin esto, el bot le diría "seguimos procesando" a alguien cuya cita ya fue
+// confirmada, lo cual suena contradictorio/roto.
+async function getAppointmentStatusById(appointmentId) {
+    if (!appointmentId) return null;
+
+    try {
+        const [rows] = await db.query(
+            "SELECT status FROM appointments WHERE id = ? LIMIT 1",
+            [appointmentId],
+        );
+
+        return rows?.[0]?.status || null;
+    } catch {
+        return null;
+    }
 }
 
 async function getBookedHmFromDb({ ymd, doctorDoc }) {
@@ -1174,6 +1201,62 @@ function fallbackPreparationTips(data) {
     ];
 }
 
+// Compartido entre "elige un horario" (cuando ya sabemos por el registro de
+// esta sesión que la consulta es particular, así que no tiene sentido
+// volver a preguntarlo) y el case "ASK_TYPE" (cuando sí hace falta
+// preguntar). Arma el mensaje de costos/preparación y deja la cita lista
+// para la confirmación final.
+async function finalizeAttentionType(data, phone, attentionType) {
+    data.attentionType = attentionType;
+
+    const aiPreparationTips = await generateAppointmentPreparationTipsAI({
+        consultationMode: data.consultationMode || "PRESENCIAL",
+        attentionType: data.attentionType,
+        appointmentDate: data.date,
+        appointmentTime: data.time,
+    });
+    const preparationTips = aiPreparationTips || fallbackPreparationTips(data);
+    data.preparationTips = preparationTips;
+
+    const preparationLabel = aiPreparationTips
+        ? "🤖 Recomendaciones personalizadas de preparación:"
+        : "Recomendaciones de preparación:";
+    const preparationText = preparationTips
+        .map((tip) => `• ${tip}`)
+        .join("\n");
+
+    data.step = "SHOW_COST_INFO";
+
+    // El texto de costos/EPS varía con cada tipo de atención (no cabe en
+    // el body fijo de una plantilla de WhatsApp), así que se manda como
+    // mensaje aparte; la pregunta de confirmar sí llega con botones reales.
+    try {
+        await sendWhatsAppMessage(
+            phone,
+            "El Dr. atiende pacientes de las siguientes entidades:\n" +
+                "• ARL\n" +
+                "• Allianz\n" +
+                "• AXA\n" +
+                "• Colpatria\n" +
+                "• Colmedica\n" +
+                "• Colsanitas\n" +
+                "• Coomeva\n" +
+                "• Suramericana\n" +
+                "• Medisanitas\n" +
+                "• Medplus\n\n" +
+                "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
+                "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
+                "Los descuentos son autorizados directamente por el Dr.\n\n" +
+                `${preparationLabel}\n${preparationText}\n\n` +
+                "Estas recomendaciones son administrativas y no reemplazan la valoración médica.",
+        );
+    } catch (error) {
+        console.error("❌ No fue posible enviar el mensaje de costos/EPS:", error);
+    }
+
+    return sendTemplate(TEMPLATE_CONFIRM_CITA, "AGENDAR", data);
+}
+
 function buildTimeResponse(data) {
     data.aiTimeRecommendations = [];
     data.aiTimeRecommendationActive = false;
@@ -1243,6 +1326,15 @@ function isValidFullName(msg, minLength = 3) {
     }
     if (raw.split(/\s+/).length > 6) return false;
     return true;
+}
+
+// isValidFullName solo valida forma, no cuántas palabras trae: "Jose" pasaba
+// como "nombre completo" válido y el registro seguía sin apellido hasta que
+// validateAndNormalizePatientBody lo rebotaba al final de todo el flujo
+// (después de fecha, hora, EPS, etc.). Este chequeo aparte es solo para
+// ASK_NAME, donde sí necesitamos nombre + al menos un apellido de una vez.
+function hasAtLeastTwoWords(msg) {
+    return String(msg || "").trim().split(/\s+/).filter(Boolean).length >= 2;
 }
 
 function capitalize(str) {
@@ -1400,7 +1492,7 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_NAME": {
             if (isMenuEscapePhrase(msg)) return returnToMenu();
 
-            if (!isValidFullName(msg)) {
+            if (!isValidFullName(msg) || !hasAtLeastTwoWords(msg)) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
                     currentState: "AGENDAR",
@@ -1411,9 +1503,11 @@ export default async function agendarState(msg, data, context = {}) {
                 if (aiFallback) return aiFallback;
 
                 return {
-                    response:
-                        "😊 No pude reconocer tu nombre.\n\n" +
-                        "Por favor, escribe tu nombre completo. Por ejemplo: Juan Pérez.",
+                    response: !isValidFullName(msg)
+                        ? "😊 No pude reconocer tu nombre.\n\n" +
+                          "Por favor, escribe tu nombre completo. Por ejemplo: Juan Pérez."
+                        : "😊 Necesito tu nombre completo, con al menos un apellido.\n\n" +
+                          "Por favor, escríbelo así: Juan Pérez.",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1447,7 +1541,7 @@ export default async function agendarState(msg, data, context = {}) {
         case "ASK_DOC_NUMBER": {
             if (msg === "0") return returnToMenu();
 
-            const doc = String(msg || "").trim();
+            const doc = normalizeDocumentDigits(msg);
             if (!/^\d{5,20}$/.test(doc)) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
@@ -1490,7 +1584,7 @@ export default async function agendarState(msg, data, context = {}) {
 
                     return {
                         response:
-                            "Perfecto, ya encontré tu registro.\n\n" +
+                            `Perfecto${data.firstName ? `, ${data.firstName}` : ""}, ya encontré tu registro.\n\n` +
                             buildAskDateMessage(),
                         nextState: "AGENDAR",
                         data,
@@ -2112,6 +2206,15 @@ export default async function agendarState(msg, data, context = {}) {
             }
 
             data.time = hour;
+
+            // Si en el registro de esta sesión ya dijo que no tiene EPS/es
+            // particular (REG_EPS), no tiene sentido volver a preguntárselo
+            // aquí con otro nombre ("tipo de atención"). Se salta directo a
+            // los costos/preparación con "Consulta particular".
+            if (data.regPatient?.isParticular === true) {
+                return finalizeAttentionType(data, phone, "Consulta particular");
+            }
+
             data.step = "ASK_TYPE";
 
             return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
@@ -2128,64 +2231,23 @@ export default async function agendarState(msg, data, context = {}) {
                 typeKey === "particular" ||
                 typeKey.includes("particular")
             ) {
-                data.attentionType = "Consulta particular";
-            } else if (
+                return finalizeAttentionType(data, phone, "Consulta particular");
+            }
+
+            if (
                 msg === "2" ||
                 typeKey.includes("poliza") ||
                 typeKey.includes("prepagada") ||
                 typeKey.includes("medicina prepagada")
             ) {
-                data.attentionType = "Consulta con póliza/prepagada";
-            } else {
-                return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
-            }
-
-            const aiPreparationTips = await generateAppointmentPreparationTipsAI({
-                consultationMode: data.consultationMode || "PRESENCIAL",
-                attentionType: data.attentionType,
-                appointmentDate: data.date,
-                appointmentTime: data.time,
-            });
-            const preparationTips = aiPreparationTips || fallbackPreparationTips(data);
-            data.preparationTips = preparationTips;
-
-            const preparationLabel = aiPreparationTips
-                ? "🤖 Recomendaciones personalizadas de preparación:"
-                : "Recomendaciones de preparación:";
-            const preparationText = preparationTips
-                .map((tip) => `• ${tip}`)
-                .join("\n");
-
-            data.step = "SHOW_COST_INFO";
-
-            // El texto de costos/EPS varía con cada tipo de atención (no cabe en
-            // el body fijo de una plantilla de WhatsApp), así que se manda como
-            // mensaje aparte; la pregunta de confirmar sí llega con botones reales.
-            try {
-                await sendWhatsAppMessage(
+                return finalizeAttentionType(
+                    data,
                     phone,
-                    "El Dr. atiende pacientes de las siguientes entidades:\n" +
-                        "• ARL\n" +
-                        "• Allianz\n" +
-                        "• AXA\n" +
-                        "• Colpatria\n" +
-                        "• Colmedica\n" +
-                        "• Colsanitas\n" +
-                        "• Coomeva\n" +
-                        "• Suramericana\n" +
-                        "• Medisanitas\n" +
-                        "• Medplus\n\n" +
-                        "Si tu consulta es de manera particular, el valor es de $400.000.\n\n" +
-                        "Si son controles continuos el valor puede ser menor (previa validación).\n\n" +
-                        "Los descuentos son autorizados directamente por el Dr.\n\n" +
-                        `${preparationLabel}\n${preparationText}\n\n` +
-                        "Estas recomendaciones son administrativas y no reemplazan la valoración médica.",
+                    "Consulta con póliza/prepagada",
                 );
-            } catch (error) {
-                console.error("❌ No fue posible enviar el mensaje de costos/EPS:", error);
             }
 
-            return sendTemplate(TEMPLATE_CONFIRM_CITA, "AGENDAR", data);
+            return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
         }
 
         case "SHOW_COST_INFO": {
@@ -2337,10 +2399,19 @@ export default async function agendarState(msg, data, context = {}) {
 
         case "POST_CREATED": {
             if (msg === "1") {
+                const currentStatus = await getAppointmentStatusById(
+                    data.appointmentId,
+                );
+
+                const response =
+                    currentStatus === "CONFIRMED"
+                        ? `Listo ${data.firstName}. Tu cita ya quedó confirmada. ✅\n\nNos vemos pronto.`
+                        : currentStatus === "FAILED"
+                          ? `${data.firstName}, tuvimos un inconveniente confirmando tu cita. Nuestro equipo ya está al tanto y te contactaremos por este medio.`
+                          : `Listo ${data.firstName}.\n\nSeguiremos procesando tu solicitud y te avisaremos por este medio cuando quede confirmada.`;
+
                 return {
-                    response:
-                        `Listo ${data.firstName}.\n\n` +
-                        "Seguiremos procesando tu solicitud y te avisaremos por este medio cuando quede confirmada.",
+                    response,
                     nextState: "MENU",
                     data: { renderMenu: true },
                 };

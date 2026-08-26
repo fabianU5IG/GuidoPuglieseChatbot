@@ -86,11 +86,38 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
 
     if (data.awaitingImage) {
         if (!mediaUrls.length) {
+            const trimmedMsg = String(msg || "").trim();
+
+            // Antes, cualquier texto que no fuera una foto (ej: "no sé cómo
+            // mandar la foto", "no tengo cámara") repetía exactamente el mismo
+            // mensaje en bucle, sin IA ni forma de escapar salvo el "0"
+            // literal. Se intenta primero la navegación con IA (permite pedir
+            // la secretaria, volver al menú, o responder una pregunta) antes
+            // de repetir el reprompt.
+            if (trimmedMsg) {
+                const aiFallback = await resolveFlowFallback({
+                    message: trimmedMsg,
+                    currentState: "POST_SURGERY_WAIT_IMAGE",
+                    currentStep: "AWAIT_IMAGE",
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+            }
+
+            const attempts = Number(data.imageReminderAttempts || 0) + 1;
+
+            const response =
+                attempts >= 2
+                    ? "😊 Entiendo, a veces cuesta encontrar cómo hacerlo.\n\n" +
+                      "En WhatsApp, toca el ícono de 📎 (clip) o de cámara junto al cuadro de texto, elige o toma la foto de la zona postquirúrgica y envíala.\n\n" +
+                      "Si prefieres que te ayude una persona, escribe *secretaria*. Si quieres salir, escribe 0️⃣."
+                    : "Por favor envíame la foto de la zona postquirúrgica y, si quieres, acompáñala con un mensaje corto contándome qué notas.\n\nCuando la reciba, la reenviaré a la secretaria para revisión.\n\n0️⃣ Volver al menú";
+
             return {
-                response:
-                    "Por favor envíame la foto de la zona postquirúrgica y, si quieres, acompáñala con un mensaje corto contándome qué notas.\n\nCuando la reciba, la reenviaré a la secretaria para revisión.\n\n0️⃣ Volver al menú",
+                response,
                 nextState: "POST_SURGERY_WAIT_IMAGE",
-                data: { ...data, awaitingImage: true },
+                data: { ...data, awaitingImage: true, imageReminderAttempts: attempts },
             };
         }
 

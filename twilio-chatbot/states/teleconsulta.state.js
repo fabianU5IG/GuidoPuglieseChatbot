@@ -42,6 +42,7 @@ function isBackIntent(normalizedMsg, compactMsg) {
         normalizedMsg === "0" ||
         normalizedMsg === "menu" ||
         normalizedMsg === "inicio" ||
+        normalizedMsg === "no" ||
         compactMsg === "volver_menu" ||
         compactMsg === "menu_principal" ||
         compactMsg === "teleconsulta_volver_menu" ||
@@ -53,6 +54,7 @@ function isBackIntent(normalizedMsg, compactMsg) {
 function isScheduleIntent(normalizedMsg, compactMsg) {
     return (
         normalizedMsg === "1" ||
+        normalizedMsg === "si" ||
         normalizedMsg === "agendar" ||
         normalizedMsg === "agendar teleconsulta" ||
         normalizedMsg === "agendar consulta" ||

@@ -24,7 +24,7 @@ function getRememberedFirstName(memory = {}) {
     if (memory.firstName) return memory.firstName;
 
     const fullName = String(memory.fullName || "").trim();
-    return fullName ? fullName.split(/\s+/)[0] : "Paciente";
+    return fullName ? fullName.split(/\s+/)[0] : null;
 }
 
 /**
@@ -55,9 +55,11 @@ async function applySessionMemory(result, memory = {}, context = {}) {
             return agendarState(nextData.pendingDateInput, nextData, context);
         }
 
+        const rememberedFirstName = getRememberedFirstName(memory);
+
         return {
             response:
-                `Perfecto, ${getRememberedFirstName(memory)}. Ya tengo tus datos de esta sesión. ✅\n\n` +
+                `Perfecto${rememberedFirstName ? `, ${rememberedFirstName}` : ""}. Ya tengo tus datos de esta sesión. ✅\n\n` +
                 "¿Para qué fecha deseas agendar la cita? Puedes escribirla como DD/MM o decirme algo como “la próxima semana en la tarde”.\n\n" +
                 "0️⃣ Volver al menú",
             nextState: "AGENDAR",

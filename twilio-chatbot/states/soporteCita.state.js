@@ -72,6 +72,13 @@ function compact(value = "") {
     return normalizeOption(value).replace(/\s+/g, "_");
 }
 
+// Muchos escriben su cédula con puntos de miles ("12.345.678") o espacios
+// ("1 2 3 4 5 6 7 8"); antes eso se rechazaba de una porque el regex exigía
+// dígitos pegados. Se limpian esos separadores antes de validar.
+function normalizeDocumentDigits(raw) {
+    return String(raw || "").replace(/[.\s-]+/g, "");
+}
+
 function isBackToMenu(input) {
     const t = normalizeOption(input);
     const c = compact(input);
@@ -506,7 +513,9 @@ function askDocType(data) {
 }
 
 async function handleDocumentSearch({ text, data, phone }) {
-   if (!/^\d{5,20}$/.test(text)) {
+    const documento = normalizeDocumentDigits(text);
+
+    if (!/^\d{5,20}$/.test(documento)) {
         return {
             response:
                 "😊 Parece que el número de documento no tiene el formato esperado.\n\n" +
@@ -516,8 +525,6 @@ async function handleDocumentSearch({ text, data, phone }) {
             data: { ...data, step: "ASK_DOCUMENT" },
         };
     }
-
-    const documento = text;
 
     try {
         const patient = await findLocalPatientByDocument(documento);
@@ -686,7 +693,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         const docType = normalizeDocType(text);
 
         // Si el paciente escribe directamente el número, asumimos CC para evitar bloqueos.
-        if (/^\d{5,20}$/.test(text)) {
+        if (/^\d{5,20}$/.test(normalizeDocumentDigits(text))) {
             return handleDocumentSearch({
                 text,
                 data: { ...data, patientDocumentType: Number(data.patientDocumentType || 1), step: "ASK_DOCUMENT" },
