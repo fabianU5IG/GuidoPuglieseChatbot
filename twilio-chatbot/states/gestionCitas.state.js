@@ -6,7 +6,7 @@ const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
     "HX3b07c0984e3fc8c6d2f96630752ef101";
-const TEMPLATE_AGENDAMIENTO_INICIO = "HXc9f2cfd70960b4b856787a720e2e9a9b";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HX94711af7408f422962cb914731d0bae6";
 
 function sendTemplate(contentSid, nextState, data = {}, variables = null) {
     return {
