@@ -12,6 +12,81 @@ import infoCostosState from "./states/infoCostos.state.js";
 import { registerChatbotInteraction } from "./services/chatbot-db.service.js";
 import { SECRETARY_PHONES } from "./constants.js";
 
+function hasRememberedSchedulingIdentity(memory = {}) {
+    return Boolean(
+        memory.fullName &&
+            memory.patientDocumentType &&
+            memory.patientDocumentNumber,
+    );
+}
+
+function getRememberedFirstName(memory = {}) {
+    if (memory.firstName) return memory.firstName;
+
+    const fullName = String(memory.fullName || "").trim();
+    return fullName ? fullName.split(/\s+/)[0] : "Paciente";
+}
+
+/**
+ * Reutiliza los datos identificativos ya obtenidos en la misma sesión.
+ *
+ * - Si un flujo intenta comenzar AGENDAR preguntando otra vez el nombre,
+ *   salta directamente a la fecha cuando ya conocemos nombre + documento.
+ * - Si CANCELAR/REAGENDAR intenta pedir el documento, ejecuta directamente
+ *   la consulta con el documento recordado.
+ */
+async function applySessionMemory(result, memory = {}, context = {}) {
+    if (!result || !memory || typeof memory !== "object") return result;
+
+    if (
+        result.nextState === "AGENDAR" &&
+        result.data?.step === "ASK_NAME" &&
+        hasRememberedSchedulingIdentity(memory)
+    ) {
+        const nextData = {
+            ...memory,
+            ...(result.data || {}),
+            step: "ASK_DATE",
+        };
+
+        // Si el usuario ya había expresado una fecha/preferencia en el mensaje
+        // que inició el flujo, la procesamos de inmediato y evitamos pedirla otra vez.
+        if (nextData.pendingDateInput) {
+            return agendarState(nextData.pendingDateInput, nextData, context);
+        }
+
+        return {
+            response:
+                `Perfecto, ${getRememberedFirstName(memory)}. Ya tengo tus datos de esta sesión. ✅\n\n` +
+                "¿Para qué fecha deseas agendar la cita? Puedes escribirla como DD/MM o decirme algo como “la próxima semana en la tarde”.\n\n" +
+                "0️⃣ Volver al menú",
+            nextState: "AGENDAR",
+            data: nextData,
+        };
+    }
+
+    if (
+        result.nextState === "SOPORTE_CITA" &&
+        result.data?.step === "ASK_DOC_TYPE" &&
+        memory.patientDocumentNumber
+    ) {
+        const nextData = {
+            ...memory,
+            ...(result.data || {}),
+            patientDocumentType: Number(memory.patientDocumentType || 1),
+            step: "ASK_DOCUMENT",
+        };
+
+        return soporteCitaState(
+            String(memory.patientDocumentNumber),
+            nextData,
+            context,
+        );
+    }
+
+    return result;
+}
+
 /**
  * Función principal del chatbot
  */
@@ -36,7 +111,13 @@ export default async function chatbotResponse(message, session, context = {}) {
         data = { step: "MENU" };
     } else {
         state = session.state || "MENU";
-        data = session.data || {};
+        // La memoria se combina con los datos del flujo, pero los datos del
+        // flujo tienen prioridad. Así puede reutilizarse identidad sin mezclar
+        // fechas/horas de operaciones anteriores.
+        data = {
+            ...(session.memory || {}),
+            ...(session.data || {}),
+        };
     }
 
     console.log(
@@ -63,41 +144,32 @@ export default async function chatbotResponse(message, session, context = {}) {
         console.error("❌ No fue posible registrar la interacción en la BD:", error);
     }
 
+    let result;
+
     if (state === "DASHBOARD") {
-        return dashboardState(msg, data, context);
+        result = await dashboardState(msg, data, context);
+    } else if (state === "MENU") {
+        result = await menuState(msg, data, context);
+    } else if (state.startsWith("AGENDAR")) {
+        result = await agendarState(msg, data, context);
+    } else if (state === "SECRETARIA") {
+        result = await secretariaState(msg, data, context);
+    } else if (state === "GESTION_CITAS") {
+        result = await gestionCitasState(msg, data, context);
+    } else if (state === "INFO_COSTOS") {
+        result = await infoCostosState(msg, data, context);
+    } else if (state === "SOPORTE_CITA") {
+        result = await soporteCitaState(msg, data, context);
+    } else if (
+        state === "POST_SURGERY" ||
+        state === "POST_SURGERY_WAIT_IMAGE"
+    ) {
+        result = await postSurgeryState(msg, data, context);
+    } else if (state === "TELECONSULTA") {
+        result = await teleconsultaState(msg, data, context);
+    } else {
+        result = await menuState(msg, data, context);
     }
 
-    if (state === "MENU") {
-        return menuState(msg, data, context);
-    }
-
-    if (state.startsWith("AGENDAR")) {
-        return agendarState(msg, data, context);
-    }
-
-    if (state === "SECRETARIA") {
-        return secretariaState(msg, data, context);
-    }
-
-    if (state === "GESTION_CITAS") {
-        return gestionCitasState(msg, data, context);
-    }
-
-    if (state === "INFO_COSTOS") {
-        return infoCostosState(msg, data, context);
-    }
-
-    if (state === "SOPORTE_CITA") {
-        return soporteCitaState(msg, data, context);
-    }
-
-    if (state === "POST_SURGERY" || state === "POST_SURGERY_WAIT_IMAGE") {
-        return postSurgeryState(msg, data, context);
-    }
-
-    if (state === "TELECONSULTA") {
-        return teleconsultaState(msg, data, context);
-    }
-
-    return menuState(msg, data, context);
+    return applySessionMemory(result, session.memory || {}, context);
 }

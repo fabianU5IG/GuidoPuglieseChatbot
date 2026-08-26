@@ -5,11 +5,70 @@ import twilio from "twilio";
 import chatbotResponse from "./chatbot.js";
 import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
 import { sendWhatsAppTemplate } from "./services/whatsapp.service.js";
+import {
+    loadChatSession,
+    saveChatSession,
+    mergeUserMemory,
+    cleanupExpiredChatSessions,
+} from "./services/session-memory.service.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const sessions = {};
+// Fallback local: mantiene el bot operativo si MySQL tiene una falla temporal.
+// La fuente durable de la sesión es la tabla `chat_sessions`.
+const fallbackSessions = {};
+
+async function getSession(phone) {
+    try {
+        const session = await loadChatSession(phone);
+        fallbackSessions[phone] = session;
+        return session;
+    } catch (error) {
+        console.error(
+            "⚠️ No fue posible cargar la sesión desde MySQL; usando memoria local:",
+            error,
+        );
+
+        if (!fallbackSessions[phone]) {
+            fallbackSessions[phone] = {
+                state: "MENU",
+                data: {},
+                memory: {},
+                isNew: true,
+            };
+        }
+
+        return fallbackSessions[phone];
+    }
+}
+
+async function persistSession(phone, session) {
+    fallbackSessions[phone] = session;
+
+    try {
+        await saveChatSession({
+            phone,
+            state: session.state,
+            data: session.data,
+            memory: session.memory,
+        });
+    } catch (error) {
+        console.error(
+            "⚠️ No fue posible guardar la sesión en MySQL; se conserva el fallback local:",
+            error,
+        );
+    }
+}
+
+// Limpieza periódica para que los datos de una sesión vencida no queden
+// almacenados indefinidamente en la base de datos.
+const sessionCleanupTimer = setInterval(() => {
+    cleanupExpiredChatSessions().catch((error) => {
+        console.error("⚠️ No fue posible limpiar sesiones vencidas:", error);
+    });
+}, 30 * 60_000);
+sessionCleanupTimer.unref?.();
 
 // Necesario para que twilio.webhook() calcule la URL pública correcta
 // (https) cuando el servidor corre detrás de un proxy/túnel (ngrok, Render, etc.).
@@ -47,15 +106,7 @@ app.post("/webhook", twilio.webhook(), async (req, res) => {
             contentType: req.body[`MediaContentType${i}`],
         })).filter((item) => item.url);
 
-        if (!sessions[phone]) {
-            sessions[phone] = {
-                state: "MENU",
-                data: {},
-                isNew: true,
-            };
-        }
-
-        const session = sessions[phone];
+        const session = await getSession(phone);
 
         const context = {
             from: phone,
@@ -68,9 +119,17 @@ app.post("/webhook", twilio.webhook(), async (req, res) => {
 
         console.log("🤖 Resultado chatbot:", result);
 
+        const nextMemory = mergeUserMemory(
+            session.memory || {},
+            result.data || {},
+        );
+
         session.state = result.nextState;
         session.data = result.data || {};
+        session.memory = nextMemory;
         session.isNew = false;
+
+        await persistSession(phone, session);
 
         res.set("Content-Type", "text/xml");
 
