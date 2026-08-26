@@ -730,7 +730,8 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
 
         if (!appointmentId) {
             return returnToMenu(
-                "No pudimos identificar la cita seleccionada.\n\nPor favor escribe *SECRETARIA* para ayudarte."
+                "😊 Tuvimos un inconveniente al identificar la cita seleccionada.\n\n" +
+                "Por favor, escribe *SECRETARÍA* para que una persona de nuestro equipo pueda ayudarte."
             );
         }
 
@@ -764,14 +765,18 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         if (!yn) {
             return {
                 response:
-                    "Por favor responde SI para confirmar o NO para abortar.\n\n0️⃣ Volver al menú",
+                    "😊 Para continuar, confirma qué deseas hacer:\n\n" +
+                        "• Escribe *SÍ* para confirmar.\n" +
+                        "• Escribe *NO* para mantener tu cita sin cambios.\n\n" +
+                        "0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data,
             };
         }
 
         if (yn === "NO") {
-            return returnToMenu("Listo, no realizamos cambios.");
+            return returnToMenu("😊 ¡Listo! Tu cita se mantiene sin cambios.\n\n" +
+        "Si necesitas algo más, puedes volver a consultarnos cuando quieras.");
         }
 
         const cita = data.citas?.[data.selectedIndex];
