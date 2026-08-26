@@ -98,6 +98,39 @@ function normKey(s) {
         .trim();
 }
 
+// `isValidFullName` solo valida forma (letras y espacios), no significado:
+// frases como "volver al inicio" o "no tengo" pasan esa validaci\u00f3n como si
+// fueran un nombre real. Se detectan aparte, ANTES de aceptar el dato, para
+// no guardarlas como si fueran el nombre/apellido del paciente.
+const MENU_ESCAPE_PHRASES = new Set([
+    "0",
+    "menu",
+    "inicio",
+    "volver",
+    "volver al menu",
+    "volver al inicio",
+    "menu principal",
+]);
+
+function isMenuEscapePhrase(raw) {
+    return MENU_ESCAPE_PHRASES.has(normKey(raw));
+}
+
+// Para segundo nombre/apellido, "0" no es la única forma en que la gente dice
+// que no tiene uno; sin esto, "no tengo" quedaba guardado literalmente como
+// si fuera el segundo nombre/apellido del paciente.
+const NO_SECOND_NAME_PHRASES = new Set([
+    "0",
+    "no",
+    "no tengo",
+    "ninguno",
+    "ninguna",
+]);
+
+function isNoSecondNamePhrase(raw) {
+    return NO_SECOND_NAME_PHRASES.has(normKey(raw));
+}
+
 function initializeGlobalSchedulingContext(data = {}) {
     if (!data.consultationMode) data.consultationMode = "PRESENCIAL";
 
@@ -262,11 +295,13 @@ function splitName(fullName = "") {
     }
 
     if (parts.length === 3) {
+        // Con 3 palabras se asume 1 nombre + 2 apellidos (lo más común en
+        // nombres colombianos), no 2 nombres + 1 apellido.
         return {
             firstName: parts[0],
-            secondName: parts[1],
-            firstLastName: parts[2],
-            secondLastName: "",
+            secondName: "",
+            firstLastName: parts[1],
+            secondLastName: parts[2],
         };
     }
 
@@ -1363,6 +1398,8 @@ export default async function agendarState(msg, data, context = {}) {
 
     switch (data.step) {
         case "ASK_NAME": {
+            if (isMenuEscapePhrase(msg)) return returnToMenu();
+
             if (!isValidFullName(msg)) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
@@ -1511,7 +1548,7 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_FIRSTNAME": {
-            if (msg === "0") return returnToMenu();
+            if (isMenuEscapePhrase(msg)) return returnToMenu();
             const v = String(msg || "").trim();
 
             if (!isValidFullName(v, 2)) {
@@ -1538,8 +1575,10 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_SECONDNAME": {
-            if (msg === "0") {
+            if (isNoSecondNamePhrase(msg)) {
                 data.regPatient.secondName = "";
+            } else if (isMenuEscapePhrase(msg)) {
+                return returnToMenu();
             } else if (isValidFullName(msg, 2)) {
                 data.regPatient.secondName = capitalize(msg);
             } else {
@@ -1565,7 +1604,7 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_FIRSTLASTNAME": {
-            if (msg === "0") return returnToMenu();
+            if (isMenuEscapePhrase(msg)) return returnToMenu();
             const v = String(msg || "").trim();
             if (!isValidFullName(v, 2)) {
                 const aiFallback = await resolveFlowFallback({
@@ -1595,8 +1634,10 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_SECONDLASTNAME": {
-            if (msg === "0") {
+            if (isNoSecondNamePhrase(msg)) {
                 data.regPatient.secondLastName = "";
+            } else if (isMenuEscapePhrase(msg)) {
+                return returnToMenu();
             } else if (isValidFullName(msg, 2)) {
                 data.regPatient.secondLastName = capitalize(msg);
             } else {
