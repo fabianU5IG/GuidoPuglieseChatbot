@@ -154,9 +154,20 @@ export async function resolveFlowFallback({
         }
 
         if (decision === "OPEN_QUESTION") {
+            // Si ya conocemos su nombre (por esta u otra operación en la misma
+            // sesión, vía la memoria de Fabian), se lo hacemos saber a la IA
+            // para que no le hable como a un desconocido.
+            const knownFirstName =
+                data.firstName ||
+                (data.fullName ? String(data.fullName).split(/\s+/)[0] : null);
+
             const answer = await askAI(
                 message,
-                `\nEl paciente está en la sección "${currentState}" del chatbot. Si su pregunta requiere agendar una cita, gestionar una cita existente o hablar con la secretaria, indícale brevemente cómo continuar (ej: escribir "agendar" o "0" para volver al menú), pero no inventes botones ni pasos que no existen.`,
+                `\nEl paciente está en la sección "${currentState}" del chatbot.` +
+                    (knownFirstName
+                        ? ` Ya sabes que se llama ${knownFirstName} (dato de esta sesión); puedes dirigirte a él/ella por su nombre si es natural, y no le pidas que se identifique de nuevo.`
+                        : "") +
+                    ' Si su pregunta requiere agendar una cita, gestionar una cita existente o hablar con la secretaria, indícale brevemente cómo continuar (ej: escribir "agendar" o "0" para volver al menú), pero no inventes botones ni pasos que no existen.',
             );
 
             return {
