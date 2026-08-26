@@ -877,7 +877,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             "SOPORTE_CITA",
             { ...data, step: "CONFIRM_RESCHEDULE", newTime: selectedHour },
             {
-                "1": `Confirmación: reagendar la cita para ${data.newDateLabel || formatYmdToDdMm(data.newDate)} a las ${selectedHour}.`,
+                "1": `😊 Estás a punto de reagendar tu cita para el ${data.newDateLabel || formatYmdToDdMm(data.newDate)} a las ${selectedHour}.`,
             },
         );
     }
