@@ -798,8 +798,8 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         });
 
         return returnToMenu(
-            "Tu solicitud de cancelación quedó en proceso.\n\n" +
-            "Te avisaremos por este medio cuando quede aplicada."
+            "😊 ¡Listo! Recibimos tu solicitud de cancelación.\n\n" +
+            "La estamos procesando y te avisaremos por este medio cuando quede confirmada."
         );
     }
 
@@ -933,8 +933,8 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         });
 
         return returnToMenu(
-            "Tu solicitud de reagendamiento quedó en proceso.\n\n" +
-            "Te avisaremos por este medio cuando quede aplicada."
+            "😊 ¡Listo! Recibimos tu solicitud de reagendamiento.\n\n" +
+            "La estamos procesando y te avisaremos por este medio cuando la nueva fecha y hora queden confirmadas."
         );
     }
 
