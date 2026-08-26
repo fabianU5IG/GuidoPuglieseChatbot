@@ -49,7 +49,7 @@ const TEMPLATE_AVAILABLE_HOURS = "HX288f8c61244fb7ccd84dadc3a2b18085";
 // Plantillas del flujo de registro de paciente nuevo (botones reales de WhatsApp).
 // SIDs actualizados a la versión "copy_..." con el texto mejorado (agosto 2026).
 const TEMPLATE_REG_CONFIRM_NAMES = "HXb82d4efe6c8e953e769007d97e1b7683";
-const TEMPLATE_REG_DOCUMENT_NUMBER = "HX2011f109e313590373f9c99a64136112";
+const TEMPLATE_REG_DOCUMENT_NUMBER = "HX6870e9d8c2a707250a7b7b6dd3657bba";
 const TEMPLATE_REG_FIRSTNAME = "HXef564c5e031c89c509865f9ad0cc2671";
 const TEMPLATE_REG_SECONDNAME = "HXf0c0b5145ad2c66b0dc2ee6016edcb08";
 const TEMPLATE_REG_BIRTHDATE = "HXd9b8fa306aa4c104781028d08cb2f5be";
