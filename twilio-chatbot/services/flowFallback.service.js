@@ -9,7 +9,7 @@ import {
 // patrón aquí en vez de convertir menu.state.js en una fuente compartida.
 const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 const TEMPLATE_GESTION_CITA = "HXe1da2f8036073f44fad55c7a72f9e155";
-const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
+const TEMPLATE_INFO_COSTOS = "HX5256580c02d8a037cbafa7e5a3c1fd55";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
     "HX18e7c4eb9b23f2fbb53b37f1c2520bed";

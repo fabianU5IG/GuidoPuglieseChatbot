@@ -2,7 +2,7 @@ import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 // Debe coincidir con la plantilla que envía menu.state.js para "Información y costos".
-const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
+const TEMPLATE_INFO_COSTOS = "HX5256580c02d8a037cbafa7e5a3c1fd55";
 const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
 const TEMPLATE_TELECONSULTA_DESDE_COSTOS = "HXb34097ce442aabbf9c4de7788c20ccca";
 const TEMPLATE_AGENDAMIENTO_INICIO = "HXc9f2cfd70960b4b856787a720e2e9a9b";
