@@ -2614,7 +2614,13 @@ export default async function agendarState(msg, data, context = {}) {
             });
             if (aiFallback) return aiFallback;
 
-            return { response: "Responde 1 o 2.", nextState: "AGENDAR", data };
+            return {
+                response:
+                    "😊 Tu solicitud de cita ya fue registrada.\n\n" +
+                    "Puedes escribir *MENÚ* para volver al inicio o decirme qué necesitas, por ejemplo: *cancelar cita* o *reagendar cita*.",
+                nextState: "AGENDAR",
+                data,
+            };
         }
 
         default: {
