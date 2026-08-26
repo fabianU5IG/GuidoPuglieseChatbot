@@ -1363,10 +1363,11 @@ export default async function agendarState(msg, data, context = {}) {
 
     switch (data.step) {
         case "ASK_NAME": {
-            if (!isValidFullName(msg)) {
+           if (!isValidFullName(msg)) {
                 return {
                     response:
-                        "No reconocí eso como un nombre válido. Por favor escribe solo tu nombre completo (ej: Juan Pérez), sin pegar otro texto:",
+                        "😊 No pude reconocer tu nombre.\n\n" +
+                        "Por favor, escribe tu nombre completo. Por ejemplo: Juan Pérez.",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1404,7 +1405,8 @@ export default async function agendarState(msg, data, context = {}) {
             if (!/^\d{5,20}$/.test(doc)) {
                 return {
                     response:
-                        "Número inválido. Por favor escribe solo números (mínimo 5 dígitos):\n\n" +
+                        "😊 Parece que el número de documento no tiene el formato esperado.\n\n" +
+                        "Por favor, escríbelo nuevamente usando solo números y mínimo 5 dígitos." +             
                         "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
@@ -1833,12 +1835,9 @@ export default async function agendarState(msg, data, context = {}) {
             if (!isValidDateDDMM(msg)) {
                 return {
                     response:
-                        "❌ Fecha no válida o muy pronto.\n\n" +
-                        "Ten en cuenta:\n" +
-                        "• Las citas se agendan con al menos 2 días de anticipación.\n" +
-                        "• No atendemos miércoles, sábados, domingos ni festivos.\n" +
-                        "• Formato: DD/MM (ej: 15/05).\n\n" +
-                        "Por favor, ingresa otra fecha:",
+                        "😊 Esa fecha no está disponible para agendamiento.\n\n" +
+                        "Recuerda que las citas deben solicitarse con mínimo 2 días de anticipación.\n\n" +
+                        "Por favor, intenta con otra fecha.",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -1907,7 +1906,8 @@ export default async function agendarState(msg, data, context = {}) {
                     data.aiTimeRecommendationActive = false;
                     return {
                         response:
-                            "La opción recomendada acaba de ocuparse. Escribe RECOMENDAR para consultar nuevas alternativas o selecciona otro horario.",
+                            "😊 Parece que ese horario acaba de ser ocupado.\n\n" +
+                            "No te preocupes, puedo ayudarte a encontrar otra opción disponible.",
                         nextState: "AGENDAR",
                         data,
                     };
