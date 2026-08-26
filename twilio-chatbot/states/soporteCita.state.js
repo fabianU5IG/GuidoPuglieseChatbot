@@ -750,8 +750,10 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
 
         return {
             response:
-                `Vas a reagendar la cita ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.\n\n` +
-                "¿Para qué nueva fecha deseas reagendarla?\nFormato DD/MM.\n\n0️⃣ Volver al menú",
+                `😊 Vamos a reagendar tu cita del ${formatAppointmentLine(cita, idx).replace(/^\d+️⃣\s*/, "")}.\n\n` +
+                "¿Para qué nueva fecha te gustaría programarla?\n\n" +
+                "Escribe la fecha en formato DD/MM. Por ejemplo: 15/09.\n\n" +
+                "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data: {
                 ...data,
