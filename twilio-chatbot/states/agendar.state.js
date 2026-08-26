@@ -1076,10 +1076,13 @@ async function buildRecommendedTimeResponse(message, data) {
 
 function buildAskDateMessage() {
     return (
-        "¿Para qué fecha deseas agendar la cita?\n\n" +
-        "• Escribe la fecha en formato DD/MM.\n" +
-        "• También puedes describir tu preferencia con lenguaje natural, por ejemplo: ‘lo más pronto posible’, ‘la próxima semana en la tarde’ o ‘recomiéndame en la mañana’.\n" +
-        "• La IA solo ordenará horarios que el sistema haya verificado como disponibles.\n\n" +
+        "📅 ¿Qué fecha te gustaría para tu cita?\n\n" +
+        "Recuerda que las citas deben agendarse con mínimo 2 días de anticipación.\n\n" +
+        "Puedes escribir la fecha en formato DD/MM o decirme tu preferencia, por ejemplo:\n" +
+        "• “Lo más pronto posible”\n" +
+        "• “La próxima semana en la tarde”\n" +
+        "• “En la mañana”\n\n" +
+        "Yo te ayudaré a encontrar las opciones disponibles que mejor se ajusten 😊\n\n" +
         "0️⃣ Volver al menú"
     );
 }
