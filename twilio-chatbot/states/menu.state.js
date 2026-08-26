@@ -252,7 +252,9 @@ export default async function menuState(msg, data = {}, context = {}) {
         normalizedMsg === "inicio" ||
         compactMsg === "volver_menu" ||
         compactMsg === "menu_principal" ||
-        normalizedMsg.includes("volver") ||
+        normalizedMsg === "volver" ||
+        normalizedMsg.includes("volver al menu") ||
+        normalizedMsg.includes("volver menu") ||
         normalizedMsg.includes("menu principal")
     ) {
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});

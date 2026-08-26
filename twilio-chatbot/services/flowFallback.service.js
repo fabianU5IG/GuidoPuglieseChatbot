@@ -15,6 +15,15 @@ const TEMPLATE_TELECONSULTA =
     "HXdcf56e75504920c35e7e46f4f6c6753b";
 const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
 const TEMPLATE_AGENDAMIENTO_INICIO = "HX94711af7408f422962cb914731d0bae6";
+const TEMPLATE_IA_REDIRECCION_SECRETARIA = "HXb3c1b58fd9b398790b07579f054885e5";
+
+function normalizeButtonPayload(value = "") {
+    return String(value || "")
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[̀-ͯ]/g, "");
+}
 
 const AI_NAV_FALLBACK_ENABLED = !["false", "0", "off", "no"].includes(
     String(process.env.AI_NAV_FALLBACK_ENABLED || "true").toLowerCase(),
@@ -97,6 +106,49 @@ export async function resolveFlowFallback({
     data = {},
     context = {},
 }) {
+    const buttonPayload = normalizeButtonPayload(message);
+
+    // Respuesta a los botones de la plantilla "ia_redireccion_secretaria"
+    // (HXb3c1b58fd9b398790b07579f054885e5). Se resuelve aquí de forma
+    // centralizada -y antes que cualquier otra cosa- porque el botón puede
+    // llegar estando en cualquier estado (se pregunta sin cambiar de state),
+    // y no todos los states/*.state.js reconocen estos payloads por su cuenta.
+    if (buttonPayload === "menu_secretaria") {
+        try {
+            await notifySecretarySupportRequest({
+                patientPhone: context.from,
+                patientName: data.fullName || data.patientName || "Paciente",
+                reason: "El paciente confirmó que quiere hablar con una persona",
+                note: "Confirmado desde el botón de la plantilla de redirección de IA.",
+            });
+            await sendWhatsAppMessage(
+                context.from,
+                "Tu solicitud fue enviada a la secretaria y te responderemos por este mismo medio.\n\nMientras esperas, puedes seguir usando el menú:",
+            );
+        } catch (error) {
+            console.error(
+                "❌ No fue posible notificar a la secretaria (confirmación IA):",
+                error,
+            );
+        }
+
+        return {
+            response: null,
+            nextState: "MENU",
+            data: {},
+            sendTemplate: true,
+            template: { contentSid: TEMPLATE_MENU_PRINCIPAL, variables: null },
+        };
+    }
+
+    if (buttonPayload === "continuar") {
+        return {
+            response: "Perfecto, seguimos por aquí 😊",
+            nextState: currentState,
+            data,
+        };
+    }
+
     if (!AI_NAV_FALLBACK_ENABLED) return null;
 
     try {
@@ -124,32 +176,25 @@ export async function resolveFlowFallback({
 
         if (decision === "NO_AI" || decision === "LOW_CONFIDENCE") return null;
 
-        if (decision === "TALK_TO_HUMAN") {
-            try {
-                await notifySecretarySupportRequest({
-                    patientPhone: context.from,
-                    patientName: data.fullName || data.patientName || "Paciente",
-                    reason:
-                        "Solicitud detectada por IA: el paciente quiere hablar con una persona",
-                    note: message,
-                });
-                await sendWhatsAppMessage(
-                    context.from,
-                    "Tu solicitud fue enviada a la secretaria y te responderemos por este mismo medio.\n\nMientras esperas, puedes seguir usando el menú:",
-                );
-            } catch (error) {
-                console.error(
-                    "❌ No fue posible notificar a la secretaria (fallback IA):",
-                    error,
-                );
-            }
+        // Si ya está en AGENDAR y la IA cree que "quiere agendar", reiniciar el
+        // registro perdería el nombre/documento/etc. que ya escribió. Se deja
+        // que el paso actual repita su propio mensaje en vez de retroceder.
+        if (decision === "GO_SCHEDULE" && currentState === "AGENDAR") return null;
 
+        if (decision === "TALK_TO_HUMAN") {
+            // No se notifica de una vez: se pregunta primero con la plantilla
+            // aprobada "ia_redireccion_secretaria" (botones "Sí, comunicarme" /
+            // "No, continuar aquí"). La confirmación real se maneja arriba,
+            // en el chequeo de `buttonPayload === "menu_secretaria"`.
             return {
                 response: null,
-                nextState: "MENU",
-                data: {},
+                nextState: currentState,
+                data,
                 sendTemplate: true,
-                template: { contentSid: TEMPLATE_MENU_PRINCIPAL, variables: null },
+                template: {
+                    contentSid: TEMPLATE_IA_REDIRECCION_SECRETARIA,
+                    variables: null,
+                },
             };
         }
 
@@ -170,8 +215,14 @@ export async function resolveFlowFallback({
                     ' Si su pregunta requiere agendar una cita, gestionar una cita existente o hablar con la secretaria, indícale brevemente cómo continuar (ej: escribir "agendar" o "0" para volver al menú), pero no inventes botones ni pasos que no existen.',
             );
 
+            // Cierre alineado al texto ya aprobado por WhatsApp en la plantilla
+            // "msj_ia_responde" (HX75b5dbc58a39cc1af5da5e7abc5908e4), para no
+            // tener dos redacciones distintas del mismo mensaje.
             return {
-                response: `${answer}\n\nPuedes continuar donde ibas o escribir *menu* para volver al inicio.`,
+                response:
+                    `${answer}\n\n` +
+                    "😊 Espero que esta información te haya ayudado.\n\n" +
+                    "Puedes continuar con tu solicitud o, si prefieres consultar otras opciones, escribe MENÚ para volver al inicio.",
                 nextState: currentState,
                 data,
             };

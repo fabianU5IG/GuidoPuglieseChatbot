@@ -1363,7 +1363,16 @@ export default async function agendarState(msg, data, context = {}) {
 
     switch (data.step) {
         case "ASK_NAME": {
-           if (!isValidFullName(msg)) {
+            if (!isValidFullName(msg)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "😊 No pude reconocer tu nombre.\n\n" +
@@ -1403,10 +1412,19 @@ export default async function agendarState(msg, data, context = {}) {
 
             const doc = String(msg || "").trim();
             if (!/^\d{5,20}$/.test(doc)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "😊 Parece que el número de documento no tiene el formato esperado.\n\n" +
-                        "Por favor, escríbelo nuevamente usando solo números y mínimo 5 dígitos." +             
+                        "Por favor, escríbelo nuevamente usando solo números y mínimo 5 dígitos.\n\n" +
                         "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
@@ -1497,6 +1515,15 @@ export default async function agendarState(msg, data, context = {}) {
             const v = String(msg || "").trim();
 
             if (!isValidFullName(v, 2)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "Primer nombre inválido. Escribe solo tu primer nombre, sin pegar otro texto:",
@@ -1516,6 +1543,15 @@ export default async function agendarState(msg, data, context = {}) {
             } else if (isValidFullName(msg, 2)) {
                 data.regPatient.secondName = capitalize(msg);
             } else {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "No reconocí eso como un nombre. Escribe tu segundo nombre, o 0 si no tienes:",
@@ -1532,6 +1568,15 @@ export default async function agendarState(msg, data, context = {}) {
             if (msg === "0") return returnToMenu();
             const v = String(msg || "").trim();
             if (!isValidFullName(v, 2)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "Apellido inválido. Escribe solo tu primer apellido, sin pegar otro texto:",
@@ -1555,6 +1600,15 @@ export default async function agendarState(msg, data, context = {}) {
             } else if (isValidFullName(msg, 2)) {
                 data.regPatient.secondLastName = capitalize(msg);
             } else {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "No reconocí eso como un apellido. Escribe tu segundo apellido, o 0 si no tienes:",
@@ -1607,6 +1661,15 @@ export default async function agendarState(msg, data, context = {}) {
             else {
                 const em = normalizeEmail(msg);
                 if (em === null) {
+                    const aiFallback = await resolveFlowFallback({
+                        message: msg,
+                        currentState: "AGENDAR",
+                        currentStep: data.step,
+                        data,
+                        context,
+                    });
+                    if (aiFallback) return aiFallback;
+
                     return {
                         response:
                             "Correo inválido. Intenta de nuevo o escribe 0:",
@@ -1627,6 +1690,15 @@ export default async function agendarState(msg, data, context = {}) {
             const phone = String(msg || "").replace(/\D/g, "");
 
             if (!/^\d{7,15}$/.test(phone)) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
                 return {
                     response:
                         "Número inválido. Escribe únicamente números (entre 7 y 15 dígitos).\n\n" +

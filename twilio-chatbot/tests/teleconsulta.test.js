@@ -6,7 +6,7 @@ process.env.TWILIO_AUTH_TOKEN ||= "test_auth_token";
 process.env.TWILIO_WHATSAPP_NUMBER ||= "+573114811385";
 process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573224811542";
 
-const TELECONSULTA_SID = "HX18e7c4eb9b23f2fbb53b37f1c2520bed";
+const TELECONSULTA_SID = "HXdcf56e75504920c35e7e46f4f6c6753b";
 
 const { default: menuState } = await import("../states/menu.state.js");
 const { default: teleconsultaState } = await import(
