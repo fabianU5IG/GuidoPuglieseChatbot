@@ -505,10 +505,12 @@ function askDocType(data) {
 }
 
 async function handleDocumentSearch({ text, data, phone }) {
-    if (!/^\d{5,20}$/.test(text)) {
+   if (!/^\d{5,20}$/.test(text)) {
         return {
             response:
-                "El número de documento debe contener solo números y mínimo 5 dígitos. Intenta nuevamente:\n\n0️⃣ Volver al menú",
+                "😊 Parece que el número de documento no tiene el formato esperado.\n\n" +
+                "Por favor, escríbelo nuevamente usando solo números y mínimo 5 dígitos.\n\n" +
+                "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data: { ...data, step: "ASK_DOCUMENT" },
         };
@@ -534,9 +536,8 @@ async function handleDocumentSearch({ text, data, phone }) {
             });
 
             return returnToMenu(
-                "No encontré información local con ese documento.\n\n" +
-                "Tu solicitud quedó en proceso y validaremos la información en el sistema. " +
-                "Te avisaremos por este medio."
+                "😊 No encontré información asociada a ese número de documento por el momento.\n\n" +
+                "No te preocupes, validaremos la información en nuestro sistema y te avisaremos por este medio."
             );
         }
 
