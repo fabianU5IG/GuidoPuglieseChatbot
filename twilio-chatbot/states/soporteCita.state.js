@@ -555,9 +555,8 @@ async function handleDocumentSearch({ text, data, phone }) {
             });
 
             return returnToMenu(
-                "No encontré citas locales asociadas a ese documento.\n\n" +
-                "Tu solicitud quedó en proceso y validaremos las citas en el sistema. " +
-                "Te avisaremos por este medio."
+                "😊 Por el momento no encontré citas asociadas a ese número de documento.\n\n" +
+                "Validaremos la información en nuestro sistema y te avisaremos por este medio."
             );
         }
 
