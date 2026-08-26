@@ -307,6 +307,42 @@ function isValidDateDDMM(value) {
     return !isNaN(date.getTime()) && date >= minDate;
 }
 
+function isTooSoonDateRequest(value) {
+    const key = normKey(value);
+
+    // Lenguaje natural
+    if (key === "hoy" || key === "manana") {
+        return true;
+    }
+
+    // Fecha DD/MM
+    if (!/^\d{2}\/\d{2}$/.test(String(value || ""))) {
+        return false;
+    }
+
+    const [day, month] = String(value).split("/").map(Number);
+    const year = new Date().getFullYear();
+    const requestedDate = new Date(year, month - 1, day);
+
+    // Validar que realmente exista la fecha
+    if (
+        requestedDate.getDate() !== day ||
+        requestedDate.getMonth() !== month - 1
+    ) {
+        return false;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const minDate = new Date(today);
+    minDate.setDate(minDate.getDate() + 2);
+
+    // Solo hoy o mañana.
+    // Fechas pasadas siguen tratándose como inválidas.
+    return requestedDate >= today && requestedDate < minDate;
+}
+
 function ddmmToYmd(ddmm) {
     const [day, month] = ddmm.split("/").map(Number);
     const year = new Date().getFullYear();
@@ -1771,6 +1807,27 @@ export default async function agendarState(msg, data, context = {}) {
                 data.step = "ASK_TYPE";
 
                 return sendTemplate(TEMPLATE_ASK_ATTENTION_TYPE, "AGENDAR", data);
+            }
+
+            if (isTooSoonDateRequest(msg)) {
+                try {
+                    await sendWhatsAppMessage(
+                        phone,
+                        "Esa fecha está muy cerca 😊\n\n" +
+                            "Recuerda que las citas deben agendarse con mínimo 2 días de anticipación.\n\n" +
+                            "No te preocupes, voy a buscar las opciones disponibles más próximas para ti 👇"
+                    );
+                } catch (error) {
+                    console.error(
+                        "❌ No fue posible enviar el aviso de anticipación:",
+                        error
+                    );
+                }
+
+                return buildRecommendedAppointmentResponse(
+                    "lo más pronto posible",
+                    data
+                );
             }
 
             if (!isValidDateDDMM(msg)) {
