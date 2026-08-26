@@ -599,9 +599,10 @@ async function handleDocumentSearch({ text, data, phone }) {
 
         return {
             response:
-                "Encontramos estas citas asociadas a tu documento:\n\n" +
+                "😊 ¡Listo! Encontré estas citas asociadas a tu documento:\n\n" +
                 lines.join("\n") +
-                `\n\nEscribe el número de la cita que deseas ${actionText}.\n\n0️⃣ Volver al menú`,
+                `\n\nIndícame el número de la cita que deseas ${actionText}.\n\n` +
+                "0️⃣ Volver al menú",
             nextState: "SOPORTE_CITA",
             data: nextData,
         };
