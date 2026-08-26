@@ -2,6 +2,7 @@ import {
     notifySecretarySupportRequest,
     sendWhatsAppMessage,
 } from "../services/whatsapp.service.js";
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
@@ -383,6 +384,15 @@ export default async function menuState(msg, data = {}, context = {}) {
 
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
     }
+
+    const aiFallback = await resolveFlowFallback({
+        message: msg,
+        currentState: "MENU",
+        currentStep: null,
+        data,
+        context,
+    });
+    if (aiFallback) return aiFallback;
 
     return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
 }

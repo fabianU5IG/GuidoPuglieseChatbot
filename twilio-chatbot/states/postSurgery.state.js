@@ -6,6 +6,7 @@ import {
     downloadTwilioMedia,
 } from "../services/whatsapp.service.js";
 import { uploadPatientImageToSupabase } from "../services/supabase.service.js";
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
@@ -196,6 +197,15 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
             },
         };
     }
+
+    const aiFallback = await resolveFlowFallback({
+        message: msg,
+        currentState: "POST_SURGERY",
+        currentStep: data.step || "ASK_POST_SURGERY_DAYS",
+        data,
+        context,
+    });
+    if (aiFallback) return aiFallback;
 
     return askPostSurgeryQuestion(data);
 }

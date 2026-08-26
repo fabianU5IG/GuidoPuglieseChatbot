@@ -1,6 +1,7 @@
 import { db } from "../db/mysql.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS } from "../constants.js";
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
@@ -923,6 +924,15 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             "Te avisaremos por este medio cuando quede aplicada."
         );
     }
+
+    const aiFallback = await resolveFlowFallback({
+        message: text,
+        currentState: "SOPORTE_CITA",
+        currentStep: step || null,
+        data,
+        context,
+    });
+    if (aiFallback) return aiFallback;
 
     return returnToMenu(null);
 }

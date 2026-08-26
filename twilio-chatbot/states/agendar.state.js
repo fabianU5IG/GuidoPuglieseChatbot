@@ -12,6 +12,7 @@ import {
     recommendAppointmentOptionsAI,
 } from "../services/azure.ai.services.js";
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import { db } from "../db/mysql.js";
 
 const DOCTOR_DOCUMENT_TYPE = Number(
@@ -2176,7 +2177,16 @@ export default async function agendarState(msg, data, context = {}) {
             return { response: "Responde 1 o 2.", nextState: "AGENDAR", data };
         }
 
-        default:
+        default: {
+            const aiFallback = await resolveFlowFallback({
+                message: msg,
+                currentState: "AGENDAR",
+                currentStep: data.step || null,
+                data,
+                context,
+            });
+            if (aiFallback) return aiFallback;
+
             return {
                 response:
                     "Vamos a iniciar el agendamiento.\n\n" +
@@ -2185,5 +2195,6 @@ export default async function agendarState(msg, data, context = {}) {
                 nextState: "AGENDAR",
                 data: initializeGlobalSchedulingContext({ step: "ASK_NAME" }),
             };
+        }
     }
 }

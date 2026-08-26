@@ -1,3 +1,5 @@
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
+
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 const TEMPLATE_GESTION_CITA = "HX808bda7b9d8296d961d995533eb2e5eb";
 const TEMPLATE_ASK_DOC_TYPE =
@@ -48,7 +50,7 @@ function startAppointmentSupport(tipo) {
     );
 }
 
-export default function gestionCitasState(msg, data = {}) {
+export default async function gestionCitasState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
@@ -124,6 +126,15 @@ export default function gestionCitasState(msg, data = {}) {
     ) {
         return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
     }
+
+    const aiFallback = await resolveFlowFallback({
+        message: msg,
+        currentState: "GESTION_CITAS",
+        currentStep: null,
+        data,
+        context,
+    });
+    if (aiFallback) return aiFallback;
 
     return sendTemplate(TEMPLATE_GESTION_CITA, "GESTION_CITAS", { rendered: true });
 }

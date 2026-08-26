@@ -145,6 +145,66 @@ export async function normalizeAppointmentInputAI({ message, step, data = {} }) 
     }
 }
 
+const FLOW_FALLBACK_INTENTS = [
+    "GO_MENU",
+    "GO_SCHEDULE",
+    "GO_MANAGE_APPOINTMENT",
+    "GO_INFO_COSTOS",
+    "GO_TELECONSULTA",
+    "GO_POST_SURGERY",
+    "TALK_TO_HUMAN",
+    "OPEN_QUESTION",
+    "UNKNOWN",
+];
+
+export async function classifyFlowIntentAI({
+    message,
+    currentState,
+    currentStep = null,
+}) {
+    try {
+        const raw = await chatCompletion({
+            temperature: 0,
+            maxTokens: 150,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un clasificador JSON de intención de navegación para un chatbot médico de WhatsApp. " +
+                        "El usuario escribió un mensaje que NO coincidió con ningún botón/palabra clave esperada en la sección actual del bot. " +
+                        "Devuelve únicamente JSON válido, sin markdown: {\"intent\":\"...\",\"confidence\":0.0}. " +
+                        "intent debe ser exactamente uno de: GO_MENU, GO_SCHEDULE, GO_MANAGE_APPOINTMENT, GO_INFO_COSTOS, GO_TELECONSULTA, GO_POST_SURGERY, TALK_TO_HUMAN, OPEN_QUESTION, UNKNOWN. " +
+                        "GO_MENU: quiere volver al inicio/menú principal. " +
+                        "GO_SCHEDULE: quiere agendar una cita nueva (ej: 'necesito cita para mañana'). " +
+                        "GO_MANAGE_APPOINTMENT: quiere cancelar, reagendar o revisar una cita que YA tiene. " +
+                        "GO_INFO_COSTOS: pregunta por precios, costos o información general del consultorio. " +
+                        "GO_TELECONSULTA: quiere teleconsulta o lectura de estudios (ej: 'quiero volver a teleconsulta'). " +
+                        "GO_POST_SURGERY: es paciente postoperatorio/postquirúrgico. " +
+                        "TALK_TO_HUMAN: quiere hablar con una persona/secretaria/asesor sin pedir algo específico (ej: 'quiero hablar con alguien'). " +
+                        "OPEN_QUESTION: pregunta genuina de salud/procedimiento/consultorio que no encaja arriba. " +
+                        "UNKNOWN: no hay certeza suficiente (usa confidence baja). No inventes intenciones fuera de la lista.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({ message, currentState, currentStep }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+
+        const intent = FLOW_FALLBACK_INTENTS.includes(parsed.intent)
+            ? parsed.intent
+            : "UNKNOWN";
+
+        return { intent, confidence: Number(parsed.confidence || 0) };
+    } catch (error) {
+        console.error("Azure AI classifyFlowIntentAI Error:", error?.message || error);
+        return null;
+    }
+}
+
 export async function parseDashboardAppointmentsAI(message) {
     try {
         const today = new Date().toISOString().slice(0, 10);

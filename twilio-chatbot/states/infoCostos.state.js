@@ -1,3 +1,5 @@
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
+
 const TEMPLATE_MENU_PRINCIPAL = "HXa378d250620cf7abd92cbb65e341801d";
 // Debe coincidir con la plantilla que envía menu.state.js para "Información y costos".
 const TEMPLATE_INFO_COSTOS = "HXf5c183219cbd50ed9a261edc7f4f16f3";
@@ -136,7 +138,7 @@ function isSecretaryIntent(normalizedMsg, compactMsg) {
     );
 }
 
-export default function infoCostosState(msg, data = {}) {
+export default async function infoCostosState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
     const origin = data?.origin || "INFO_COSTOS";
@@ -195,6 +197,15 @@ export default function infoCostosState(msg, data = {}) {
             origin: "INFO_COSTOS",
         });
     }
+
+    const aiFallback = await resolveFlowFallback({
+        message: msg,
+        currentState: "INFO_COSTOS",
+        currentStep: null,
+        data,
+        context,
+    });
+    if (aiFallback) return aiFallback;
 
     if (origin === "TELECONSULTA") {
         return sendTemplate(TEMPLATE_TELECONSULTA_DESDE_COSTOS, "TELECONSULTA", {
