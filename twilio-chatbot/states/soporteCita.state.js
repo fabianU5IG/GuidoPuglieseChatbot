@@ -719,7 +719,9 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         if (!Number.isFinite(idx) || idx < 0 || idx >= citas.length) {
             return {
                 response:
-                    "Opción inválida. Escribe el número de la cita que deseas gestionar.\n\n0️⃣ Volver al menú",
+                    "😊 No pude identificar la cita que seleccionaste.\n\n" +
+                        "Por favor, elige una de las citas disponibles para continuar.\n\n" +
+                        "0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data,
             };
@@ -836,7 +838,9 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
         if (!selectedHour) {
             return {
                 response:
-                    "Elige una hora de la plantilla o escribe otra fecha en formato DD/MM.\n\n0️⃣ Volver al menú",
+                   "😊 No pude identificar el horario que seleccionaste.\n\n" +
+                    "Puedes elegir uno de los horarios disponibles o escribir otra fecha en formato DD/MM.\n\n" +
+                    "0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data,
             };
