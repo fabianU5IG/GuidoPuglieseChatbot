@@ -30,7 +30,11 @@ function normalizeWhatsAppAddress(value, fallback = "") {
 }
 
 function normalizeTemplateVariables(variables) {
-    if (!variables || typeof variables !== "object" || Array.isArray(variables)) {
+    if (
+        !variables ||
+        typeof variables !== "object" ||
+        Array.isArray(variables)
+    ) {
         return null;
     }
 
@@ -66,8 +70,7 @@ const FROM_WHATSAPP = normalizeWhatsAppAddress(
 );
 
 const SECRETARY_WHATSAPP = normalizeWhatsAppAddress(
-    process.env.SECRETARY_WHATSAPP_NUMBER,
-    "+573224811542",
+    process.env.SECRETARY_PHONES,
 );
 
 export async function sendWhatsAppMessage(phone, body) {
@@ -117,10 +120,10 @@ export async function notifySecretaryPostSurgeryImage({
     }
 
     const variables = {
-        "1": patientName || "Paciente postquirúrgico",
-        "2": patientDocument || "No disponible",
-        "3": patientPhone || "No disponible",
-        "4": mediaUrl,
+        1: patientName || "Paciente postquirúrgico",
+        2: patientDocument || "No disponible",
+        3: patientPhone || "No disponible",
+        4: mediaUrl,
     };
 
     console.log("📤 Enviando plantilla postoperatoria a secretaria:", {
