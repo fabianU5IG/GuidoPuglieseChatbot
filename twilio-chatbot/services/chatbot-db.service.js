@@ -481,6 +481,29 @@ export async function createSecretaryQuickAppointment({
     };
 }
 
+// Para que la secretaria pueda crear una cita rápida dando solo el nombre
+// del paciente ("cita para fabian mañana a las 8am") en vez de tener que
+// buscar el documento de memoria. Busca en los pacientes ya conocidos por
+// Saludtools (se llenan cuando alguien agenda por el bot o por Saludtools
+// directamente).
+export async function findSaludtoolsPatientsByName(namePart, limit = 8) {
+    const cleaned = String(namePart || "").trim();
+    if (!cleaned) return [];
+
+    const [rows] = await db.query(
+        `
+        SELECT full_name, document_type, document_number
+        FROM saludtools_patients
+        WHERE full_name LIKE ?
+        ORDER BY updated_at DESC
+        LIMIT ?
+        `,
+        [`%${cleaned}%`, limit],
+    );
+
+    return rows;
+}
+
 export async function logAppointmentMessage(appointmentId, message) {
     await db.query(
         `INSERT INTO appointment_messages

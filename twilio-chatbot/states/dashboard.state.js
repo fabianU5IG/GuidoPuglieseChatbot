@@ -7,6 +7,7 @@ import {
     registerChatbotInteraction,
     logAppointmentMessage,
     createSecretaryQuickAppointment,
+    findSaludtoolsPatientsByName,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS, SECRETARY_PHONES } from "../constants.js";
@@ -283,6 +284,30 @@ function normalizeQuickModality(modalityRaw = "") {
     return null;
 }
 
+function docTypeLabel(documentType) {
+    const map = { 1: "CC", 2: "CE", 4: "Pasaporte", 5: "RC", 6: "TI" };
+    return map[Number(documentType)] || "Doc";
+}
+
+// Para cuando no se encontró (o no hacía falta buscar) un paciente por
+// nombre y se le pide el documento directamente a la secretaria: acepta
+// "12345678", "cc 12345678", "ce 12345678", etc.
+function parseQuickDocumentReply(msg) {
+    const raw = String(msg || "")
+        .trim()
+        .toLowerCase();
+    const match = raw.match(/^(cc|ce|ti)?\s*([\d.\s-]{5,25})$/);
+    if (!match) return { documentType: null, documentNumber: null };
+
+    const documentNumber = String(match[2] || "").replace(/\D/g, "");
+    if (!/^\d{5,20}$/.test(documentNumber)) {
+        return { documentType: null, documentNumber: null };
+    }
+
+    const documentType = mapQuickDocType(match[1] || "cc") || 1;
+    return { documentType, documentNumber };
+}
+
 function parseSingleQuickAppointmentLine(line = "") {
     const raw = String(line || "")
         .trim()
@@ -459,6 +484,37 @@ async function parseQuickAppointmentsMessageWithAI(msg = "") {
     const ai = await parseDashboardAppointmentsAI(msg);
     if (!ai) return parsed;
 
+    // Caso "cita para fabian mañana a las 8am": la secretaria dio un nombre
+    // en vez de un documento. normalizeAiDashboardAppointments más abajo
+    // exige documento (arma una "línea" de 5 campos), así que esto se
+    // resuelve aparte, ANTES de llegar ahí, buscando al paciente por nombre.
+    if (Array.isArray(ai.appointments) && ai.appointments.length === 1) {
+        const item = ai.appointments[0];
+        const hasDoc = /^\d{5,20}$/.test(
+            String(item.patientDocumentNumber || "").replace(/\D/g, ""),
+        );
+        const modality = normalizeQuickModality(item.modality) || "PRESENCIAL";
+
+        if (
+            !hasDoc &&
+            item.patientName &&
+            String(item.patientName).trim().length >= 2 &&
+            isValidDateDDMM(item.dateLabel) &&
+            isValidHour(item.timeLabel)
+        ) {
+            return {
+                valid: [],
+                invalid: [],
+                pendingNameLookup: {
+                    patientName: String(item.patientName).trim(),
+                    modality,
+                    dateLabel: item.dateLabel,
+                    timeLabel: item.timeLabel,
+                },
+            };
+        }
+    }
+
     const aiParsed = normalizeAiDashboardAppointments(ai);
     if (!aiParsed.valid.length) return parsed;
 
@@ -466,6 +522,109 @@ async function parseQuickAppointmentsMessageWithAI(msg = "") {
         valid: aiParsed.valid,
         invalid: aiParsed.invalid,
         usedAI: true,
+    };
+}
+
+async function createQuickAppointmentForCandidate({
+    pendingAppointment,
+    candidate,
+}) {
+    try {
+        const ymd = ddmmToYmd(pendingAppointment.dateLabel);
+
+        if (isHoliday(ymd)) {
+            return {
+                response:
+                    "❌ Esa fecha corresponde a un festivo en Colombia. Intenta con otra fecha.\n\n" +
+                    DASHBOARD_MENU_TEXT,
+                nextState: "DASHBOARD",
+                data: { step: "MENU" },
+            };
+        }
+
+        const result = await createSecretaryQuickAppointment({
+            date: ymd,
+            time: pendingAppointment.timeLabel,
+            durationMinutes: APPOINTMENT_DURATION_MIN,
+            patientDocumentType: Number(candidate.document_type),
+            patientDocumentNumber: String(candidate.document_number),
+            modality: pendingAppointment.modality,
+        });
+
+        return {
+            response:
+                `✅ ${result.created ? "Cita creada" : "Ya existía esa cita"} para ` +
+                `${candidate.full_name} (${docTypeLabel(candidate.document_type)} ${candidate.document_number}) ` +
+                `el ${pendingAppointment.dateLabel} a las ${pendingAppointment.timeLabel} ` +
+                `(${String(pendingAppointment.modality).toLowerCase()}).\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    } catch (error) {
+        return {
+            response:
+                `❌ No fue posible crear la cita: ${String(error?.message || error).slice(0, 180)}\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+}
+
+async function resolveQuickAppointmentPatientName({ pendingAppointment, data }) {
+    let candidates = [];
+    try {
+        candidates = await findSaludtoolsPatientsByName(
+            pendingAppointment.patientName,
+        );
+    } catch (error) {
+        console.error("❌ Error buscando paciente por nombre:", error);
+    }
+
+    if (candidates.length === 1) {
+        return createQuickAppointmentForCandidate({
+            pendingAppointment,
+            candidate: candidates[0],
+        });
+    }
+
+    if (candidates.length > 1) {
+        const lines = candidates
+            .map(
+                (c, idx) =>
+                    `${idx + 1}️⃣ ${c.full_name} — ${docTypeLabel(c.document_type)} ${c.document_number}`,
+            )
+            .join("\n");
+
+        return {
+            response:
+                `😊 Encontré varios pacientes llamados "${pendingAppointment.patientName}":\n\n` +
+                `${lines}\n\n` +
+                "Responde con el número de la lista, o escribe directamente el documento si ya lo tienes a la mano.\n\n" +
+                "0️⃣ Cancelar",
+            nextState: "DASHBOARD",
+            data: {
+                ...data,
+                step: "QUICK_SELECT_PATIENT",
+                pendingAppointment,
+                patientCandidates: candidates,
+            },
+        };
+    }
+
+    return {
+        response:
+            `😊 No encontré ningún paciente registrado con el nombre "${pendingAppointment.patientName}".\n\n` +
+            "Envíame su número de documento para crear la cita (ej: 12345678). " +
+            "Si no es cédula, escribe el tipo adelante: \"ce 12345678\" o \"ti 12345678\".\n\n" +
+            "0️⃣ Cancelar",
+        nextState: "DASHBOARD",
+        data: {
+            ...data,
+            step: "QUICK_ASK_DOCUMENT",
+            pendingAppointment,
+        },
     };
 }
 
@@ -728,6 +887,9 @@ export default async function dashboardState(msg, data = {}, context) {
                         "3. hora: HH:MM\n" +
                         "4. tipo documento: cc, ce o ti\n" +
                         "5. número de documento\n\n" +
+                        "🤖 O si no tienes el documento a la mano, también puedes escribirlo natural, dando el nombre del paciente:\n" +
+                        "_\"cita para fabian mañana a las 8am\"_\n" +
+                        "Busco al paciente por nombre y te confirmo o te pregunto el documento si no lo encuentro.\n\n" +
                         "Cuando termines, escribe *fin* o *0*.",
                     nextState: "DASHBOARD",
                     data,
@@ -784,8 +946,15 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
-            const { valid, invalid, usedAI } =
+            const { valid, invalid, usedAI, pendingNameLookup } =
                 await parseQuickAppointmentsMessageWithAI(msg);
+
+            if (pendingNameLookup) {
+                return resolveQuickAppointmentPatientName({
+                    pendingAppointment: pendingNameLookup,
+                    data,
+                });
+            }
 
             if (!valid.length) {
                 let response =
@@ -900,6 +1069,90 @@ export default async function dashboardState(msg, data = {}, context) {
                     step: "QUICK_BULK_MESSAGE",
                 },
             };
+        }
+
+        // Se llega aquí cuando se buscó al paciente por nombre y hubo más de
+        // un resultado (ej: dos pacientes llamados "Fabian").
+        case "QUICK_SELECT_PATIENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const candidates = Array.isArray(data.patientCandidates)
+                ? data.patientCandidates
+                : [];
+            const selectedIndex = Number(msg);
+
+            if (
+                Number.isInteger(selectedIndex) &&
+                selectedIndex >= 1 &&
+                selectedIndex <= candidates.length
+            ) {
+                return createQuickAppointmentForCandidate({
+                    pendingAppointment: data.pendingAppointment,
+                    candidate: candidates[selectedIndex - 1],
+                });
+            }
+
+            // También se acepta que directamente mande el documento si ya lo
+            // encontró por su cuenta, en vez de elegir de la lista.
+            const { documentType, documentNumber } = parseQuickDocumentReply(msg);
+            if (documentNumber) {
+                return createQuickAppointmentForCandidate({
+                    pendingAppointment: data.pendingAppointment,
+                    candidate: {
+                        full_name: data.pendingAppointment?.patientName || "Paciente",
+                        document_type: documentType,
+                        document_number: documentNumber,
+                    },
+                });
+            }
+
+            return {
+                response:
+                    "😊 No entendí tu respuesta.\n\n" +
+                    "Responde con el número de la lista, escribe el documento directamente, o 0 para cancelar.",
+                nextState: "DASHBOARD",
+                data,
+            };
+        }
+
+        // Se llega aquí cuando NO se encontró ningún paciente con ese nombre
+        // y se le pide el documento a la secretaria para crear la cita.
+        case "QUICK_ASK_DOCUMENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const { documentType, documentNumber } = parseQuickDocumentReply(msg);
+
+            if (!documentNumber) {
+                return {
+                    response:
+                        "😊 No reconocí ese documento.\n\n" +
+                        "Escribe solo el número (mínimo 5 dígitos), o con el tipo adelante: \"ce 12345678\".\n\n" +
+                        "0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            return createQuickAppointmentForCandidate({
+                pendingAppointment: data.pendingAppointment,
+                candidate: {
+                    full_name: data.pendingAppointment?.patientName || "Paciente",
+                    document_type: documentType,
+                    document_number: documentNumber,
+                },
+            });
         }
 
         case "INBOX": {

@@ -270,11 +270,15 @@ export async function parseDashboardAppointmentsAI(message) {
                 {
                     role: "system",
                     content:
-                        "Eres un extractor JSON para citas médicas enviadas por una secretaria. " +
+                        "Eres un extractor JSON para citas médicas enviadas por una secretaria, en lenguaje natural o abreviado. " +
                         "Devuelve únicamente JSON válido, sin markdown. " +
                         "Extrae una o varias citas del texto. No inventes datos. " +
-                        "Formato de salida: {\"appointments\":[{\"modality\":\"PRESENCIAL|LLAMADA\",\"dateLabel\":\"DD/MM\",\"timeLabel\":\"HH:MM\",\"rawDocType\":\"cc|ce|ti\",\"patientDocumentType\":1|2|3,\"patientDocumentNumber\":\"...\"}],\"errors\":[\"...\"]}. " +
-                        "Mapeo documentos: cc=1, ce=2, ti=3. Si falta un dato requerido, no incluyas esa cita y agrega error breve.",
+                        "Convierte fechas relativas ('hoy', 'mañana', 'el viernes') a DD/MM usando la fecha de hoy que te dan, y horas en cualquier formato ('8am', '8 de la mañana', '2pm') a HH:MM de 24 horas. " +
+                        "Si no se especifica modalidad, usa PRESENCIAL. " +
+                        "Formato de salida: {\"appointments\":[{\"modality\":\"PRESENCIAL|LLAMADA\",\"dateLabel\":\"DD/MM\",\"timeLabel\":\"HH:MM\",\"patientName\":\"...\"|null,\"rawDocType\":\"cc|ce|ti\"|null,\"patientDocumentType\":1|2|3|null,\"patientDocumentNumber\":\"...\"|null}],\"errors\":[\"...\"]}. " +
+                        "Mapeo documentos: cc=1, ce=2, ti=3. " +
+                        "Si el mensaje identifica al paciente por NOMBRE en vez de documento (ej: 'cita para fabian mañana a las 8am'), incluye patientName con ese nombre y deja los 3 campos de documento en null — no inventes un documento. " +
+                        "Si falta fecha, hora, o si no hay ni nombre ni documento del paciente, no incluyas esa cita y agrega un error breve.",
                 },
                 {
                     role: "user",
