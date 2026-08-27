@@ -108,9 +108,22 @@ export default async function chatbotResponse(message, session, context = {}) {
         "panel de secretaria",
     ].includes(msg);
 
-    if (isSecretary && (session.isNew || dashboardIntent)) {
+    if (isSecretary) {
+        // Un número autorizado como secretaría nunca debe caer en el flujo de
+        // pacientes. Si ya está dentro del dashboard conservamos el paso actual;
+        // si viene de una sesión vieja (MENU, AGENDAR, etc.) lo redirigimos al
+        // dashboard automáticamente. Escribir "dashboard"/"panel" reinicia el
+        // panel en su menú principal.
+        const alreadyInDashboard = session.state === "DASHBOARD";
+
         state = "DASHBOARD";
-        data = { step: "MENU" };
+        data =
+            alreadyInDashboard && !dashboardIntent && !session.isNew
+                ? {
+                      ...(session.memory || {}),
+                      ...(session.data || {}),
+                  }
+                : { step: "MENU" };
     } else {
         state = session.state || "MENU";
         // La memoria se combina con los datos del flujo, pero los datos del
@@ -125,6 +138,8 @@ export default async function chatbotResponse(message, session, context = {}) {
     console.log(
         "📱 Usuario:",
         userPhone,
+        "| Secretaría:",
+        isSecretary ? "sí" : "no",
         "| Estado:",
         state,
         "| Mensaje:",

@@ -22,9 +22,18 @@ export const EPS_CONVENIO = {
 // si Saludtools NO tiene EPS “Particular”, entonces usamos 0
 export const EPS_PARTICULAR_ID = 0;
 
-// Números autorizados como secretaría (solo dígitos, sin "+" ni "whatsapp:").
-// Se puede sobreescribir con SECRETARY_PHONES="numero1,numero2" en variables de entorno.
-export const SECRETARY_PHONES = (process.env.SECRETARY_PHONES || "573153573132")
+// Números autorizados como secretaría.
+// Acepta en el .env cualquiera de estos formatos:
+//   SECRETARY_PHONES=+573153573131
+//   SECRETARY_PHONES=573153573131
+//   SECRETARY_PHONES=whatsapp:+573153573131
+// También admite varios números separados por coma. Internamente todos se
+// normalizan a solo dígitos para compararlos con el `From` recibido de Twilio.
+function normalizeSecretaryPhone(phone = "") {
+  return String(phone).replace(/\D/g, "");
+}
+
+export const SECRETARY_PHONES = (process.env.SECRETARY_PHONES || "573153573131")
   .split(",")
-  .map((phone) => phone.trim())
+  .map(normalizeSecretaryPhone)
   .filter(Boolean);
