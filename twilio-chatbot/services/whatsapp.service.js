@@ -71,7 +71,7 @@ const FROM_WHATSAPP = normalizeWhatsAppAddress(
 
 const SECRETARY_WHATSAPP = normalizeWhatsAppAddress(
     process.env.SECRETARY_WHATSAPP_NUMBER,
-    "+573224811541",
+    "+573224811542",
 );
 
 export async function sendWhatsAppMessage(phone, body) {

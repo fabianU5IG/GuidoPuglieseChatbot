@@ -834,7 +834,7 @@ async function cancelSelectedCase({ from, data }) {
         console.error("❌ Error cancelando en DB:", err);
     }
 
-    let workerMsg = "Worker: omitido";
+    let workerMsg = "Listo, quedó todo registrado por acá.";
     try {
         if (!data?.skipSaludtools && saludId) {
             await createSaludtoolsJob({
@@ -852,7 +852,7 @@ async function cancelSelectedCase({ from, data }) {
                 priority: 90,
             });
 
-            workerMsg = "Worker: solicitud de cancelación encolada ✅";
+            workerMsg = "En unos momentos también quedará al día en Saludtools. ✅";
 
             if (apptId) {
                 await logAppointmentMessage(
@@ -861,12 +861,14 @@ async function cancelSelectedCase({ from, data }) {
                 );
             }
         } else if (!saludId) {
-            workerMsg = "Worker: omitido (sin ID de Saludtools)";
+            workerMsg =
+                "No encontramos un ID de Saludtools asociado a esta cita, así que solo quedó cancelada en nuestro sistema.";
         } else if (data?.skipSaludtools) {
-            workerMsg = "Worker: omitido (decisión de secretaría)";
+            workerMsg = "Se dejó sin sincronizar con Saludtools, tal como lo indicaste.";
         }
     } catch (err) {
-        workerMsg = "Worker: error encolando ⚠️";
+        workerMsg =
+            "⚠️ Quedó cancelada por acá, pero no logramos avisarle a Saludtools todavía. Lo vamos a reintentar automáticamente.";
         if (apptId) {
             await logAppointmentMessage(
                 apptId,
@@ -879,9 +881,9 @@ async function cancelSelectedCase({ from, data }) {
 
     return {
         response:
-            "❌ Cita marcada como *CANCELADA*\n\n" +
+            "❌ Cita marcada como *CANCELADA*.\n\n" +
             `${workerMsg}\n\n` +
-            `${apptId ? "" : "Nota: no se encontró cita local enlazada; solo se aseguró la sincronización con Saludtools.\n\n"}` +
+            `${apptId ? "" : "No la encontramos en nuestra base local, pero la cancelación en Saludtools quedó asegurada.\n\n"}` +
             "1️⃣ Terminar\n" +
             "2️⃣ Volver al dashboard",
         nextState: "DASHBOARD",
@@ -1860,7 +1862,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 console.error("❌ Error reagendando en DB:", err);
             }
 
-            let workerMsg = "Worker: omitido";
+            let workerMsg = "Listo, quedó todo registrado por acá.";
             try {
                 if (!data?.skipSaludtools && saludId) {
                     const ymd = ddmmToYmd(data.newDate);
@@ -1917,7 +1919,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     });
 
                     workerMsg =
-                        "Worker: solicitud de reagendamiento encolada ✅";
+                        "En unos momentos también quedará al día en Saludtools. ✅";
 
                     if (apptId) {
                         await logAppointmentMessage(
@@ -1926,12 +1928,14 @@ export default async function dashboardState(msg, data = {}, context) {
                         );
                     }
                 } else if (!saludId) {
-                    workerMsg = "Worker: omitido (sin ID de Saludtools)";
+                    workerMsg =
+                        "No encontramos un ID de Saludtools asociado a esta cita, así que solo quedó reagendada en nuestro sistema.";
                 } else if (data?.skipSaludtools) {
-                    workerMsg = "Worker: omitido (decisión de secretaría)";
+                    workerMsg = "Se dejó sin sincronizar con Saludtools, tal como lo indicaste.";
                 }
             } catch (err) {
-                workerMsg = "Worker: error encolando ⚠️";
+                workerMsg =
+                    "⚠️ Quedó reagendada por acá, pero no logramos avisarle a Saludtools todavía. Lo vamos a reintentar automáticamente.";
                 if (apptId) {
                     await logAppointmentMessage(
                         apptId,
@@ -1944,10 +1948,10 @@ export default async function dashboardState(msg, data = {}, context) {
 
             return {
                 response:
-                    "🔄 Cita marcada como *REAGENDADA*\n\n" +
-                    `Nueva fecha/hora: ${data.newDate} ${data.newTime}\n\n` +
+                    "🔄 Cita marcada como *REAGENDADA*.\n\n" +
+                    `Nueva fecha y hora: ${data.newDate} ${data.newTime}\n\n` +
                     `${workerMsg}\n\n` +
-                    `${apptId ? "" : "Nota: no se encontró cita local enlazada; se priorizó la actualización en Saludtools.\n\n"}` +
+                    `${apptId ? "" : "No la encontramos en nuestra base local, pero se priorizó la actualización en Saludtools.\n\n"}` +
                     "1️⃣ Terminar\n" +
                     "2️⃣ Volver al dashboard",
                 nextState: "DASHBOARD",

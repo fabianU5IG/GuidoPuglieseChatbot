@@ -1,6 +1,8 @@
-import test from "node:test";
+import "dotenv/config";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { db } from "../db/mysql.js";
 
 process.env.TWILIO_ACCOUNT_SID ||= "AC00000000000000000000000000000000";
 process.env.TWILIO_AUTH_TOKEN ||= "test_auth_token";
@@ -12,6 +14,14 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ||= "test_service_role_key";
 const { default: menuState } = await import("../states/menu.state.js");
 const { default: agendarState } = await import("../states/agendar.state.js");
 const { default: dashboardState } = await import("../states/dashboard.state.js");
+
+// El test de "citas rápidas" guarda de verdad en MySQL (necesita las
+// credenciales reales de .env), y el pool de mysql2 deja una conexión
+// abierta que nunca deja terminar el proceso de `node --test` por su cuenta.
+// Sin este cierre, `npm test` se queda colgado para siempre.
+after(async () => {
+    await db.end();
+});
 
 test("el botón postoperatorio del menú entra al flujo correcto", async () => {
     for (const payload of [
@@ -57,7 +67,7 @@ test("las citas rápidas se guardan localmente y no se encolan a SaludTools", as
     const result = await dashboardState(
         "presencial 15/09 08:30 cc 123456789",
         { step: "QUICK_BULK_MESSAGE" },
-        { from: "+573153573132" },
+        { from: "+573153573131" },
     );
 
     assert.equal(result.nextState, "DASHBOARD");
