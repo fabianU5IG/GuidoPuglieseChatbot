@@ -1,4 +1,3 @@
-import timeUtils from "../utils/time.js";
 import { db } from "../db/mysql.js";
 import {
     getPendingCases,
@@ -19,9 +18,10 @@ import {
     summarizeSecretaryCasesAI,
     extractDoctorUnavailabilityAI,
 } from "../services/azure.ai.services.js";
-import { addDoctorUnavailability } from "../services/doctor-schedule.service.js";
-
-const { getTimeSlots } = timeUtils;
+import {
+    addDoctorUnavailability,
+    getScheduleBlocksForYmd,
+} from "../services/doctor-schedule.service.js";
 
 /**
  * =========================
@@ -60,8 +60,9 @@ const DASHBOARD_MENU_TEXT =
     "1️⃣ Crear cita rápida\n" +
     "2️⃣ Ver casos pendientes\n" +
     "3️⃣ Resumen IA de pendientes\n" +
-    "4️⃣ Cancelar cita\n\n" +
-    "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" para bloquear un día.\n\n" +
+    "4️⃣ Cancelar cita\n" +
+    "5️⃣ Reagendar cita\n\n" +
+    "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario.\n\n" +
     "0️⃣ Salir";
 
 function returnToMainMenu() {
@@ -1034,6 +1035,127 @@ async function startCancelFlowForPatientName({ patientName, data }) {
     };
 }
 
+// Mismo patrón de búsqueda que "Cancelar cita" (nombre/documento contra
+// Saludtools real), pero en vez de terminar cancelando, entrega la cita
+// elegida al flujo de reagendamiento (ASK_DATE/ASK_TIME/CONFIRM_RESCHEDULE)
+// que ya existía para reagendar desde "Ver casos pendientes".
+function buildRescheduleAppointmentPrompt(appointments) {
+    const lines = appointments
+        .map(
+            (item, idx) =>
+                `${idx + 1}️⃣ ${String(item.startAppointment).replace("T", " ")}` +
+                `${item.appointmentType ? ` — ${item.appointmentType}` : ""}`,
+        )
+        .join("\n");
+
+    return (
+        "Estas son sus próximas citas:\n\n" +
+        `${lines}\n\n` +
+        "Responde con el número de la que quieres reagendar.\n\n" +
+        "0️⃣ Cancelar"
+    );
+}
+
+async function startRescheduleFlowForDocument({
+    documentType,
+    documentNumber,
+    patientName = null,
+    data,
+}) {
+    let appointments = [];
+    try {
+        appointments = await findUpcomingAppointmentsForPatient({
+            documentType,
+            documentNumber,
+        });
+    } catch (error) {
+        console.error("❌ Error buscando citas del paciente:", error);
+        return {
+            response:
+                "⚠️ No fue posible consultar las citas de este paciente en este momento. Intenta de nuevo en unos minutos.\n\n" +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    if (!appointments.length) {
+        return {
+            response:
+                `😊 No encontré citas próximas para el documento ${documentNumber}.\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    return {
+        response: buildRescheduleAppointmentPrompt(appointments),
+        nextState: "DASHBOARD",
+        data: {
+            ...data,
+            step: "RESCHEDULE_SELECT_APPOINTMENT",
+            rescheduleDocumentType: documentType,
+            rescheduleDocumentNumber: documentNumber,
+            reschedulePatientName: patientName,
+            rescheduleAppointments: appointments,
+        },
+    };
+}
+
+async function startRescheduleFlowForPatientName({ patientName, data }) {
+    let candidates = [];
+    try {
+        candidates = await findSaludtoolsPatientsByName(patientName);
+    } catch (error) {
+        console.error("❌ Error buscando paciente por nombre:", error);
+    }
+
+    if (candidates.length === 1) {
+        return startRescheduleFlowForDocument({
+            documentType: Number(candidates[0].document_type),
+            documentNumber: String(candidates[0].document_number),
+            patientName: candidates[0].full_name,
+            data,
+        });
+    }
+
+    if (candidates.length > 1) {
+        const lines = candidates
+            .map(
+                (c, idx) =>
+                    `${idx + 1}️⃣ ${c.full_name} — ${docTypeLabel(c.document_type)} ${c.document_number}`,
+            )
+            .join("\n");
+
+        return {
+            response:
+                `😊 Encontré varios pacientes llamados "${patientName}":\n\n` +
+                `${lines}\n\n` +
+                "Responde con el número de la lista, o escribe directamente el documento.\n\n" +
+                "0️⃣ Cancelar",
+            nextState: "DASHBOARD",
+            data: {
+                ...data,
+                step: "RESCHEDULE_SELECT_PATIENT",
+                reschedulePatientCandidates: candidates,
+            },
+        };
+    }
+
+    return {
+        response:
+            `😊 No encontré ningún paciente registrado con el nombre "${patientName}".\n\n` +
+            "Escríbeme su número de documento.\n\n" +
+            "0️⃣ Cancelar",
+        nextState: "DASHBOARD",
+        data: {
+            ...data,
+            step: "RESCHEDULE_ASK_PATIENT",
+        },
+    };
+}
+
 export default async function dashboardState(msg, data = {}, context) {
     const from = (context?.from || "").replace(/\D/g, "");
 
@@ -1118,6 +1240,18 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
+            if (msg === "5") {
+                data.step = "RESCHEDULE_ASK_PATIENT";
+                return {
+                    response:
+                        "🔄 *Reagendar cita*\n\n" +
+                        "¿A nombre de quién está la cita? Escribe el nombre del paciente o su número de documento.\n\n" +
+                        "0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
             // Antes, bloquear un día del doctor requería que alguien tocara
             // la base de datos a mano. Ahora la secretaria puede avisarlo en
             // lenguaje natural (ej: "el jueves el doctor no está
@@ -1142,6 +1276,8 @@ export default async function dashboardState(msg, data = {}, context) {
                     await addDoctorUnavailability({
                         startDate: unavailability.startDate,
                         endDate: unavailability.endDate,
+                        startTime: unavailability.startTime,
+                        endTime: unavailability.endTime,
                         reason: unavailability.reason,
                         createdBy: context.from,
                     });
@@ -1154,12 +1290,16 @@ export default async function dashboardState(msg, data = {}, context) {
                         unavailability.startDate === unavailability.endDate
                             ? formatBlockDate(unavailability.startDate)
                             : `${formatBlockDate(unavailability.startDate)} al ${formatBlockDate(unavailability.endDate)}`;
+                    const hourLabel =
+                        unavailability.startTime && unavailability.endTime
+                            ? ` de ${unavailability.startTime} a ${unavailability.endTime}`
+                            : " (todo el día)";
 
                     return {
                         response:
-                            `✅ Listo, bloqueé al doctor para el ${rangeLabel}` +
+                            `✅ Listo, bloqueé al doctor para el ${rangeLabel}${hourLabel}` +
                             `${unavailability.reason ? ` (${unavailability.reason})` : ""}.\n\n` +
-                            "El bot ya no va a ofrecer horarios de agenda esos días.\n\n" +
+                            "El bot ya no va a ofrecer esos horarios en la agenda.\n\n" +
                             DASHBOARD_MENU_TEXT,
                         nextState: "DASHBOARD",
                         data: { step: "MENU" },
@@ -1541,6 +1681,128 @@ export default async function dashboardState(msg, data = {}, context) {
                     },
                 },
             });
+        }
+
+        case "RESCHEDULE_ASK_PATIENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const directDoc = parseQuickDocumentReply(msg);
+            if (directDoc.documentNumber) {
+                return startRescheduleFlowForDocument({
+                    documentType: directDoc.documentType,
+                    documentNumber: directDoc.documentNumber,
+                    data,
+                });
+            }
+
+            const patientName = String(msg || "").trim();
+            if (patientName.length < 2) {
+                return {
+                    response:
+                        "😊 Escribe el nombre del paciente o su número de documento.\n\n0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            return startRescheduleFlowForPatientName({ patientName, data });
+        }
+
+        case "RESCHEDULE_SELECT_PATIENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const candidates = Array.isArray(data.reschedulePatientCandidates)
+                ? data.reschedulePatientCandidates
+                : [];
+            const selectedIndex = Number(msg);
+
+            if (
+                Number.isInteger(selectedIndex) &&
+                selectedIndex >= 1 &&
+                selectedIndex <= candidates.length
+            ) {
+                const candidate = candidates[selectedIndex - 1];
+                return startRescheduleFlowForDocument({
+                    documentType: Number(candidate.document_type),
+                    documentNumber: String(candidate.document_number),
+                    patientName: candidate.full_name,
+                    data,
+                });
+            }
+
+            const directDoc = parseQuickDocumentReply(msg);
+            if (directDoc.documentNumber) {
+                return startRescheduleFlowForDocument({
+                    documentType: directDoc.documentType,
+                    documentNumber: directDoc.documentNumber,
+                    data,
+                });
+            }
+
+            return {
+                response:
+                    "😊 No entendí tu respuesta. Responde con el número de la lista, el documento directamente, o 0 para cancelar.",
+                nextState: "DASHBOARD",
+                data,
+            };
+        }
+
+        case "RESCHEDULE_SELECT_APPOINTMENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const appointments = Array.isArray(data.rescheduleAppointments)
+                ? data.rescheduleAppointments
+                : [];
+            const index = Number(msg) - 1;
+
+            if (!Number.isInteger(index) || !appointments[index]) {
+                return {
+                    response:
+                        buildRescheduleAppointmentPrompt(appointments) +
+                        "\n\n❌ No reconocí esa opción, intenta de nuevo.",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            const chosenAppt = appointments[index];
+
+            return {
+                response:
+                    `🔄 Vamos a reagendar la cita del ${String(chosenAppt.startAppointment).replace("T", " ")}.\n\n` +
+                    "Ingresa la nueva fecha (DD/MM):",
+                nextState: "DASHBOARD",
+                data: {
+                    ...data,
+                    step: "ASK_DATE",
+                    pendingAction: "RESCHEDULE",
+                    skipSaludtools: false,
+                    selectedCase: {
+                        saludtools_appointment_id: chosenAppt.id,
+                        patient_document_type: data.rescheduleDocumentType,
+                        patient_document_number: data.rescheduleDocumentNumber,
+                        fullName: data.reschedulePatientName || null,
+                    },
+                },
+            };
         }
 
         case "INBOX": {
@@ -2068,8 +2330,21 @@ async function getBookedTimesForYmd(ymd) {
         [ymd],
     );
 
+    // Cuando Saludtools ya tiene un registro para una hora exacta, su estado
+    // manda sobre la tabla local vieja `appointments` para esa misma hora
+    // (esa tabla no se actualiza cuando una cita se cancela directamente en
+    // Saludtools y puede quedar diciendo CONFIRMED para siempre). Mismo fix
+    // ya aplicado en agendar.state.js para que agendar y reagendar vean la
+    // misma disponibilidad.
+    const saludtoolsTimesKnown = new Set(
+        (saludtoolsRows || []).map((row) => String(row.start_time || "").slice(0, 5)),
+    );
+    const filteredLocalRows = (localRows || []).filter(
+        (row) => !saludtoolsTimesKnown.has(String(row.start_time || "").slice(0, 5)),
+    );
+
     const booked = new Set();
-    for (const row of [...(saludtoolsRows || []), ...(localRows || [])]) {
+    for (const row of [...(saludtoolsRows || []), ...filteredLocalRows]) {
         const status = String(row.status || "").toUpperCase();
         if (["CANCELLED", "CANCELED", "CANCELADO", "NO_SHOW", "FAILED"].includes(status)) {
             continue;
@@ -2080,12 +2355,50 @@ async function getBookedTimesForYmd(ymd) {
     return booked;
 }
 
+function pad2(n) {
+    return String(n).padStart(2, "0");
+}
+
+function buildSlots(startHm, endHm, slotMin) {
+    const [sh, sm] = startHm.split(":").map(Number);
+    const [eh, em] = endHm.split(":").map(Number);
+    const startTotal = sh * 60 + sm;
+    const endTotal = eh * 60 + em;
+    const lastStart = endTotal - slotMin;
+    const slots = [];
+
+    for (let t = startTotal; t <= lastStart; t += slotMin) {
+        slots.push(`${pad2(Math.floor(t / 60))}:${pad2(t % 60)}`);
+    }
+    return slots;
+}
+
 async function buildTimeResponseForDashboard(data) {
     const ymd = ddmmToYmd(data.newDate);
+
+    // Antes esto generaba horas genéricas (getTimeSlots) sin conocer el
+    // horario real del doctor (con almuerzo, viernes solo mañana) ni los
+    // bloqueos manuales de la secretaria: la secretaría podía terminar
+    // reagendando a una hora que el propio bot le dice al paciente que no
+    // existe. Ahora usa el mismo horario centralizado que agendar/soporteCita.
+    const blocks = await getScheduleBlocksForYmd(ymd);
+    if (!blocks.length) {
+        data.availableSlots = [];
+        return {
+            response:
+                `😊 El Dr. no tiene atención el día ${data.newDate}.\n\n` +
+                "Ingresa otra fecha (DD/MM), o 0️⃣ para volver al listado.",
+            nextState: "DASHBOARD",
+            data,
+        };
+    }
+
     const booked = await getBookedTimesForYmd(ymd);
 
     const pageSize = 6;
-    const availableSlots = getTimeSlots(0, 1000).filter((hm) => !booked.has(hm));
+    const availableSlots = blocks
+        .flatMap((block) => buildSlots(block.start, block.end, APPOINTMENT_DURATION_MIN))
+        .filter((hm) => !booked.has(hm));
     const pageStart = (data.page || 0) * pageSize;
     const slots = availableSlots.slice(pageStart, pageStart + pageSize);
 

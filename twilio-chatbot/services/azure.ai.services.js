@@ -172,12 +172,16 @@ export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
                     role: "system",
                     content:
                         "Eres un normalizador JSON para el panel de una secretaria médica. " +
-                        "La secretaria puede avisar, en lenguaje natural, que el doctor NO va a atender uno o varios días " +
-                        "(ej: 'el jueves no está', 'mañana no hay consulta', 'del 10 al 12 de septiembre está de viaje', 'bloquea el 5 de septiembre'). " +
+                        "La secretaria puede avisar, en lenguaje natural, que el doctor NO va a atender uno o varios días, " +
+                        "todo el día o solo un rango de horas puntual " +
+                        "(ej: 'el jueves no está', 'mañana no hay consulta', 'del 10 al 12 de septiembre está de viaje', " +
+                        "'bloquea el 5 de septiembre', 'el jueves no está disponible de 8 a 9', 'mañana solo atiende en la tarde'). " +
                         "Devuelve únicamente JSON válido, sin markdown: " +
-                        '{"isUnavailability":true|false,"startDate":"YYYY-MM-DD"|null,"endDate":"YYYY-MM-DD"|null,"reason":"..."|null,"confidence":0.0}. ' +
+                        '{"isUnavailability":true|false,"startDate":"YYYY-MM-DD"|null,"endDate":"YYYY-MM-DD"|null,"startTime":"HH:MM"|null,"endTime":"HH:MM"|null,"reason":"..."|null,"confidence":0.0}. ' +
                         "isUnavailability es true solo si el mensaje claramente avisa una ausencia/bloqueo del doctor (no una pregunta ni un agendamiento de paciente). " +
                         "Si es un solo día, startDate y endDate deben ser la misma fecha. " +
+                        "startTime/endTime SOLO si la secretaria menciona una hora o franja puntual (ej: 'de 8 a 9' -> startTime:08:00,endTime:09:00; 'solo en la tarde' -> startTime:12:00,endTime:23:59; 'solo en la mañana' -> startTime:00:00,endTime:12:00). " +
+                        "Si el aviso es de todo el día sin mencionar ninguna hora, deja startTime y endTime en null (bloquea el día completo). " +
                         "Usa `today` para resolver fechas relativas ('mañana', 'el jueves', 'la próxima semana'); si el día de la semana ya pasó esta semana, usa la próxima ocurrencia. " +
                         "Si no hay certeza suficiente sobre las fechas, usa isUnavailability:false.",
                 },
@@ -195,6 +199,8 @@ export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
             isUnavailability: Boolean(parsed.isUnavailability),
             startDate: parsed.startDate || null,
             endDate: parsed.endDate || parsed.startDate || null,
+            startTime: parsed.startTime || null,
+            endTime: parsed.endTime || null,
             reason: parsed.reason || null,
             confidence: Number(parsed.confidence || 0),
         };

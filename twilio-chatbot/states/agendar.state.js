@@ -2407,10 +2407,38 @@ export default async function agendarState(msg, data, context = {}) {
             if (String(msg || "").startsWith("RECOMENDAR:")) {
                 const preferenceMessage = String(msg).slice("RECOMENDAR:".length);
 
-                // Ya se conoce la fecha exacta (se llegó aquí después de
-                // elegirla). Si el paciente pide "en la mañana"/"en la
-                // tarde", se le muestran TODAS las horas reales de esa
-                // franja para ese día, no solo 3 curadas por IA.
+                // Ya se conoce una fecha (se llegó aquí después de elegirla),
+                // pero el paciente puede estar pidiendo una fecha DISTINTA en
+                // el mismo mensaje (ej: "el 1 de septiembre por la mañana
+                // entonces" después de que el 5 no tuvo cupo). Antes esto se
+                // ignoraba por completo y se seguía mostrando la fecha vieja.
+                const explicitWindow = getSchedulingDateWindow(preferenceMessage);
+                const isExplicitSingleDate =
+                    explicitWindow.end &&
+                    explicitWindow.start.getTime() === explicitWindow.end.getTime();
+
+                if (isExplicitSingleDate) {
+                    const ymd = dateToYmd(explicitWindow.start);
+                    data.date = ymdToDateLabel(ymd);
+                    data.ymd = ymd;
+
+                    try {
+                        const booked = await getBookedHmFromDb({
+                            ymd,
+                            doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                        });
+                        data.bookedHm = Array.isArray(booked) ? booked : [];
+                    } catch (e) {
+                        data.bookedHm = [];
+                        if (SALUDTOOLS_DEBUG) {
+                            console.error("DB booked slots error:", e);
+                        }
+                    }
+                }
+
+                // Si el paciente pide "en la mañana"/"en la tarde", se le
+                // muestran TODAS las horas reales de esa franja para ese
+                // día, no solo 3 curadas por IA.
                 const dayPart = detectDayPartPreference(preferenceMessage);
                 if (dayPart !== "ANY") {
                     data.page = 0;

@@ -171,6 +171,8 @@ CREATE TABLE IF NOT EXISTS doctor_unavailability (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
+  start_time TIME NULL,
+  end_time TIME NULL,
   reason VARCHAR(255) NULL,
   created_by VARCHAR(32) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

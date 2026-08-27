@@ -39,18 +39,56 @@ const WEEKLY_SCHEDULE = {
     5: [{ start: "08:30", end: "12:00" }],
 };
 
-export async function isDoctorManuallyBlockedOnYmd(ymd) {
+function timeToMinutes(hm) {
+    const [h, m] = String(hm).slice(0, 5).split(":").map(Number);
+    return h * 60 + m;
+}
+
+function minutesToTime(mins) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+// Recorta un bloque de atención según un rango bloqueado, partiéndolo en dos
+// si el bloqueo cae en medio (ej: bloque 08:00-17:00 menos 12:00-13:00 da
+// [08:00-12:00, 13:00-17:00]).
+function subtractRangeFromBlocks(blocks, blockedStartHm, blockedEndHm) {
+    const blockedStart = timeToMinutes(blockedStartHm);
+    const blockedEnd = timeToMinutes(blockedEndHm);
+    const result = [];
+
+    for (const block of blocks) {
+        const start = timeToMinutes(block.start);
+        const end = timeToMinutes(block.end);
+
+        if (blockedEnd <= start || blockedStart >= end) {
+            result.push(block);
+            continue;
+        }
+
+        if (blockedStart > start) {
+            result.push({ start: block.start, end: minutesToTime(Math.min(blockedStart, end)) });
+        }
+        if (blockedEnd < end) {
+            result.push({ start: minutesToTime(Math.max(blockedEnd, start)), end: block.end });
+        }
+    }
+
+    return result;
+}
+
+async function getDoctorUnavailabilityForYmd(ymd) {
     try {
         const [rows] = await db.query(
             `
-            SELECT id
+            SELECT start_time, end_time
             FROM doctor_unavailability
             WHERE start_date <= ? AND end_date >= ?
-            LIMIT 1
             `,
             [ymd, ymd],
         );
-        return rows.length > 0;
+        return rows;
     } catch (error) {
         // Si la BD falla, se prefiere seguir ofreciendo horarios normales
         // (igual que el resto del bot) en vez de tumbar todo el agendamiento
@@ -60,23 +98,32 @@ export async function isDoctorManuallyBlockedOnYmd(ymd) {
             "❌ No fue posible consultar bloqueos manuales del doctor:",
             error,
         );
-        return false;
+        return [];
     }
 }
 
 /**
  * Devuelve los bloques de atención reales de un día ("YYYY-MM-DD"): un
  * arreglo vacío significa que no hay atención (no le toca ese día de la
- * semana, es festivo, o la secretaria lo bloqueó manualmente).
+ * semana, es festivo, o la secretaria lo bloqueó manualmente todo el día).
+ * Si la secretaria solo bloqueó un rango de horas (ej: "de 8 a 9"), se
+ * recortan únicamente esas horas y el resto del día sigue disponible.
  */
 export async function getScheduleBlocksForYmd(ymd) {
     if (isHoliday(ymd)) return [];
 
     const dow = new Date(`${ymd}T00:00:00`).getDay();
-    const blocks = WEEKLY_SCHEDULE[dow];
+    let blocks = WEEKLY_SCHEDULE[dow];
     if (!blocks) return [];
 
-    if (await isDoctorManuallyBlockedOnYmd(ymd)) return [];
+    const unavailableRanges = await getDoctorUnavailabilityForYmd(ymd);
+
+    for (const range of unavailableRanges) {
+        const isWholeDay = !range.start_time || !range.end_time;
+        if (isWholeDay) return [];
+
+        blocks = subtractRangeFromBlocks(blocks, range.start_time, range.end_time);
+    }
 
     return blocks;
 }
@@ -84,22 +131,25 @@ export async function getScheduleBlocksForYmd(ymd) {
 export async function addDoctorUnavailability({
     startDate,
     endDate = null,
+    startTime = null,
+    endTime = null,
     reason = null,
     createdBy = null,
 }) {
     await db.query(
         `
-        INSERT INTO doctor_unavailability (start_date, end_date, reason, created_by)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO doctor_unavailability
+            (start_date, end_date, start_time, end_time, reason, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
         `,
-        [startDate, endDate || startDate, reason, createdBy],
+        [startDate, endDate || startDate, startTime, endTime, reason, createdBy],
     );
 }
 
 export async function getUpcomingDoctorUnavailability() {
     const [rows] = await db.query(
         `
-        SELECT id, start_date, end_date, reason, created_by, created_at
+        SELECT id, start_date, end_date, start_time, end_time, reason, created_by, created_at
         FROM doctor_unavailability
         WHERE end_date >= CURDATE()
         ORDER BY start_date ASC
