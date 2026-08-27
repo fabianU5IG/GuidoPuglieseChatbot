@@ -17,7 +17,9 @@ import { SALUDTOOLS, SECRETARY_PHONES } from "../constants.js";
 import {
     parseDashboardAppointmentsAI,
     summarizeSecretaryCasesAI,
+    extractDoctorUnavailabilityAI,
 } from "../services/azure.ai.services.js";
+import { addDoctorUnavailability } from "../services/doctor-schedule.service.js";
 
 const { getTimeSlots } = timeUtils;
 
@@ -59,6 +61,7 @@ const DASHBOARD_MENU_TEXT =
     "2️⃣ Ver casos pendientes\n" +
     "3️⃣ Resumen IA de pendientes\n" +
     "4️⃣ Cancelar cita\n\n" +
+    "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" para bloquear un día.\n\n" +
     "0️⃣ Salir";
 
 function returnToMainMenu() {
@@ -1113,6 +1116,67 @@ export default async function dashboardState(msg, data = {}, context) {
                     nextState: "DASHBOARD",
                     data,
                 };
+            }
+
+            // Antes, bloquear un día del doctor requería que alguien tocara
+            // la base de datos a mano. Ahora la secretaria puede avisarlo en
+            // lenguaje natural (ej: "el jueves el doctor no está
+            // disponible") directamente desde el menú, sin pasos ni botones.
+            const unavailability = await extractDoctorUnavailabilityAI({
+                message: msg,
+                todayYmd: new Date().toISOString().slice(0, 10),
+            });
+
+            if (unavailability?.isUnavailability && unavailability.confidence >= 0.7) {
+                if (!unavailability.startDate) {
+                    return {
+                        response:
+                            "Entendí que el doctor no va a estar disponible, pero no logré identificar la fecha exacta.\n\n" +
+                            "¿Me confirmas el día? Por ejemplo: \"el jueves 4 de septiembre\" o \"del 10 al 12 de septiembre\".",
+                        nextState: "DASHBOARD",
+                        data,
+                    };
+                }
+
+                try {
+                    await addDoctorUnavailability({
+                        startDate: unavailability.startDate,
+                        endDate: unavailability.endDate,
+                        reason: unavailability.reason,
+                        createdBy: context.from,
+                    });
+
+                    const formatBlockDate = (ymd) => {
+                        const [y, m, d] = String(ymd).split("-");
+                        return `${d}/${m}/${y}`;
+                    };
+                    const rangeLabel =
+                        unavailability.startDate === unavailability.endDate
+                            ? formatBlockDate(unavailability.startDate)
+                            : `${formatBlockDate(unavailability.startDate)} al ${formatBlockDate(unavailability.endDate)}`;
+
+                    return {
+                        response:
+                            `✅ Listo, bloqueé al doctor para el ${rangeLabel}` +
+                            `${unavailability.reason ? ` (${unavailability.reason})` : ""}.\n\n` +
+                            "El bot ya no va a ofrecer horarios de agenda esos días.\n\n" +
+                            DASHBOARD_MENU_TEXT,
+                        nextState: "DASHBOARD",
+                        data: { step: "MENU" },
+                    };
+                } catch (error) {
+                    console.error(
+                        "❌ No fue posible registrar el bloqueo del doctor:",
+                        error,
+                    );
+                    return {
+                        response:
+                            "😊 Tuve un problema guardando el bloqueo. Intenta de nuevo en un momento.\n\n" +
+                            DASHBOARD_MENU_TEXT,
+                        nextState: "DASHBOARD",
+                        data: { step: "MENU" },
+                    };
+                }
             }
 
             return {

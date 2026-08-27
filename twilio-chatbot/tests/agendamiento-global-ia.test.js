@@ -169,7 +169,10 @@ test("una preferencia natural activa recomendaciones globales de fecha", async (
     }
 });
 
-test("la IA recomienda horarios dentro de una fecha seleccionada", async () => {
+test("pedir la mañana dentro de una fecha ya seleccionada muestra todas las horas de esa franja", async () => {
+    // Antes esto mostraba solo 3 opciones curadas por IA. Como la fecha ya es
+    // exacta (elegida en el paso anterior), ahora se muestran todas las horas
+    // reales de la mañana para ese día mediante la lista paginada normal.
     const result = await agendarState(
         "recomiéndame en la mañana",
         {
@@ -183,12 +186,12 @@ test("la IA recomienda horarios dentro de una fecha seleccionada", async () => {
     );
 
     assert.equal(result.nextState, "AGENDAR");
-    assert.match(result.response, /Para el 06\/08/i);
-    assert.equal(result.data.aiTimeRecommendationActive, true);
-    assert.ok(result.data.aiTimeRecommendations.length >= 1);
+    assert.equal(result.sendTemplate, true);
+    assert.equal(result.data.dayPartPreference, "MORNING");
+    assert.ok(result.data.visibleSlots.length >= 1);
     assert.ok(
-        result.data.aiTimeRecommendations.every(
-            (option) => Number(option.time.slice(0, 2)) < 12,
+        result.data.visibleSlots.every(
+            (hm) => Number(hm.slice(0, 2)) < 12,
         ),
     );
 });

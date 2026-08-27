@@ -2,6 +2,7 @@ import { db } from "../db/mysql.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS } from "../constants.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
+import { getScheduleBlocksForYmd } from "../services/doctor-schedule.service.js";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
@@ -216,16 +217,6 @@ function pad2(n) {
     return String(n).padStart(2, "0");
 }
 
-function isHoliday(ymd) {
-    const holidays = [
-        "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
-        "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
-        "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12", "2026-11-02",
-        "2026-11-16", "2026-12-08", "2026-12-25",
-    ];
-    return holidays.includes(ymd);
-}
-
 function formatYmdToDdMm(ymd) {
     const [y, m, d] = String(ymd || "").split("-");
     if (!y || !m || !d) return "";
@@ -302,22 +293,15 @@ function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
     return slots;
 }
 
-function getScheduleForYmd(ymd) {
-    if (isHoliday(ymd)) return null;
-
-    const d = new Date(`${ymd}T00:00:00`);
-    const dow = d.getDay();
-
-    if (dow === 1 || dow === 2 || dow === 4) return { start: "08:00", end: "17:30" };
-    if (dow === 5) return { start: "08:30", end: "11:30" };
-    return null;
+function buildSlotsForBlocks(blocks, slotMin = SLOT_MIN) {
+    return blocks.flatMap((block) => buildSlots(block.start, block.end, slotMin));
 }
 
-function getSlotsForDate(ymd, page = 0) {
-    const schedule = getScheduleForYmd(ymd);
-    if (!schedule) return [];
+async function getSlotsForDate(ymd, page = 0) {
+    const blocks = await getScheduleBlocksForYmd(ymd);
+    if (!blocks.length) return [];
 
-    const all = buildSlots(schedule.start, schedule.end, SLOT_MIN);
+    const all = buildSlotsForBlocks(blocks, SLOT_MIN);
     const pageSize = 6;
     return all.slice(Number(page || 0) * pageSize, Number(page || 0) * pageSize + pageSize);
 }
@@ -461,11 +445,11 @@ async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
     return !isCancelledStatus(rows[0].status);
 }
 
-function buildTimeTemplateResponse(data) {
+async function buildTimeTemplateResponse(data) {
     const ymd = data.newDate;
     const page = Number(data.page || 0);
     const label = data.newDateLabel || formatYmdToDdMm(ymd);
-    const slotsAll = getSlotsForDate(ymd, page);
+    const slotsAll = await getSlotsForDate(ymd, page);
 
    if (!slotsAll.length) {
         if (page > 0) data.page = 0;
@@ -495,12 +479,12 @@ function buildTimeTemplateResponse(data) {
 
     return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "SOPORTE_CITA", data, {
         "1": label,
-        "2": slots[0] || "No disponible",
-        "3": slots[1] || "No disponible",
-        "4": slots[2] || "No disponible",
-        "5": slots[3] || "No disponible",
-        "6": slots[4] || "No disponible",
-        "7": slots[5] || "No disponible",
+        "2": slots[0] || "🚫 No disponible",
+        "3": slots[1] || "🚫 No disponible",
+        "4": slots[2] || "🚫 No disponible",
+        "5": slots[3] || "🚫 No disponible",
+        "6": slots[4] || "🚫 No disponible",
+        "7": slots[5] || "🚫 No disponible",
     });
 }
 
@@ -636,8 +620,8 @@ async function prepareNewDate({ text, data }) {
         };
     }
 
-    const schedule = getScheduleForYmd(parsed.ymd);
-    if (!schedule) {
+    const blocks = await getScheduleBlocksForYmd(parsed.ymd);
+    if (!blocks.length) {
         return {
             response:
                 `😊 Para el ${parsed.label} no tenemos horarios de atención disponibles.\n\n` +
@@ -852,7 +836,7 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
 
         const slots = Array.isArray(data.visibleSlots)
             ? data.visibleSlots
-            : getSlotsForDate(data.newDate, data.page || 0);
+            : await getSlotsForDate(data.newDate, data.page || 0);
 
         let index = typeof hourButton === "number" ? hourButton : NaN;
         let selectedHour = "";
@@ -873,11 +857,23 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             });
             if (aiFallback) return aiFallback;
 
+            // La plantilla de horarios siempre tiene 6 casillas fijas; las que
+            // sobran cuando hay menos horas reales se muestran como "🚫 No
+            // disponible", pero siguen siendo tocables. Si el paciente tocó
+            // justo una de esas (se reconoció el botón pero está fuera de
+            // rango), se le explica eso puntualmente en vez del mensaje
+            // genérico de "no pude identificar".
+            const tappedEmptySlot =
+                typeof hourButton === "number" && hourButton >= slots.length;
+
             return {
-                response:
-                   "😊 No pude identificar el horario que seleccionaste.\n\n" +
-                    "Puedes elegir uno de los horarios disponibles o escribir otra fecha en formato DD/MM.\n\n" +
-                    "0️⃣ Volver al menú",
+                response: tappedEmptySlot
+                    ? "Ese horario no está disponible.\n\n" +
+                      "Por favor elige una de las horas que sí aparecen en la lista, o escribe otra fecha en formato DD/MM.\n\n" +
+                      "0️⃣ Volver al menú"
+                    : "😊 No pude identificar el horario que seleccionaste.\n\n" +
+                      "Puedes elegir uno de los horarios disponibles o escribir otra fecha en formato DD/MM.\n\n" +
+                      "0️⃣ Volver al menú",
                 nextState: "SOPORTE_CITA",
                 data,
             };

@@ -156,6 +156,57 @@ export async function normalizeAppointmentInputAI({ message, step, data = {} }) 
     }
 }
 
+/**
+ * Interpreta un aviso de la secretaria en lenguaje natural sobre que el
+ * doctor no va a atender ("el jueves no está", "mañana no hay consulta",
+ * "del 10 al 12 de septiembre el doctor está de viaje") y lo convierte en
+ * un rango de fechas concreto para bloquear en la agenda.
+ */
+export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
+    try {
+        const raw = await chatCompletion({
+            temperature: 0,
+            maxTokens: 200,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un normalizador JSON para el panel de una secretaria médica. " +
+                        "La secretaria puede avisar, en lenguaje natural, que el doctor NO va a atender uno o varios días " +
+                        "(ej: 'el jueves no está', 'mañana no hay consulta', 'del 10 al 12 de septiembre está de viaje', 'bloquea el 5 de septiembre'). " +
+                        "Devuelve únicamente JSON válido, sin markdown: " +
+                        '{"isUnavailability":true|false,"startDate":"YYYY-MM-DD"|null,"endDate":"YYYY-MM-DD"|null,"reason":"..."|null,"confidence":0.0}. ' +
+                        "isUnavailability es true solo si el mensaje claramente avisa una ausencia/bloqueo del doctor (no una pregunta ni un agendamiento de paciente). " +
+                        "Si es un solo día, startDate y endDate deben ser la misma fecha. " +
+                        "Usa `today` para resolver fechas relativas ('mañana', 'el jueves', 'la próxima semana'); si el día de la semana ya pasó esta semana, usa la próxima ocurrencia. " +
+                        "Si no hay certeza suficiente sobre las fechas, usa isUnavailability:false.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({ today: todayYmd, message }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+
+        return {
+            isUnavailability: Boolean(parsed.isUnavailability),
+            startDate: parsed.startDate || null,
+            endDate: parsed.endDate || parsed.startDate || null,
+            reason: parsed.reason || null,
+            confidence: Number(parsed.confidence || 0),
+        };
+    } catch (error) {
+        console.error(
+            "Azure AI extractDoctorUnavailabilityAI Error:",
+            error?.message || error,
+        );
+        return null;
+    }
+}
+
 const FLOW_FALLBACK_INTENTS = [
     "GO_MENU",
     "GO_SCHEDULE",

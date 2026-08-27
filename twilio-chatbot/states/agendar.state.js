@@ -15,6 +15,10 @@ import {
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import { db } from "../db/mysql.js";
+import {
+    isHoliday,
+    getScheduleBlocksForYmd,
+} from "../services/doctor-schedule.service.js";
 
 const DOCTOR_DOCUMENT_TYPE = Number(
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE || 1,
@@ -321,20 +325,6 @@ function splitName(fullName = "") {
     };
 }
 
-/**
- * Festivos Colombia 2026
- */
-function isHoliday(ymd) {
-    const holidays = [
-        // 2026
-        "2026-01-01", "2026-01-12", "2026-03-23", "2026-04-02", "2026-04-03",
-        "2026-05-01", "2026-05-18", "2026-06-08", "2026-06-15", "2026-06-29",
-        "2026-07-20", "2026-08-07", "2026-08-17", "2026-10-12", "2026-11-02",
-        "2026-11-16", "2026-12-08", "2026-12-25"
-    ];
-    return holidays.includes(ymd);
-}
-
 function isValidDateDDMM(value) {
     if (!/^\d{2}\/\d{2}$/.test(value)) return false;
 
@@ -533,21 +523,34 @@ async function getBookedHmFromDb({ ymd, doctorDoc }) {
         [APPOINTMENT_DURATION_MIN, ymd],
     );
 
+    // La tabla local `appointments` (previa a la integración con Saludtools)
+    // no se actualiza cuando una cita se cancela o reagenda directamente en
+    // Saludtools: puede quedar diciendo CONFIRMED para siempre en una hora que
+    // ya está libre. Como no hay una relación directa entre las dos tablas
+    // (solo coinciden por fecha/hora), la regla es: si el espejo de
+    // Saludtools ya tiene un registro para esa hora exacta, su estado manda y
+    // se ignora lo que diga la fila local para esa misma hora; la tabla local
+    // solo se usa para horas que Saludtools todavía no conoce (ej: una cita
+    // recién propuesta por el bot que aún no ha sincronizado).
+    const saludtoolsTimesKnown = new Set(
+        (Array.isArray(saludtoolsRows) ? saludtoolsRows : []).map((row) =>
+            String(row.start_time),
+        ),
+    );
+
     const rows = [
         ...(Array.isArray(saludtoolsRows) ? saludtoolsRows : []),
-        ...(Array.isArray(localRows) ? localRows : []),
+        ...(Array.isArray(localRows) ? localRows : []).filter(
+            (row) => !saludtoolsTimesKnown.has(String(row.start_time)),
+        ),
     ].filter((row) => !isCancelledStatus(row.status));
 
     if (!rows.length) return [];
 
-    const schedule = getScheduleForYmd(ymd);
-    if (!schedule) return [];
+    const blocks = await getScheduleBlocksForYmd(ymd);
+    if (!blocks.length) return [];
 
-    const candidateSlots = buildSlots(
-        schedule.start,
-        schedule.end,
-        SLOT_MIN,
-    );
+    const candidateSlots = buildSlotsForBlocks(blocks, SLOT_MIN);
 
     return candidateSlots.filter((hm) => {
         const candidateStart = hmToMinutes(hm);
@@ -708,6 +711,10 @@ function pad2(n) {
     return String(n).padStart(2, "0");
 }
 
+function dateToYmd(date) {
+    return [date.getFullYear(), pad2(date.getMonth() + 1), pad2(date.getDate())].join("-");
+}
+
 function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
     const [sh, sm] = startHm.split(":").map(Number);
     const [eh, em] = endHm.split(":").map(Number);
@@ -726,27 +733,25 @@ function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
     return slots;
 }
 
-function getScheduleForYmd(ymd) {
-    if (isHoliday(ymd)) return null;
-
-    const d = new Date(`${ymd}T00:00:00`);
-    const dow = d.getDay();
-
-    // Lunes (1), Martes (2), Jueves (4)
-    if (dow === 1 || dow === 2 || dow === 4)
-        return { start: "08:00", end: "17:30" };
-    // Viernes (5)
-    if (dow === 5) return { start: "08:30", end: "11:30" };
-
-    // Miércoles (3), Sábado (6) y Domingo (0) no atiende
-    return null;
+// El horario semanal (con su descanso de mediodía), los festivos y los
+// bloqueos manuales de la secretaria viven en doctor-schedule.service.js
+// (compartido con soporteCita.state.js) para que agendar/reagendar/cancelar
+// nunca vean disponibilidad distinta para el mismo día.
+function buildSlotsForBlocks(blocks, slotMin = SLOT_MIN) {
+    return blocks.flatMap((block) => buildSlots(block.start, block.end, slotMin));
 }
 
-function getSlotsForDate(ymd, page = 0) {
-    const schedule = getScheduleForYmd(ymd);
-    if (!schedule) return [];
+async function getSlotsForDate(ymd, page = 0, dayPart = null) {
+    const blocks = await getScheduleBlocksForYmd(ymd);
+    if (!blocks.length) return [];
 
-    const all = buildSlots(schedule.start, schedule.end, SLOT_MIN);
+    let all = buildSlotsForBlocks(blocks, SLOT_MIN);
+    if (dayPart === "MORNING") {
+        all = all.filter((hm) => Number(hm.slice(0, 2)) < 12);
+    } else if (dayPart === "AFTERNOON") {
+        all = all.filter((hm) => Number(hm.slice(0, 2)) >= 12);
+    }
+
     const pageSize = 6;
     const from = page * pageSize;
     return all.slice(from, from + pageSize);
@@ -850,11 +855,85 @@ function maxDate(a, b) {
     return a > b ? a : b;
 }
 
+const MONTH_NUMBER_BY_NAME = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    setiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+};
+
+// Resuelve un día suelto ("el 31") o día+mes ("31 de agosto") a la próxima
+// fecha real que corresponde, sin importar si ese día ya pasó este mes/año.
+function resolveUpcomingYmdForDay(day, month, notBefore) {
+    if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+
+    let year = notBefore.getFullYear();
+    let m = month || notBefore.getMonth() + 1;
+
+    for (let i = 0; i < 24; i += 1) {
+        const candidate = new Date(year, m - 1, day, 0, 0, 0, 0);
+        // Si el día no existe en ese mes (ej: 31 de febrero), Date lo
+        // desborda al mes siguiente; se detecta comparando el mes resultante.
+        const isRealDate = candidate.getMonth() === m - 1;
+
+        if (isRealDate && candidate >= notBefore) {
+            return candidate;
+        }
+
+        if (month) {
+            // Mes explícito y ya pasó (o no existe): se prueba el año siguiente.
+            year += 1;
+        } else {
+            m += 1;
+            if (m > 12) {
+                m = 1;
+                year += 1;
+            }
+        }
+    }
+
+    return null;
+}
+
 function getSchedulingDateWindow(value) {
     const key = normKey(value);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const minDate = addDays(today, 2);
+
+    // "el 31", "para el 5", "31 de agosto en la tarde": antes esto no se
+    // reconocía como una fecha concreta y el buscador de candidatos escaneaba
+    // varios días distintos desde hoy+2 en adelante (con un tope de 2
+    // horarios por día pensado para diversificar un rango), así que la fecha
+    // pedida terminaba mostrando como mucho 2 horas de las muchas reales que
+    // tenía disponibles.
+    const monthNamesPattern = Object.keys(MONTH_NUMBER_BY_NAME).join("|");
+    const dayWithMonthMatch = key.match(
+        new RegExp(`\\b([0-3]?\\d)\\s+de\\s+(${monthNamesPattern})\\b`),
+    );
+    const bareDayMatch =
+        !dayWithMonthMatch && key.match(/\bel\s+([0-3]?\d)\b/);
+
+    if (dayWithMonthMatch || bareDayMatch) {
+        const day = Number((dayWithMonthMatch || bareDayMatch)[1]);
+        const month = dayWithMonthMatch
+            ? MONTH_NUMBER_BY_NAME[dayWithMonthMatch[2]]
+            : null;
+        const resolved = resolveUpcomingYmdForDay(day, month, minDate);
+
+        if (resolved) {
+            return { start: resolved, end: resolved };
+        }
+    }
 
     if (key.includes("proxima semana") || key.includes("la semana que viene")) {
         const daysUntilNextMonday = ((8 - today.getDay()) % 7) || 7;
@@ -930,19 +1009,24 @@ async function findRealAppointmentCandidates(message, maxCandidates = 9) {
     const dateWindow = getSchedulingDateWindow(message);
     const cursor = new Date(dateWindow.start);
 
+    // El paciente pidió un día exacto (ej: "el 31", "31 de agosto"), no un
+    // rango: no tiene sentido limitar a 2 horarios "para diversificar entre
+    // días" cuando solo hay un día. En ese caso se consideran todos los
+    // horarios reales de ese día (hasta el máximo de candidatos general).
+    const isSingleExactDate =
+        dateWindow.end &&
+        dateWindow.start.getTime() === dateWindow.end.getTime();
+    const perDateLimit = isSingleExactDate ? maxCandidates : 2;
+
     for (let offset = 0; offset < 75 && candidates.length < maxCandidates; offset += 1) {
         const date = new Date(cursor);
         date.setDate(cursor.getDate() + offset);
 
         if (dateWindow.end && date > dateWindow.end) break;
 
-        const ymd = [
-            date.getFullYear(),
-            pad2(date.getMonth() + 1),
-            pad2(date.getDate()),
-        ].join("-");
-        const schedule = getScheduleForYmd(ymd);
-        if (!schedule) continue;
+        const ymd = dateToYmd(date);
+        const blocks = await getScheduleBlocksForYmd(ymd);
+        if (!blocks.length) continue;
 
         let booked = [];
         try {
@@ -959,7 +1043,7 @@ async function findRealAppointmentCandidates(message, maxCandidates = 9) {
         const bookedSet = new Set(Array.isArray(booked) ? booked : []);
         const freeSlots = orderSlotsByPreference(
             filterSlotsByTimeConstraint(
-                buildSlots(schedule.start, schedule.end, SLOT_MIN).filter(
+                buildSlotsForBlocks(blocks, SLOT_MIN).filter(
                     (slot) => !bookedSet.has(slot),
                 ),
                 message,
@@ -967,8 +1051,10 @@ async function findRealAppointmentCandidates(message, maxCandidates = 9) {
             preference,
         );
 
-        // Máximo dos alternativas por fecha para mantener diversidad.
-        for (const slot of freeSlots.slice(0, 2)) {
+        // Por defecto, máximo dos alternativas por fecha para mantener
+        // diversidad entre varios días; si el paciente pidió un día exacto,
+        // perDateLimit ya es el máximo general (ver arriba).
+        for (const slot of freeSlots.slice(0, perDateLimit)) {
             candidates.push({
                 candidateId: `candidate_${candidates.length + 1}`,
                 ymd,
@@ -1082,8 +1168,8 @@ async function buildRecommendedTimeResponse(message, data) {
         };
     }
 
-    const schedule = getScheduleForYmd(data.ymd);
-    if (!schedule) {
+    const blocks = await getScheduleBlocksForYmd(data.ymd);
+    if (!blocks.length) {
         return {
             response:
                 `El Dr. no tiene atención el día ${data.date}.\n\n` +
@@ -1108,7 +1194,7 @@ async function buildRecommendedTimeResponse(message, data) {
     const bookedSet = new Set(Array.isArray(booked) ? booked : []);
     const availableSlots = orderSlotsByPreference(
         filterSlotsByTimeConstraint(
-            buildSlots(schedule.start, schedule.end, SLOT_MIN).filter(
+            buildSlotsForBlocks(blocks, SLOT_MIN).filter(
                 (slot) => !bookedSet.has(slot),
             ),
             message,
@@ -1248,20 +1334,27 @@ async function finalizeAttentionType(data, phone, attentionType) {
     return sendTemplate(TEMPLATE_CONFIRM_CITA, "AGENDAR", data);
 }
 
-function buildTimeResponse(data) {
+async function buildTimeResponse(data) {
     data.aiTimeRecommendations = [];
     data.aiTimeRecommendationActive = false;
 
     const ymd = data.ymd;
     const page = Number(data.page || 0);
-    const slotsAll = getSlotsForDate(ymd, page);
+    const dayPart = data.dayPartPreference || null;
+    const dayPartLabel =
+        dayPart === "MORNING"
+            ? " en la mañana"
+            : dayPart === "AFTERNOON"
+              ? " en la tarde"
+              : "";
+    const slotsAll = await getSlotsForDate(ymd, page, dayPart);
 
     if (!slotsAll.length) {
         if (page > 0) {
             data.page = 0;
             return {
                 response:
-                    `No hay más horarios disponibles para ${data.date}.\n\n` +
+                    `No hay más horarios${dayPartLabel} disponibles para ${data.date}.\n\n` +
                     "Puedes escribir otra fecha en formato DD/MM o seleccionar una de las horas anteriores.",
                 nextState: "AGENDAR",
                 data,
@@ -1269,9 +1362,11 @@ function buildTimeResponse(data) {
         }
 
         return {
-            response:
-                `El Dr. no tiene atención el día ${data.date}.\n\n` +
-                "Escribe otra fecha (DD/MM) o 0 para volver al menú.",
+            response: dayPart
+                ? `No encontré horarios${dayPartLabel} disponibles para ${data.date}.\n\n` +
+                  "Escribe otra fecha (DD/MM), pide la otra franja del día, o 0 para volver al menú."
+                : `El Dr. no tiene atención el día ${data.date}.\n\n` +
+                  "Escribe otra fecha (DD/MM) o 0 para volver al menú.",
             nextState: "AGENDAR",
             data,
         };
@@ -1293,12 +1388,12 @@ function buildTimeResponse(data) {
 
     const variables = {
         "1": data.date,
-        "2": slots[0] || "No disponible",
-        "3": slots[1] || "No disponible",
-        "4": slots[2] || "No disponible",
-        "5": slots[3] || "No disponible",
-        "6": slots[4] || "No disponible",
-        "7": slots[5] || "No disponible",
+        "2": slots[0] || "🚫 No disponible",
+        "3": slots[1] || "🚫 No disponible",
+        "4": slots[2] || "🚫 No disponible",
+        "5": slots[3] || "🚫 No disponible",
+        "6": slots[4] || "🚫 No disponible",
+        "7": slots[5] || "🚫 No disponible",
     };
 
     return sendTemplate(TEMPLATE_AVAILABLE_HOURS, "AGENDAR", data, variables);
@@ -2155,6 +2250,46 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (String(msg || "").startsWith("RECOMENDAR:")) {
                 const preferenceMessage = String(msg).slice("RECOMENDAR:".length);
+
+                // Si el paciente pidió una fecha exacta (ej: "el 31 de
+                // agosto") junto con mañana/tarde, se le muestran TODAS las
+                // horas reales de esa franja (lista paginada), no solo 3
+                // curadas por IA. La recomendación de IA con máximo 3
+                // opciones se reserva para pedidos sin fecha fija, donde no
+                // existe "el día completo" para mostrar de una vez (ej: "lo
+                // más pronto posible", "próxima semana en la tarde").
+                const dayPart = detectDayPartPreference(preferenceMessage);
+                const explicitWindow = getSchedulingDateWindow(preferenceMessage);
+                const isExplicitSingleDate =
+                    explicitWindow.end &&
+                    explicitWindow.start.getTime() === explicitWindow.end.getTime();
+
+                if (isExplicitSingleDate && dayPart !== "ANY") {
+                    const ymd = dateToYmd(explicitWindow.start);
+
+                    data.date = ymdToDateLabel(ymd);
+                    data.ymd = ymd;
+                    data.page = 0;
+                    data.dayPartPreference = dayPart;
+                    data.aiRecommendations = [];
+
+                    try {
+                        const booked = await getBookedHmFromDb({
+                            ymd,
+                            doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                        });
+                        data.bookedHm = Array.isArray(booked) ? booked : [];
+                    } catch (e) {
+                        data.bookedHm = [];
+                        if (SALUDTOOLS_DEBUG) {
+                            console.error("DB booked slots error:", e);
+                        }
+                    }
+
+                    data.step = "ASK_TIME";
+                    return buildTimeResponse(data);
+                }
+
                 return buildRecommendedAppointmentResponse(preferenceMessage, data);
             }
 
@@ -2247,6 +2382,7 @@ export default async function agendarState(msg, data, context = {}) {
             data.ymd = ddmmToYmd(msg);
             data.page = 0;
             data.aiRecommendations = [];
+            data.dayPartPreference = null;
 
             try {
                 const booked = await getBookedHmFromDb({
@@ -2270,6 +2406,18 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (String(msg || "").startsWith("RECOMENDAR:")) {
                 const preferenceMessage = String(msg).slice("RECOMENDAR:".length);
+
+                // Ya se conoce la fecha exacta (se llegó aquí después de
+                // elegirla). Si el paciente pide "en la mañana"/"en la
+                // tarde", se le muestran TODAS las horas reales de esa
+                // franja para ese día, no solo 3 curadas por IA.
+                const dayPart = detectDayPartPreference(preferenceMessage);
+                if (dayPart !== "ANY") {
+                    data.page = 0;
+                    data.dayPartPreference = dayPart;
+                    return buildTimeResponse(data);
+                }
+
                 return buildRecommendedTimeResponse(preferenceMessage, data);
             }
 
@@ -2323,6 +2471,7 @@ export default async function agendarState(msg, data, context = {}) {
                 data.date = msg;
                 data.ymd = ddmmToYmd(msg);
                 data.page = 0;
+                data.dayPartPreference = null;
 
                 try {
                     const booked = await getBookedHmFromDb({
@@ -2349,18 +2498,41 @@ export default async function agendarState(msg, data, context = {}) {
 
             const slots = Array.isArray(data.visibleSlots)
                 ? data.visibleSlots
-                : getSlotsForDate(data.ymd, data.page || 0);
+                : await getSlotsForDate(data.ymd, data.page || 0);
 
             const index = typeof hourButton === "number" ? hourButton : Number(msg) - 1;
 
             if (!Number.isFinite(index) || index < 0 || index >= slots.length) {
+                const aiFallback = await resolveFlowFallback({
+                    message: msg,
+                    currentState: "AGENDAR",
+                    currentStep: data.step,
+                    data,
+                    context,
+                });
+                if (aiFallback) return aiFallback;
+
+                // La plantilla de horarios siempre muestra 6 casillas (es una
+                // lista de WhatsApp aprobada con tamaño fijo); cuando hay menos
+                // horas reales, las sobrantes se rellenan con un texto de
+                // relleno, pero siguen siendo tocables. Si el paciente tocó una
+                // de esas (hourButton reconocido pero fuera de rango), el
+                // mensaje debe ser claro sobre por qué no pasó nada, en vez del
+                // genérico "elige una opción válida" que suena a que escribió
+                // cualquier cosa.
+                const tappedEmptySlot =
+                    typeof hourButton === "number" && hourButton >= slots.length;
+
                 return {
-                    response:
-                        `Elige una opción válida (1 a ${slots.length}).\n\n` +
-                        "También puedes escribir otra fecha en formato DD/MM.\n\n" +
-                        "O escribe ‘recomiéndame en la mañana’ o ‘recomiéndame en la tarde’.\n\n" +
-                        "Pulsa Más horarios para ver más opciones.\n" +
-                        "0️⃣ Volver al menú",
+                    response: tappedEmptySlot
+                        ? `Ese horario no está disponible para ${data.date}.\n\n` +
+                          "Por favor elige una de las horas que sí aparecen en la lista, o escribe \"más horarios\" para ver otras opciones.\n\n" +
+                          "0️⃣ Volver al menú"
+                        : `Elige una opción válida (1 a ${slots.length}).\n\n` +
+                          "También puedes escribir otra fecha en formato DD/MM.\n\n" +
+                          "O escribe ‘recomiéndame en la mañana’ o ‘recomiéndame en la tarde’.\n\n" +
+                          "Pulsa Más horarios para ver más opciones.\n" +
+                          "0️⃣ Volver al menú",
                     nextState: "AGENDAR",
                     data,
                 };
@@ -2388,7 +2560,7 @@ export default async function agendarState(msg, data, context = {}) {
                     : [];
                 if (!data.bookedHm.includes(hour)) data.bookedHm.push(hour);
 
-                const ui = buildTimeResponse(data);
+                const ui = await buildTimeResponse(data);
                 return {
                     ...ui,
                     response:

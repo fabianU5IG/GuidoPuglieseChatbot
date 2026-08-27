@@ -163,3 +163,16 @@ CREATE TABLE IF NOT EXISTS secretary_cases (
   KEY idx_secretary_cases_status (status),
   KEY idx_secretary_cases_phone (patient_phone)
 ) ENGINE=InnoDB;
+
+-- Días/rangos en los que la secretaria marcó al doctor como no disponible
+-- (ej: "el jueves no está" dicho en lenguaje natural desde el panel). Se
+-- revisa junto con el horario semanal fijo antes de ofrecer horarios.
+CREATE TABLE IF NOT EXISTS doctor_unavailability (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  reason VARCHAR(255) NULL,
+  created_by VARCHAR(32) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_doctor_unavailability_range (start_date, end_date)
+) ENGINE=InnoDB;
