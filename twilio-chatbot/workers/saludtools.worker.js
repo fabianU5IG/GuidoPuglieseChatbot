@@ -27,9 +27,19 @@ import {
 } from "../services/chatbot-db.service.js";
 
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
+import {
+    reconcileKnownSaludtoolsAppointments,
+    discoverSaludtoolsBlocks,
+} from "../services/saludtools-sync.service.js";
 
 const POLL_MS = 4000;
 const RETRY_DELAY_SECONDS = 60;
+// El webhook de entrada de Saludtools nunca ha recibido una llamada real, así
+// que esta es la única forma de enterarnos de cambios hechos directamente
+// allá (cancelaciones, bloqueos). Cada 10 minutos, no en cada vuelta del
+// loop, para no repetir el 429 de Saludtools que salió al probarlo seguido.
+const RECONCILE_INTERVAL_MS = 10 * 60_000;
+let lastReconcileAt = 0;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -706,6 +716,38 @@ async function run() {
 
     while (true) {
         try {
+            if (Date.now() - lastReconcileAt >= RECONCILE_INTERVAL_MS) {
+                lastReconcileAt = Date.now();
+                try {
+                    const { checked, changed } =
+                        await reconcileKnownSaludtoolsAppointments();
+                    if (checked) {
+                        console.log(
+                            `[saludtools.worker] reconciliación: ${checked} citas revisadas, ${changed} actualizadas`,
+                        );
+                    }
+                } catch (error) {
+                    console.error(
+                        "[saludtools.worker] error en reconciliación:",
+                        error?.message || error,
+                    );
+                }
+
+                try {
+                    const blockResult = await discoverSaludtoolsBlocks();
+                    if (blockResult.configured && blockResult.found) {
+                        console.log(
+                            `[saludtools.worker] bloqueos: ${blockResult.found} horario(s) bloqueado(s) sincronizado(s)`,
+                        );
+                    }
+                } catch (error) {
+                    console.error(
+                        "[saludtools.worker] error buscando bloqueos:",
+                        error?.message || error,
+                    );
+                }
+            }
+
             const job = await pickNextSaludtoolsJob();
 
             if (!job) {

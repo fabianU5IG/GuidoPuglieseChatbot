@@ -207,6 +207,71 @@ export async function getPendingCases() {
     return rows;
 }
 
+// Casos que no son una cita (revisión de foto postoperatoria, soporte
+// postquirúrgico general): antes solo llegaban como un mensaje de WhatsApp a
+// la secretaria, sin quedar registrados en ningún lado consultable desde el
+// panel si ese mensaje fallaba o se perdía entre el resto de conversaciones.
+export async function createSecretaryCase({
+    patientPhone,
+    patientName = null,
+    patientDocument = null,
+    reason,
+    note = "",
+    mediaUrl = null,
+}) {
+    const [result] = await db.query(
+        `
+        INSERT INTO secretary_cases
+            (patient_phone, patient_name, patient_document, reason, note, media_url)
+        VALUES (?, ?, ?, ?, ?, ?)
+        `,
+        [
+            String(patientPhone || "").trim(),
+            patientName ? String(patientName).trim() : null,
+            patientDocument ? String(patientDocument).trim() : null,
+            String(reason || "SOPORTE").trim(),
+            String(note || "").trim(),
+            mediaUrl ? String(mediaUrl).trim() : null,
+        ],
+    );
+
+    return result.insertId;
+}
+
+export async function getPendingSecretaryCases() {
+    const [rows] = await db.query(`
+        SELECT
+            id,
+            patient_phone AS phone,
+            patient_name AS full_name,
+            patient_document AS patient_document_number,
+            reason,
+            note,
+            media_url,
+            status,
+            created_at
+        FROM secretary_cases
+        WHERE status = 'PENDING'
+        ORDER BY created_at ASC
+    `);
+
+    return rows;
+}
+
+export async function resolveSecretaryCase(caseId, { resolvedBy = "SECRETARY" } = {}) {
+    const [result] = await db.query(
+        `
+        UPDATE secretary_cases
+        SET status = 'RESOLVED', resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
+        WHERE id = ?
+          AND status = 'PENDING'
+        `,
+        [resolvedBy, caseId],
+    );
+
+    return result.affectedRows > 0;
+}
+
 export async function markReScheduled(
     appointmentId,
     { newDate = null, newTime = null, changedBy = "SECRETARY" } = {},

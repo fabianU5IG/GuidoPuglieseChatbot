@@ -70,7 +70,8 @@ const FROM_WHATSAPP = normalizeWhatsAppAddress(
 );
 
 const SECRETARY_WHATSAPP = normalizeWhatsAppAddress(
-    process.env.SECRETARY_PHONES,
+    process.env.SECRETARY_WHATSAPP_NUMBER,
+    "+573224811541",
 );
 
 export async function sendWhatsAppMessage(phone, body) {
@@ -103,14 +104,19 @@ export async function sendWhatsAppMessageWithMedia(
     return client.messages.create(payload);
 }
 
+// "copy_img_postoperatorio": duplicado de la plantilla anterior que agrega
+// el mensaje del paciente como {{4}} (antes no se mostraba) y corre la
+// imagen a {{5}}. Pendiente de aprobación de WhatsApp al momento de este
+// cambio — revisar el estado en el Content Template Builder de Twilio.
 const POST_SURGERY_IMAGE_TEMPLATE_SID =
     process.env.TWILIO_POST_SURGERY_IMAGE_TEMPLATE_SID ||
-    "HXcc3965e4a999e2f451441930c63c51d8";
+    "HX35cb52ef7fc6c9d1e4a1135bdabbbd4e";
 
 export async function notifySecretaryPostSurgeryImage({
     patientPhone,
     patientName = "Paciente postquirúrgico",
     patientDocument = "No disponible",
+    note = "",
     mediaUrl,
 }) {
     if (!mediaUrl) {
@@ -123,7 +129,8 @@ export async function notifySecretaryPostSurgeryImage({
         1: patientName || "Paciente postquirúrgico",
         2: patientDocument || "No disponible",
         3: patientPhone || "No disponible",
-        4: mediaUrl,
+        4: note && note.trim() ? note.trim() : "Sin mensaje adicional",
+        5: mediaUrl,
     };
 
     console.log("📤 Enviando plantilla postoperatoria a secretaria:", {
@@ -132,11 +139,12 @@ export async function notifySecretaryPostSurgeryImage({
         patientPhone,
         patientName,
         patientDocument,
+        note,
         mediaUrl,
     });
 
     // En una Content Template de Twilio NO se envían body ni mediaUrl como
-    // parámetros del Message. El ContentSid sustituye ambos y {{4}} recibe
+    // parámetros del Message. El ContentSid sustituye ambos y {{5}} recibe
     // la URL dinámica mediante ContentVariables.
     return sendWhatsAppTemplate(
         SECRETARY_WHATSAPP,

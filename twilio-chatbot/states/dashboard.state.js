@@ -2,6 +2,8 @@ import timeUtils from "../utils/time.js";
 import { db } from "../db/mysql.js";
 import {
     getPendingCases,
+    getPendingSecretaryCases,
+    resolveSecretaryCase,
     markCancelled,
     markReScheduled,
     registerChatbotInteraction,
@@ -679,13 +681,26 @@ function toEmojiNumber(value) {
         .join("");
 }
 
+const SECRETARY_CASE_REASON_LABELS = {
+    POST_SURGERY_IMAGE: "📸 Foto postoperatoria para revisión",
+    POST_SURGERY_SUPPORT: "🩺 Soporte postquirúrgico",
+};
+
 function formatCaseLine(c, absoluteIndex) {
+    const emojiIndex = toEmojiNumber(absoluteIndex + 1);
+
+    if (c.case_type === "SECRETARY_CASE") {
+        return (
+            `${emojiIndex} ${buildPatientDisplay(c)}\n` +
+            `${SECRETARY_CASE_REASON_LABELS[c.reason] || c.reason || "Solicitud"}\n` +
+            `${c.note ? `📝 ${c.note}\n` : ""}\n`
+        );
+    }
+
     const when =
         c.date || c.time
             ? `🗓️ ${c.date || "Sin fecha"} ${c.time || ""}`.trim()
             : "🗓️ Sin fecha";
-
-    const emojiIndex = toEmojiNumber(absoluteIndex + 1);
 
     return (
         `${emojiIndex} ${buildPatientDisplay(c)}\n` +
@@ -744,17 +759,44 @@ function buildPendingCasesResponse(cases = [], page = 0, extra = "") {
     };
 }
 
-async function returnToInbox(extra = "", page = 0) {
-    let cases = [];
+// Une las citas pendientes (Saludtools) con los casos de secretaría que no
+// son una cita (foto postoperatoria, soporte general) en una sola lista, con
+// case_type para saber cuáles acciones mostrar cuando se seleccione uno.
+async function getAllPendingCases() {
+    let appointmentCases = [];
     try {
-        cases = await getPendingCases();
+        appointmentCases = await getPendingCases();
     } catch (err) {
         console.error("❌ Error getPendingCases:", err);
-        cases = [];
     }
 
-    if (!Array.isArray(cases)) cases = [];
+    let secretaryCases = [];
+    try {
+        secretaryCases = await getPendingSecretaryCases();
+    } catch (err) {
+        console.error("❌ Error getPendingSecretaryCases:", err);
+    }
 
+    const taggedAppointments = (
+        Array.isArray(appointmentCases) ? appointmentCases : []
+    ).map((c) => ({ ...c, case_type: "APPOINTMENT" }));
+
+    const taggedSecretaryCases = (
+        Array.isArray(secretaryCases) ? secretaryCases : []
+    ).map((c) => ({
+        ...c,
+        case_type: "SECRETARY_CASE",
+        date: null,
+        time: null,
+    }));
+
+    // Los casos sin cita (foto/soporte) primero: normalmente necesitan
+    // revisión más urgente que una cita que ya tiene fecha futura.
+    return [...taggedSecretaryCases, ...taggedAppointments];
+}
+
+async function returnToInbox(extra = "", page = 0) {
+    const cases = await getAllPendingCases();
     return buildPendingCasesResponse(cases, page, extra);
 }
 
@@ -898,24 +940,13 @@ export default async function dashboardState(msg, data = {}, context) {
 
             if (msg === "2") {
                 data.step = "INBOX";
-                let cases = [];
-                try {
-                    cases = await getPendingCases();
-                } catch (err) {
-                    console.error("❌ Error getPendingCases:", err);
-                }
-                return buildPendingCasesResponse(cases || [], 0);
+                const cases = await getAllPendingCases();
+                return buildPendingCasesResponse(cases, 0);
             }
 
             if (msg === "3") {
-                let cases = [];
-                try {
-                    cases = await getPendingCases();
-                } catch (err) {
-                    console.error("❌ Error getPendingCases AI:", err);
-                }
-
-                const summary = await summarizeSecretaryCasesAI(cases || []);
+                const cases = await getAllPendingCases();
+                const summary = await summarizeSecretaryCasesAI(cases);
                 return {
                     response:
                         "🤖 Resumen IA de pendientes\n\n" +
@@ -1156,16 +1187,7 @@ export default async function dashboardState(msg, data = {}, context) {
         }
 
         case "INBOX": {
-            let cases = [];
-            try {
-                cases = await getPendingCases();
-            } catch (err) {
-                console.error("❌ Error getPendingCases:", err);
-                cases = [];
-            }
-
-            if (!Array.isArray(cases)) cases = [];
-
+            const cases = await getAllPendingCases();
             return buildPendingCasesResponse(cases, 0);
         }
 
@@ -1218,6 +1240,30 @@ export default async function dashboardState(msg, data = {}, context) {
 
             const selectedCase = allCases[index];
 
+            if (selectedCase.case_type === "SECRETARY_CASE") {
+                const secretaryDetails =
+                    `🔔 Caso seleccionado\n\n` +
+                    `Paciente: ${buildPatientDisplay(selectedCase)}\n` +
+                    `Motivo: ${SECRETARY_CASE_REASON_LABELS[selectedCase.reason] || selectedCase.reason || "Solicitud"}\n` +
+                    `${selectedCase.note ? `Mensaje: ${selectedCase.note}\n` : ""}` +
+                    `${selectedCase.media_url ? `Imagen: ${selectedCase.media_url}\n` : ""}` +
+                    `Teléfono: ${selectedCase.phone || "N/A"}\n\n` +
+                    "1️⃣ Marcar como atendido\n" +
+                    "0️⃣ Volver";
+
+                return {
+                    response: secretaryDetails,
+                    nextState: "DASHBOARD",
+                    data: {
+                        step: "SECRETARY_CASE_ACTIONS",
+                        selectedCase,
+                        cases: allCases,
+                        page: currentPage,
+                        inboxPage: currentPage,
+                    },
+                };
+            }
+
             const details =
                 `🔔 Caso seleccionado\n\n` +
                 `Paciente: ${buildPatientDisplay(selectedCase)}\n` +
@@ -1245,6 +1291,34 @@ export default async function dashboardState(msg, data = {}, context) {
                     // real del listado de casos.
                     inboxPage: currentPage,
                 },
+            };
+        }
+
+        case "SECRETARY_CASE_ACTIONS": {
+            if (msg === "0") {
+                return returnToInbox(
+                    "↩️ Volviendo al listado",
+                    Number(data.page || 0),
+                );
+            }
+
+            if (msg === "1") {
+                try {
+                    await resolveSecretaryCase(data?.selectedCase?.id);
+                } catch (err) {
+                    console.error("❌ Error marcando caso como atendido:", err);
+                }
+
+                return returnToInbox(
+                    "✅ Caso marcado como atendido",
+                    Number(data.inboxPage ?? data.page ?? 0),
+                );
+            }
+
+            return {
+                response: "❌ Opción inválida",
+                nextState: "DASHBOARD",
+                data,
             };
         }
 

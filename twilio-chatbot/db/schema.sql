@@ -143,3 +143,23 @@ CREATE TABLE IF NOT EXISTS post_surgery_media (
   KEY idx_post_surgery_media_expiry (expires_at),
   KEY idx_post_surgery_media_phone (patient_phone)
 ) ENGINE=InnoDB;
+
+-- Casos de secretaría que no son una cita agendada (ej: revisión de foto
+-- postoperatoria, soporte postquirúrgico general). Antes solo existían como
+-- un mensaje de WhatsApp a la secretaria, sin registro consultable si ese
+-- mensaje fallaba o se perdía entre el resto de mensajes.
+CREATE TABLE IF NOT EXISTS secretary_cases (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  patient_phone VARCHAR(32) NOT NULL,
+  patient_name VARCHAR(255) NULL,
+  patient_document VARCHAR(64) NULL,
+  reason VARCHAR(64) NOT NULL,
+  note TEXT NULL,
+  media_url VARCHAR(1024) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at TIMESTAMP NULL,
+  resolved_by VARCHAR(32) NULL,
+  KEY idx_secretary_cases_status (status),
+  KEY idx_secretary_cases_phone (patient_phone)
+) ENGINE=InnoDB;

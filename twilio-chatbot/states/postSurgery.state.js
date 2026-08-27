@@ -1,4 +1,7 @@
-import { upsertPatientName } from "../services/chatbot-db.service.js";
+import {
+    upsertPatientName,
+    createSecretaryCase,
+} from "../services/chatbot-db.service.js";
 import {
     notifySecretaryPostSurgeryImage,
     notifySecretarySupportRequest,
@@ -142,6 +145,7 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
 
         let forwardedImages = 0;
         let lastForwardError = null;
+        let lastStoredImageUrl = null;
 
         for (const mediaItem of incomingMedia) {
             if (!mediaItem?.url) continue;
@@ -164,15 +168,17 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
                 });
 
                 console.log("✅ URL dinámica propia:", storedImage.publicUrl);
+                lastStoredImageUrl = storedImage.publicUrl;
 
                 // 3) La plantilla de Twilio usa:
-                //    {{1}} nombre, {{2}} documento, {{3}} teléfono, {{4}} imagen.
-                //    Como la plantilla admite una sola Media URL, si llegan varias
-                //    fotos enviamos una plantilla por cada una.
+                //    {{1}} nombre, {{2}} documento, {{3}} teléfono, {{4}} mensaje del
+                //    paciente, {{5}} imagen. Como la plantilla admite una sola Media
+                //    URL, si llegan varias fotos enviamos una plantilla por cada una.
                 await notifySecretaryPostSurgeryImage({
                     patientPhone: context.from,
                     patientName,
                     patientDocument,
+                    note,
                     mediaUrl: storedImage.publicUrl,
                 });
 
@@ -184,6 +190,27 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
                     error,
                 );
             }
+        }
+
+        // Se guarda el caso en la base de datos SIEMPRE (haya fallado o no el
+        // aviso por WhatsApp) para que quede visible desde "Ver casos
+        // pendientes" del panel de secretaría — antes, si el mensaje de
+        // WhatsApp fallaba o simplemente se perdía entre el resto de
+        // conversaciones, no quedaba ningún registro consultable.
+        try {
+            await createSecretaryCase({
+                patientPhone: context.from,
+                patientName,
+                patientDocument,
+                reason: "POST_SURGERY_IMAGE",
+                note,
+                mediaUrl: lastStoredImageUrl,
+            });
+        } catch (caseError) {
+            console.error(
+                "❌ No fue posible registrar el caso de secretaría:",
+                caseError,
+            );
         }
 
         if (!forwardedImages) {
@@ -252,18 +279,33 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
     }
 
     if (msg === "3" || normalized.includes("secretaria")) {
+        const supportPatientName =
+            data.fullName || data.patientName || "Paciente postquirúrgico";
+        const supportNote = String(context.rawBody?.Body || "").trim();
+
         try {
             await notifySecretarySupportRequest({
                 patientPhone: context.from,
-                patientName:
-                    data.fullName ||
-                    data.patientName ||
-                    "Paciente postquirúrgico",
+                patientName: supportPatientName,
                 reason: "Soporte postquirúrgico",
-                note: String(context.rawBody?.Body || "").trim(),
+                note: supportNote,
             });
         } catch (error) {
             console.error("❌ No fue posible notificar a la secretaria:", error);
+        }
+
+        try {
+            await createSecretaryCase({
+                patientPhone: context.from,
+                patientName: supportPatientName,
+                reason: "POST_SURGERY_SUPPORT",
+                note: supportNote,
+            });
+        } catch (caseError) {
+            console.error(
+                "❌ No fue posible registrar el caso de secretaría:",
+                caseError,
+            );
         }
 
         return {
