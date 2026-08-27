@@ -5,6 +5,7 @@ import twilio from "twilio";
 import chatbotResponse from "./chatbot.js";
 import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
 import { sendWhatsAppTemplate } from "./services/whatsapp.service.js";
+import { getPostSurgeryMediaByToken } from "./services/post-surgery-media.service.js";
 import {
     loadChatSession,
     saveChatSession,
@@ -79,6 +80,45 @@ app.use(bodyParser.json());
 
 app.use("/webhook/saludtools", saludtoolsWebhook);
 
+// URL pública que Twilio/WhatsApp usa para descargar la imagen postoperatoria.
+// El token de 64 caracteres es aleatorio y no expone teléfono/documento.
+app.get("/media/post-surgery/:fileKey", async (req, res) => {
+    try {
+        const match = String(req.params.fileKey || "")
+            .trim()
+            .toLowerCase()
+            .match(/^([a-f0-9]{64})\.([a-z0-9]{2,8})$/);
+
+        if (!match) {
+            return res.status(404).send("Media no encontrada");
+        }
+
+        const [, token, requestedExtension] = match;
+        const media = await getPostSurgeryMediaByToken(token);
+
+        if (!media || media.file_extension !== requestedExtension) {
+            return res.status(404).send("Media no encontrada o expirada");
+        }
+
+        const imageBuffer = Buffer.isBuffer(media.image_data)
+            ? media.image_data
+            : Buffer.from(media.image_data);
+
+        res.set({
+            "Content-Type": media.content_type || "image/jpeg",
+            "Content-Length": String(imageBuffer.length),
+            "Content-Disposition": `inline; filename="post-surgery.${media.file_extension}"`,
+            "Cache-Control": "public, max-age=300",
+            "X-Content-Type-Options": "nosniff",
+        });
+
+        return res.send(imageBuffer);
+    } catch (error) {
+        console.error("❌ Error sirviendo imagen postoperatoria:", error);
+        return res.status(500).send("No fue posible cargar la imagen");
+    }
+});
+
 // Rechaza cualquier POST a /webhook que no traiga una firma X-Twilio-Signature
 // válida para TWILIO_AUTH_TOKEN, evitando que alguien suplante mensajes de
 // WhatsApp (incluido el número de la secretaría) sin pasar por Twilio.
@@ -108,11 +148,19 @@ app.post("/webhook", twilio.webhook(), async (req, res) => {
 
         const session = await getSession(phone);
 
+        // Con trust proxy=true, req.protocol respeta X-Forwarded-Proto.
+        // En local con ngrok quedará, por ejemplo:
+        // https://abc123.ngrok-free.app
+        const publicBaseUrl =
+            String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "") ||
+            `${req.protocol}://${req.get("host")}`;
+
         const context = {
             from: phone,
             numMedia,
             media,
             rawBody: req.body,
+            publicBaseUrl,
         };
 
         const result = await chatbotResponse(message, session, context);

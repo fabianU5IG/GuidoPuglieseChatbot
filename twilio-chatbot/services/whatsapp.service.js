@@ -100,34 +100,46 @@ export async function sendWhatsAppMessageWithMedia(
     return client.messages.create(payload);
 }
 
+const POST_SURGERY_IMAGE_TEMPLATE_SID =
+    process.env.TWILIO_POST_SURGERY_IMAGE_TEMPLATE_SID ||
+    "HXcc3965e4a999e2f451441930c63c51d8";
+
 export async function notifySecretaryPostSurgeryImage({
     patientPhone,
     patientName = "Paciente postquirúrgico",
-    note = "",
-    mediaUrls = [],
+    patientDocument = "No disponible",
+    mediaUrl,
 }) {
-    const body =
-        `🩺 *Post cirugía - imágenes recibidas*\n\n` +
-        `👤 Paciente: ${patientName}\n` +
-        `📞 Tel: ${patientPhone}\n` +
-        `📝 Mensaje: ${note || "Sin mensaje adicional"}`;
+    if (!mediaUrl) {
+        throw new Error(
+            "notifySecretaryPostSurgeryImage requiere una mediaUrl pública.",
+        );
+    }
 
-    console.log("📤 Reenviando a secretaria:", {
+    const variables = {
+        "1": patientName || "Paciente postquirúrgico",
+        "2": patientDocument || "No disponible",
+        "3": patientPhone || "No disponible",
+        "4": mediaUrl,
+    };
+
+    console.log("📤 Enviando plantilla postoperatoria a secretaria:", {
         to: SECRETARY_WHATSAPP,
+        contentSid: POST_SURGERY_IMAGE_TEMPLATE_SID,
         patientPhone,
         patientName,
-        note,
-        mediaUrls,
+        patientDocument,
+        mediaUrl,
     });
 
-    return client.messages.create({
-        from: FROM_WHATSAPP,
-        to: SECRETARY_WHATSAPP,
-        body,
-        ...(Array.isArray(mediaUrls) && mediaUrls.length
-            ? { mediaUrl: mediaUrls }
-            : {}),
-    });
+    // En una Content Template de Twilio NO se envían body ni mediaUrl como
+    // parámetros del Message. El ContentSid sustituye ambos y {{4}} recibe
+    // la URL dinámica mediante ContentVariables.
+    return sendWhatsAppTemplate(
+        SECRETARY_WHATSAPP,
+        POST_SURGERY_IMAGE_TEMPLATE_SID,
+        variables,
+    );
 }
 
 export async function notifySecretarySupportRequest({

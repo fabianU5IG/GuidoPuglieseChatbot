@@ -5,7 +5,7 @@ import {
     sendWhatsAppMessage,
     downloadTwilioMedia,
 } from "../services/whatsapp.service.js";
-import { uploadPatientImageToSupabase } from "../services/supabase.service.js";
+import { savePatientImageToMySql } from "../services/post-surgery-media.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
@@ -125,37 +125,90 @@ export default async function postSurgeryState(msg, data = {}, context = {}) {
             data.fullName || data.patientName || "Paciente postquirúrgico";
         const note = String(context.rawBody?.Body || "").trim();
 
-        try {
-            const publicMediaUrls = [];
+        const documentTypeLabels = {
+            1: "CC",
+            2: "CE",
+            4: "Pasaporte",
+            5: "RC",
+            6: "TI",
+        };
+        const documentNumber = String(
+            data.patientDocumentNumber || data.documento || "",
+        ).trim();
+        const documentType = documentTypeLabels[Number(data.patientDocumentType)];
+        const patientDocument = documentNumber
+            ? `${documentType ? `${documentType} ` : ""}${documentNumber}`
+            : "No disponible";
 
-            for (const mediaItem of incomingMedia) {
-                if (!mediaItem?.url) continue;
+        let forwardedImages = 0;
+        let lastForwardError = null;
 
+        for (const mediaItem of incomingMedia) {
+            if (!mediaItem?.url) continue;
+
+            try {
+                // 1) Twilio entrega una URL temporal/protegida. La descargamos
+                //    usando Account SID + Auth Token.
                 const fileBuffer = await downloadTwilioMedia(mediaItem.url);
-                const uploadResult = await uploadPatientImageToSupabase({
+
+                // 2) Guardamos la imagen en MySQL y generamos una URL pública
+                //    propia, única y aleatoria para esta foto.
+                const storedImage = await savePatientImageToMySql({
                     fileBuffer,
                     patientPhone: context.from,
+                    patientName,
+                    patientDocument,
+                    note,
                     contentType: mediaItem.contentType || "image/jpeg",
+                    publicBaseUrl: context.publicBaseUrl,
                 });
 
-                publicMediaUrls.push(uploadResult.publicUrl);
+                console.log("✅ URL dinámica propia:", storedImage.publicUrl);
+
+                // 3) La plantilla de Twilio usa:
+                //    {{1}} nombre, {{2}} documento, {{3}} teléfono, {{4}} imagen.
+                //    Como la plantilla admite una sola Media URL, si llegan varias
+                //    fotos enviamos una plantilla por cada una.
+                await notifySecretaryPostSurgeryImage({
+                    patientPhone: context.from,
+                    patientName,
+                    patientDocument,
+                    mediaUrl: storedImage.publicUrl,
+                });
+
+                forwardedImages += 1;
+            } catch (error) {
+                lastForwardError = error;
+                console.error(
+                    "❌ Error guardando/re-enviando imagen postoperatoria:",
+                    error,
+                );
+            }
+        }
+
+        if (!forwardedImages) {
+            try {
+                await sendWhatsAppMessage(
+                    process.env.SECRETARY_WHATSAPP_NUMBER,
+                    `🩺 Post cirugía - imagen recibida\n\n👤 Paciente: ${patientName}\n📄 Documento: ${patientDocument}\n📞 Tel: ${context.from}\n📝 Mensaje: ${note || "Sin mensaje adicional"}\n\n⚠️ La imagen no pudo reenviarse automáticamente.`,
+                );
+            } catch (notifyError) {
+                console.error(
+                    "❌ Tampoco fue posible enviar el aviso de respaldo a secretaria:",
+                    notifyError,
+                );
             }
 
-            console.log("✅ URLs públicas Supabase:", publicMediaUrls);
-
-            await notifySecretaryPostSurgeryImage({
-                patientPhone: context.from,
-                patientName,
-                note,
-                mediaUrls: publicMediaUrls,
-            });
-        } catch (error) {
-            console.error("❌ Error subiendo a Supabase o reenviando:", error);
-
-            await sendWhatsAppMessage(
-                process.env.SECRETARY_WHATSAPP_NUMBER,
-                `🩺 Post cirugía - imagen recibida\n\n👤 Paciente: ${patientName}\n📞 Tel: ${context.from}\n📝 Mensaje: ${note || "Sin mensaje adicional"}\n\n⚠️ La imagen no pudo reenviarse automáticamente.`,
-            );
+            return {
+                response:
+                    "Recibí tu imagen, pero tuve un inconveniente al enviarla automáticamente a la secretaria. Por favor intenta enviarla una vez más. Si el problema continúa, escribe *secretaria* para recibir ayuda.",
+                nextState: "POST_SURGERY_WAIT_IMAGE",
+                data: {
+                    ...data,
+                    awaitingImage: true,
+                    imageForwardError: lastForwardError?.message || "UNKNOWN_ERROR",
+                },
+            };
         }
 
         return {
