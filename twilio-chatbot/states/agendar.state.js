@@ -1899,7 +1899,21 @@ export default async function agendarState(msg, data, context = {}) {
         case "REG_GENDER": {
             if (msg === "0") return returnToMenu();
 
-            if (msg !== "1" && msg !== "2") {
+            // Antes solo se aceptaba "1"/"2" literal (los botones de la
+            // plantilla): escribir "femenino"/"masculino" en texto libre,
+            // muy natural para esta pregunta, no funcionaba porque la IA de
+            // navegación no interpreta valores de un paso, solo intención de
+            // cambiar de flujo.
+            const genderKey = normKey(msg);
+            const genderValue =
+                msg === "1" ||
+                ["masculino", "hombre", "varon"].includes(genderKey)
+                    ? 1
+                    : msg === "2" || ["femenino", "mujer"].includes(genderKey)
+                      ? 2
+                      : null;
+
+            if (!genderValue) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
                     currentState: "AGENDAR",
@@ -1916,7 +1930,7 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            data.regPatient.gender = Number(msg);
+            data.regPatient.gender = genderValue;
             data.step = "REG_EMAIL";
             return sendTemplate(TEMPLATE_REG_EMAIL, "AGENDAR", data);
         }
@@ -2008,7 +2022,20 @@ export default async function agendarState(msg, data, context = {}) {
         case "REG_HABEAS": {
             if (msg === "0") return returnToMenu();
 
-            if (msg !== "1" && msg !== "2") {
+            // Mismo caso que REG_GENDER: "sí, autorizo"/"acepto" en texto
+            // libre es la forma más natural de responder esta pregunta, y
+            // antes solo el "1"/"2" literal del botón funcionaba.
+            const habeasKey = normKey(msg);
+            const habeasValue =
+                msg === "1" ||
+                ["si", "acepto", "autorizo", "de acuerdo"].includes(habeasKey)
+                    ? 1
+                    : msg === "2" ||
+                        ["no", "no acepto", "no autorizo"].includes(habeasKey)
+                      ? 2
+                      : null;
+
+            if (!habeasValue) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
                     currentState: "AGENDAR",
@@ -2025,7 +2052,7 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
-            data.regPatient.habeasData = msg === "1";
+            data.regPatient.habeasData = habeasValue === 1;
             data.step = "ASK_DATE";
 
             if (data.pendingDateInput) {

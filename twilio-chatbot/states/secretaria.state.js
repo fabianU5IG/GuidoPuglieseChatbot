@@ -1,5 +1,6 @@
 import { registerChatbotInteraction } from "../services/chatbot-db.service.js";
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
+import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import menuState from "./menu.state.js";
 
 function normalize(value = "") {
@@ -46,6 +47,23 @@ export default async function secretariaState(msg, data = {}, context = {}) {
     }
 
     const note = String(context?.rawBody?.Body || msg || "").trim();
+
+    // Antes, cualquier mensaje del paciente mientras espera a la secretaria
+    // (una pregunta real, una duda, "hola", lo que sea) solo repetía "tu
+    // solicitud está en espera", sin importar qué escribiera. Ya notificado
+    // el primer aviso, se le da a la IA la oportunidad de responder algo
+    // útil; si no tiene certeza (mensaje ambiguo o info adicional del caso),
+    // devuelve null y se sigue reenviando como antes.
+    if (data.secretaryNotified && note) {
+        const aiFallback = await resolveFlowFallback({
+            message: note,
+            currentState: "SECRETARIA",
+            currentStep: data.reason || data.tipo || null,
+            data,
+            context,
+        });
+        if (aiFallback) return aiFallback;
+    }
 
     if (!data.secretaryNotified) {
         try {

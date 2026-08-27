@@ -100,7 +100,19 @@ function isExpressBookingIntent(normalizedMsg = "") {
         );
     if (isManagementRequest) return false;
 
+    // "Urgente"/"cuanto antes"/"para ya" también aparecen en mensajes que no
+    // piden una cita (ej: "necesito hablar con alguien porque tengo una duda
+    // urgente"), y antes bastaba con esa sola palabra para secuestrar el
+    // mensaje hacia el agendamiento exprés sin darle oportunidad a la IA de
+    // interpretarlo. Ahora se exige que el mensaje también mencione algo de
+    // agenda (cita, consulta, agendar, turno, hora, fecha).
+    const hasAppointmentContext =
+        /\b(cita|citas|consulta|consultas|agendar|agenda|turno|turnos|hora|horas|fecha)\b/.test(
+            normalizedMsg,
+        );
+
     if (
+        hasAppointmentContext &&
         /(lo\s+mas\s+pronto\s+(posible|que\s+haya)|cuanto\s+antes|lo\s+antes\s+posible|\burgente\b|primera\s+(cita\s+)?disponible|fecha\s+mas\s+(cercana|pronta|proxima)|\bpara\s+ya\b|\bya\s+mismo\b)/.test(
             normalizedMsg,
         )

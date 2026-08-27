@@ -12,6 +12,7 @@ import {
     findSaludtoolsPatientsByName,
 } from "../services/chatbot-db.service.js";
 import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
+import { searchAppointmentsByPatientInSaludtools } from "../services/saludtools-api.service.js";
 import { SALUDTOOLS, SECRETARY_PHONES } from "../constants.js";
 import {
     parseDashboardAppointmentsAI,
@@ -56,7 +57,8 @@ const DASHBOARD_MENU_TEXT =
     "👋 Panel de Secretaría\n\n" +
     "1️⃣ Crear cita rápida\n" +
     "2️⃣ Ver casos pendientes\n" +
-    "3️⃣ Resumen IA de pendientes\n\n" +
+    "3️⃣ Resumen IA de pendientes\n" +
+    "4️⃣ Cancelar cita\n\n" +
     "0️⃣ Salir";
 
 function returnToMainMenu() {
@@ -887,6 +889,146 @@ async function cancelSelectedCase({ from, data }) {
     };
 }
 
+function isCancelledSaludtoolsStatus(status) {
+    const normalized = String(status || "").trim().toUpperCase();
+    return normalized === "CANCELLED" || normalized === "CANCELED";
+}
+
+async function findUpcomingAppointmentsForPatient({
+    documentType,
+    documentNumber,
+}) {
+    const resp = await searchAppointmentsByPatientInSaludtools({
+        patientDocumentType: documentType,
+        patientDocumentNumber: documentNumber,
+        page: 0,
+        size: 19,
+    });
+
+    const content = resp?.body?.content || resp?.content || [];
+    const todayYmd = new Date().toISOString().slice(0, 10);
+
+    return (Array.isArray(content) ? content : [])
+        .filter(
+            (item) =>
+                !isCancelledSaludtoolsStatus(item?.stateAppointment) &&
+                String(item?.startAppointment || "").slice(0, 10) >= todayYmd,
+        )
+        .sort((a, b) =>
+            String(a.startAppointment).localeCompare(String(b.startAppointment)),
+        );
+}
+
+function buildCancelAppointmentPrompt(appointments) {
+    const lines = appointments
+        .map(
+            (item, idx) =>
+                `${idx + 1}️⃣ ${String(item.startAppointment).replace("T", " ")}` +
+                `${item.appointmentType ? ` — ${item.appointmentType}` : ""}`,
+        )
+        .join("\n");
+
+    return (
+        "Estas son sus próximas citas:\n\n" +
+        `${lines}\n\n` +
+        "Responde con el número de la que quieres cancelar.\n\n" +
+        "0️⃣ Cancelar"
+    );
+}
+
+async function startCancelFlowForDocument({ documentType, documentNumber, data }) {
+    let appointments = [];
+    try {
+        appointments = await findUpcomingAppointmentsForPatient({
+            documentType,
+            documentNumber,
+        });
+    } catch (error) {
+        console.error("❌ Error buscando citas del paciente:", error);
+        return {
+            response:
+                "⚠️ No fue posible consultar las citas de este paciente en este momento. Intenta de nuevo en unos minutos.\n\n" +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    if (!appointments.length) {
+        return {
+            response:
+                `😊 No encontré citas próximas para el documento ${documentNumber}.\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    return {
+        response: buildCancelAppointmentPrompt(appointments),
+        nextState: "DASHBOARD",
+        data: {
+            ...data,
+            step: "CANCEL_SELECT_APPOINTMENT",
+            cancelDocumentType: documentType,
+            cancelDocumentNumber: documentNumber,
+            cancelAppointments: appointments,
+        },
+    };
+}
+
+async function startCancelFlowForPatientName({ patientName, data }) {
+    let candidates = [];
+    try {
+        candidates = await findSaludtoolsPatientsByName(patientName);
+    } catch (error) {
+        console.error("❌ Error buscando paciente por nombre:", error);
+    }
+
+    if (candidates.length === 1) {
+        return startCancelFlowForDocument({
+            documentType: Number(candidates[0].document_type),
+            documentNumber: String(candidates[0].document_number),
+            data,
+        });
+    }
+
+    if (candidates.length > 1) {
+        const lines = candidates
+            .map(
+                (c, idx) =>
+                    `${idx + 1}️⃣ ${c.full_name} — ${docTypeLabel(c.document_type)} ${c.document_number}`,
+            )
+            .join("\n");
+
+        return {
+            response:
+                `😊 Encontré varios pacientes llamados "${patientName}":\n\n` +
+                `${lines}\n\n` +
+                "Responde con el número de la lista, o escribe directamente el documento.\n\n" +
+                "0️⃣ Cancelar",
+            nextState: "DASHBOARD",
+            data: {
+                ...data,
+                step: "CANCEL_SELECT_PATIENT",
+                cancelPatientCandidates: candidates,
+            },
+        };
+    }
+
+    return {
+        response:
+            `😊 No encontré ningún paciente registrado con el nombre "${patientName}".\n\n` +
+            "Escríbeme su número de documento.\n\n" +
+            "0️⃣ Cancelar",
+        nextState: "DASHBOARD",
+        data: {
+            ...data,
+            step: "CANCEL_ASK_PATIENT",
+        },
+    };
+}
+
 export default async function dashboardState(msg, data = {}, context) {
     const from = (context?.from || "").replace(/\D/g, "");
 
@@ -956,6 +1098,18 @@ export default async function dashboardState(msg, data = {}, context) {
                         DASHBOARD_MENU_TEXT,
                     nextState: "DASHBOARD",
                     data: { step: "MENU" },
+                };
+            }
+
+            if (msg === "4") {
+                data.step = "CANCEL_ASK_PATIENT";
+                return {
+                    response:
+                        "❌ *Cancelar cita*\n\n" +
+                        "¿A nombre de quién está la cita? Escribe el nombre del paciente o su número de documento.\n\n" +
+                        "0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data,
                 };
             }
 
@@ -1182,6 +1336,143 @@ export default async function dashboardState(msg, data = {}, context) {
                     full_name: data.pendingAppointment?.patientName || "Paciente",
                     document_type: documentType,
                     document_number: documentNumber,
+                },
+            });
+        }
+
+        case "CANCEL_ASK_PATIENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const directDoc = parseQuickDocumentReply(msg);
+            if (directDoc.documentNumber) {
+                return startCancelFlowForDocument({
+                    documentType: directDoc.documentType,
+                    documentNumber: directDoc.documentNumber,
+                    data,
+                });
+            }
+
+            const patientName = String(msg || "").trim();
+            if (patientName.length < 2) {
+                return {
+                    response:
+                        "😊 Escribe el nombre del paciente o su número de documento.\n\n0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            return startCancelFlowForPatientName({ patientName, data });
+        }
+
+        case "CANCEL_SELECT_PATIENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const candidates = Array.isArray(data.cancelPatientCandidates)
+                ? data.cancelPatientCandidates
+                : [];
+            const selectedIndex = Number(msg);
+
+            if (
+                Number.isInteger(selectedIndex) &&
+                selectedIndex >= 1 &&
+                selectedIndex <= candidates.length
+            ) {
+                const candidate = candidates[selectedIndex - 1];
+                return startCancelFlowForDocument({
+                    documentType: Number(candidate.document_type),
+                    documentNumber: String(candidate.document_number),
+                    data,
+                });
+            }
+
+            const directDoc = parseQuickDocumentReply(msg);
+            if (directDoc.documentNumber) {
+                return startCancelFlowForDocument({
+                    documentType: directDoc.documentType,
+                    documentNumber: directDoc.documentNumber,
+                    data,
+                });
+            }
+
+            return {
+                response:
+                    "😊 No entendí tu respuesta. Responde con el número de la lista, el documento directamente, o 0 para cancelar.",
+                nextState: "DASHBOARD",
+                data,
+            };
+        }
+
+        case "CANCEL_SELECT_APPOINTMENT": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response: "✅ Cancelado.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const appointments = Array.isArray(data.cancelAppointments)
+                ? data.cancelAppointments
+                : [];
+            const index = Number(msg) - 1;
+
+            if (!Number.isInteger(index) || !appointments[index]) {
+                return {
+                    response:
+                        buildCancelAppointmentPrompt(appointments) +
+                        "\n\n❌ No reconocí esa opción, intenta de nuevo.",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            const chosen = appointments[index];
+            return {
+                response:
+                    `¿Seguro que quieres cancelar la cita del ${String(chosen.startAppointment).replace("T", " ")}?\n\n` +
+                    "1️⃣ Sí, cancelar\n" +
+                    "2️⃣ No, dejarla como está",
+                nextState: "DASHBOARD",
+                data: {
+                    ...data,
+                    step: "CANCEL_CONFIRM",
+                    cancelChosenAppointment: chosen,
+                },
+            };
+        }
+
+        case "CANCEL_CONFIRM": {
+            if (msg !== "1") {
+                return {
+                    response: "✅ No se realizaron cambios.\n\n" + DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const chosen = data.cancelChosenAppointment || {};
+
+            return cancelSelectedCase({
+                from,
+                data: {
+                    selectedCase: {
+                        saludtools_appointment_id: chosen.id,
+                        patient_document_type: data.cancelDocumentType,
+                        patient_document_number: data.cancelDocumentNumber,
+                    },
                 },
             });
         }

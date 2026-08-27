@@ -181,6 +181,36 @@ export async function resolveFlowFallback({
         // que el paso actual repita su propio mensaje en vez de retroceder.
         if (decision === "GO_SCHEDULE" && currentState === "AGENDAR") return null;
 
+        // Desde TELECONSULTA, "agendar" no es un agendamiento presencial
+        // normal: antes, una frase natural que no calzara exacto con las
+        // palabras clave del propio estado (ej: "sí quiero agendar la
+        // teleconsulta") caía aquí y abría el flujo de AGENDAR presencial. Las
+        // teleconsultas las coordina la secretaria directamente, igual que ya
+        // hace teleconsulta.state.js con su propio botón/keyword de agendar.
+        if (decision === "GO_SCHEDULE" && currentState === "TELECONSULTA") {
+            try {
+                await notifySecretarySupportRequest({
+                    patientPhone: context.from,
+                    patientName: data.fullName || data.patientName || "Paciente",
+                    reason: "Solicitud de agendamiento de teleconsulta",
+                    note: `El paciente solicita agendar una teleconsulta / lectura de estudios: "${message}"`,
+                });
+            } catch (error) {
+                console.error(
+                    "❌ No fue posible notificar a la secretaria por teleconsulta (IA):",
+                    error,
+                );
+            }
+
+            return {
+                response:
+                    "Gracias. Hemos recibido tu solicitud para agendar una teleconsulta.\n\n" +
+                    "La secretaria revisará la disponibilidad y se comunicará contigo por este mismo medio para continuar con el proceso.",
+                nextState: "MENU",
+                data: { renderMenu: true },
+            };
+        }
+
         // "Mejor cambio la fecha" a mitad de un agendamiento: NO es un
         // GO_MENU/GO_SCHEDULE (eso reiniciaría o borraría el registro). Se
         // conserva todo lo ya dado (nombre, documento, etc.) y solo se vuelve

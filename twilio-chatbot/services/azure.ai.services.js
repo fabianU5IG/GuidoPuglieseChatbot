@@ -39,6 +39,15 @@ async function chatCompletion({ messages, temperature = 0.2, maxTokens = 500 }) 
     return completion.choices?.[0]?.message?.content || "";
 }
 
+// La IA redacta en Markdown estándar (**negrita**), pero WhatsApp solo
+// reconoce un asterisco (*negrita*): sin este ajuste, el paciente/secretaria
+// ve los asteriscos dobles tal cual, en vez de texto en negrita.
+function toWhatsAppMarkdown(text = "") {
+    return String(text || "")
+        .replace(/\*\*(.+?)\*\*/g, "*$1*")
+        .replace(/__(.+?)__/g, "*$1*");
+}
+
 function truncateAtWordBoundary(text = "", maxLen = 180) {
     const value = String(text || "");
     if (value.length <= maxLen) return value;
@@ -91,7 +100,9 @@ ${context}
             ],
         });
 
-        return content || "Lo siento, en este momento no puedo procesar tu solicitud.";
+        return content
+            ? toWhatsAppMarkdown(content)
+            : "Lo siento, en este momento no puedo procesar tu solicitud.";
     } catch (error) {
         console.error("Azure AI Error:", error?.message || error);
         return "Lo siento, en este momento no puedo procesar tu solicitud.";
@@ -318,7 +329,7 @@ export async function summarizeSecretaryCasesAI(cases = []) {
             ],
         });
 
-        return raw.trim();
+        return toWhatsAppMarkdown(raw.trim());
     } catch (error) {
         console.error("Azure AI summarizeSecretaryCasesAI Error:", error?.message || error);
         return "";
@@ -457,7 +468,7 @@ export async function generateAppointmentPreparationTipsAI({
             /diagn[oó]st|medicamento|medicaci[oó]n|tratamiento|dosis|tomar|suspender|urgenc|s[ií]ntoma/i;
         const tips = Array.isArray(parsed?.tips)
             ? parsed.tips
-                  .map((tip) => String(tip || "").trim())
+                  .map((tip) => toWhatsAppMarkdown(String(tip || "").trim()))
                   .filter(
                       (tip) =>
                           Boolean(tip) && !forbiddenClinicalContent.test(tip),
