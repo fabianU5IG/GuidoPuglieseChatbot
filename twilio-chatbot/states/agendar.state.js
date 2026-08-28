@@ -1403,14 +1403,20 @@ async function buildTimeResponse(data) {
 // etc.) quede guardado como el nombre del paciente. Un nombre real: solo
 // letras/espacios/guiones/apóstrofes, sin saltos de línea, y un número
 // razonable de palabras.
-function isValidFullName(msg, minLength = 3) {
+// maxWords=6 sirve para ASK_NAME (nombre completo: 2-4 nombres/apellidos
+// juntos). Un solo campo de nombre/apellido (REG_FIRSTNAME, REG_SECONDNAME,
+// REG_FIRSTLASTNAME, REG_SECONDLASTNAME) le pasa maxWords=2 -- de lo
+// contrario, una frase suelta como "el proximo lunes" o "no espere mejor el
+// martes" (puro texto, sin dígitos) pasaba la validación de forma y quedaba
+// guardada tal cual como si fuera el segundo nombre o un apellido real.
+function isValidFullName(msg, minLength = 3, maxWords = 6) {
     const raw = String(msg || "").trim();
     if (raw.length < minLength || raw.length > 60) return false;
     if (/[\n\r]/.test(raw)) return false;
     if (!/^[A-Za-zÀ-ÖØ-öø-ÿÑñ]+(?:[\s'-]+[A-Za-zÀ-ÖØ-öø-ÿÑñ]+)*$/.test(raw)) {
         return false;
     }
-    if (raw.split(/\s+/).length > 6) return false;
+    if (raw.split(/\s+/).length > maxWords) return false;
     return true;
 }
 
@@ -1861,7 +1867,7 @@ export default async function agendarState(msg, data, context = {}) {
             if (isMenuEscapePhrase(msg)) return returnToMenu();
             const v = String(msg || "").trim();
 
-            if (!isValidFullName(v, 2)) {
+            if (!isValidFullName(v, 2, 2)) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
                     currentState: "AGENDAR",
@@ -1889,7 +1895,7 @@ export default async function agendarState(msg, data, context = {}) {
                 data.regPatient.secondName = "";
             } else if (isMenuEscapePhrase(msg)) {
                 return returnToMenu();
-            } else if (isValidFullName(msg, 2)) {
+            } else if (isValidFullName(msg, 2, 2)) {
                 data.regPatient.secondName = capitalize(msg);
             } else {
                 const aiFallback = await resolveFlowFallback({
@@ -1916,7 +1922,7 @@ export default async function agendarState(msg, data, context = {}) {
         case "REG_FIRSTLASTNAME": {
             if (isMenuEscapePhrase(msg)) return returnToMenu();
             const v = String(msg || "").trim();
-            if (!isValidFullName(v, 2)) {
+            if (!isValidFullName(v, 2, 2)) {
                 const aiFallback = await resolveFlowFallback({
                     message: msg,
                     currentState: "AGENDAR",
@@ -1948,7 +1954,7 @@ export default async function agendarState(msg, data, context = {}) {
                 data.regPatient.secondLastName = "";
             } else if (isMenuEscapePhrase(msg)) {
                 return returnToMenu();
-            } else if (isValidFullName(msg, 2)) {
+            } else if (isValidFullName(msg, 2, 2)) {
                 data.regPatient.secondLastName = capitalize(msg);
             } else {
                 const aiFallback = await resolveFlowFallback({

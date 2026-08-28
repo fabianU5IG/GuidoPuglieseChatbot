@@ -1523,9 +1523,10 @@ export default async function dashboardState(msg, data = {}, context) {
             // la base de datos a mano. Ahora la secretaria puede avisarlo en
             // lenguaje natural (ej: "el jueves el doctor no está
             // disponible") directamente desde el menú, sin pasos ni botones.
+            const todayYmd = new Date().toISOString().slice(0, 10);
             const unavailability = await extractDoctorUnavailabilityAI({
                 message: msg,
-                todayYmd: new Date().toISOString().slice(0, 10),
+                todayYmd,
             });
 
             if (unavailability?.isUnavailability && unavailability.confidence >= 0.7) {
@@ -1535,6 +1536,23 @@ export default async function dashboardState(msg, data = {}, context) {
                             (unavailability.action === "UNBLOCK"
                                 ? "Entendí que quieres quitar un bloqueo, pero no logré identificar la fecha exacta.\n\n"
                                 : "Entendí que el doctor no va a estar disponible, pero no logré identificar la fecha exacta.\n\n") +
+                            "¿Me confirmas el día? Por ejemplo: \"el jueves 4 de septiembre\" o \"del 10 al 12 de septiembre\".",
+                        nextState: "DASHBOARD",
+                        data,
+                    };
+                }
+
+                // La IA a veces resuelve una fecha ambigua ("hace 5 años") a
+                // un rango que ya pasó por completo -- un bloqueo así no
+                // sirve para nada (nunca se vuelve a ofrecer ese día) y solo
+                // ensucia el historial. Se pide confirmar la fecha en vez de
+                // guardarlo en silencio.
+                const effectiveEndDate =
+                    unavailability.endDate || unavailability.startDate;
+                if (effectiveEndDate < todayYmd) {
+                    return {
+                        response:
+                            "😊 Esa fecha ya pasó, así que no tendría efecto.\n\n" +
                             "¿Me confirmas el día? Por ejemplo: \"el jueves 4 de septiembre\" o \"del 10 al 12 de septiembre\".",
                         nextState: "DASHBOARD",
                         data,

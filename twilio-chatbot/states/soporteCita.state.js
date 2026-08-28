@@ -64,7 +64,13 @@ function normalizeOption(value = "") {
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .replace(/[\u{1F300}-\u{1FAFF}]/gu, "")
-        .replace(/[._-]+/g, " ")
+        // Solo se colapsa el separador cuando va ENTRE dos caracteres reales
+        // (ej: "c.c" -> "c c", "cita_1" -> "cita 1"). Antes tambi\u00e9n se
+        // colapsaba uno inicial/final ("-1", "1.", "_1"), y un simple typo
+        // con guion como "-1" terminaba normalizado a "1" -- coincidiendo
+        // con una opci\u00f3n num\u00e9rica v\u00e1lida (ej: seleccionaba la primera cita
+        // de la lista, o "1" = CC, o "1" = s\u00ed en una confirmaci\u00f3n).
+        .replace(/(?<=\S)[._-]+(?=\S)/g, " ")
         .replace(/\s+/g, " ")
         .trim();
 }

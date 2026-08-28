@@ -215,8 +215,36 @@ export async function resolveFlowFallback({
         // GO_MENU/GO_SCHEDULE (eso reiniciaría o borraría el registro). Se
         // conserva todo lo ya dado (nombre, documento, etc.) y solo se vuelve
         // a preguntar la fecha.
+        //
+        // Pero esto solo tiene sentido cuando el registro YA terminó y está
+        // eligiendo fecha/hora. Antes solo se comprobaba currentState==="AGENDAR"
+        // sin mirar el paso: si la IA malinterpretaba como CHANGE_DATE algo
+        // dicho a mitad del registro (ej: "el próximo lunes" dado como
+        // segundo nombre, al ser rechazado por el paso, caía aquí), saltaba
+        // directo a ASK_DATE botando en silencio apellidos/fecha de
+        // nacimiento/EPS/habeas data que todavía no se habían pedido.
+        const AGENDAR_REGISTRATION_STEPS = new Set([
+            "ASK_NAME",
+            "ASK_DOC_TYPE",
+            "ASK_DOC_NUMBER",
+            "REG_CONFIRM_NAMES",
+            "REG_FIRSTNAME",
+            "REG_SECONDNAME",
+            "REG_FIRSTLASTNAME",
+            "REG_SECONDLASTNAME",
+            "REG_BIRTHDATE",
+            "REG_GENDER",
+            "REG_EMAIL",
+            "REG_PHONE",
+            "REG_EPS",
+            "REG_HABEAS",
+            "FILTRO_COLUMNA",
+            "FILTRO_CONFIRM",
+        ]);
+
         if (decision === "CHANGE_DATE") {
             if (currentState !== "AGENDAR") return null;
+            if (AGENDAR_REGISTRATION_STEPS.has(currentStep)) return null;
 
             return {
                 response:
