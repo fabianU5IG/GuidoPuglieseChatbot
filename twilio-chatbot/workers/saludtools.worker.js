@@ -630,10 +630,16 @@ async function processAppointmentUpdate(job) {
             saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
         );
 
-        await safeSendWhatsApp(
-            job.phone,
-            `✅ Tu cita fue reagendada correctamente para ${appointmentBody.startAppointment}.`,
-        );
+        // Cuando el job viene del dashboard, ese mensaje ya se le dio a la
+        // secretaria de inmediato al confirmar; reenviar este aviso técnico
+        // (con la fecha en formato crudo de Saludtools) a su mismo chat solo
+        // duplicaba la confirmación con una redacción distinta y confusa.
+        if (payload.source !== "SECRETARY_DASHBOARD") {
+            await safeSendWhatsApp(
+                job.phone,
+                `✅ Tu cita fue reagendada correctamente para ${appointmentBody.startAppointment}.`,
+            );
+        }
     } catch (error) {
         if (isSlotUnavailableError(error)) {
             await markSaludtoolsJobFailed(
@@ -695,10 +701,14 @@ async function processAppointmentDelete(job) {
             appointmentId ? String(appointmentId) : null,
         );
 
-        await safeSendWhatsApp(
-            job.phone,
-            "✅ Tu cita fue cancelada correctamente.",
-        );
+        // Igual que en el reagendamiento: si el job vino del dashboard, la
+        // secretaria ya recibió la confirmación al momento de cancelar.
+        if (payload.source !== "SECRETARY_DASHBOARD") {
+            await safeSendWhatsApp(
+                job.phone,
+                "✅ Tu cita fue cancelada correctamente.",
+            );
+        }
     } catch (error) {
         await handleRetryOrFail({
             job,
