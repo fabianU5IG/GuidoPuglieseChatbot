@@ -446,10 +446,14 @@ async function processAppointmentCreate(job) {
             saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
         );
 
-        await safeSendWhatsApp(
-            job.phone,
-            `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`,
-        );
+        // Igual que en reagendar/cancelar: si el job viene del dashboard, la
+        // secretaria ya recibió la confirmación al crear la cita rápida.
+        if (payload.source !== "SECRETARY_DASHBOARD") {
+            await safeSendWhatsApp(
+                job.phone,
+                `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`,
+            );
+        }
     } catch (error) {
         if (isSlotUnavailableError(error)) {
             if (job.appointment_id) {

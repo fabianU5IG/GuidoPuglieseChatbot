@@ -1,7 +1,6 @@
 import "dotenv/config";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { db } from "../db/mysql.js";
 
 process.env.TWILIO_ACCOUNT_SID ||= "AC00000000000000000000000000000000";
@@ -63,9 +62,14 @@ test("gestión de citas envía la plantilla de Twilio, sin restricciones de colu
     assert.ok(result.template?.contentSid);
 });
 
-test("las citas rápidas se guardan localmente y no se encolan a SaludTools", async () => {
+test("las citas rápidas se guardan localmente y también se encolan para SaludTools", async () => {
+    // Documento único por corrida: si se reusara uno fijo, la segunda vez que
+    // corriera este test contra la BD real ya existiría la cita local y
+    // "created" quedaría en false, sin encolar nada nuevo para Saludtools.
+    const uniqueDoc = `1${Date.now()}`.slice(0, 10);
+
     const result = await dashboardState(
-        "presencial 15/09 08:30 cc 123456789",
+        `presencial 15/09 08:30 cc ${uniqueDoc}`,
         { step: "QUICK_BULK_MESSAGE" },
         { from: "+573153573131" },
     );
@@ -73,18 +77,14 @@ test("las citas rápidas se guardan localmente y no se encolan a SaludTools", as
     assert.equal(result.nextState, "DASHBOARD");
     assert.match(result.response, /Guardadas en la base de datos/i);
     assert.match(result.response, /Citas registradas localmente/i);
-    assert.doesNotMatch(result.response, /Encoladas para SaludTools/i);
-});
+    assert.match(result.response, /sincronizando con Saludtools/i);
 
-test("el bloque de cita rápida no crea jobs APPOINTMENT_CREATE", async () => {
-    const source = await readFile(
-        new URL("../states/dashboard.state.js", import.meta.url),
-        "utf8",
+    const [rows] = await db.query(
+        "SELECT id FROM saludtools_jobs WHERE job_type = 'APPOINTMENT_CREATE' AND dedupe_key LIKE ?",
+        [`dashboard-appointment-create:1:${uniqueDoc}:%`],
     );
-    const quickStart = source.indexOf('case "QUICK_BULK_MESSAGE"');
-    const quickEnd = source.indexOf('case "INBOX"', quickStart);
-    const quickBlock = source.slice(quickStart, quickEnd);
-
-    assert.match(quickBlock, /createSecretaryQuickAppointment/);
-    assert.doesNotMatch(quickBlock, /jobType:\s*"APPOINTMENT_CREATE"/);
+    assert.ok(
+        rows.length > 0,
+        "debe quedar encolado un job APPOINTMENT_CREATE para Saludtools",
+    );
 });

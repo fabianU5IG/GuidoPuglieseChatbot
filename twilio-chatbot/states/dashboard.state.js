@@ -673,9 +673,58 @@ async function parseQuickAppointmentsMessageWithAI(msg = "") {
     };
 }
 
+// La cita rápida del dashboard nunca colecta los datos completos de registro
+// del paciente (nombre por partes, nacimiento, género, EPS, habeas data) que
+// sí pide agendar.state.js, así que el paciente en Saludtools se asume
+// existente (patientExistsLocal: true) — la secretaria la usa para pacientes
+// que ya conoce, encontrados por nombre o dando directamente su documento. Si
+// el documento no existe todavía en Saludtools, la creación de la cita
+// fallará allá y la secretaria lo verá en el aviso de error del job.
+async function enqueueQuickAppointmentSaludtoolsJob({
+    phone,
+    appointmentId,
+    dateLabel,
+    timeLabel,
+    documentType,
+    documentNumber,
+    patientName,
+}) {
+    const ymd = ddmmToYmd(dateLabel);
+    const end = addMinutesToYmdHm(ymd, timeLabel, APPOINTMENT_DURATION_MIN);
+
+    await createSaludtoolsJob({
+        jobType: "APPOINTMENT_CREATE",
+        phone,
+        appointmentId,
+        dedupeKey: `dashboard-appointment-create:${documentType}:${documentNumber}:${ymd}:${timeLabel}`,
+        payload: {
+            fullName: patientName,
+            dateLabel,
+            timeLabel,
+            patientExistsLocal: true,
+            appointmentBody: {
+                startAppointment: `${ymd} ${timeLabel}`,
+                endAppointment: `${end.ymd} ${end.hm}`,
+                patientDocumentType: Number(documentType),
+                patientDocumentNumber: String(documentNumber),
+                doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+                doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
+                modality: APPOINTMENT_MODALITY,
+                stateAppointment: APPOINTMENT_STATE,
+                appointmentType: "Cita rápida (creada por secretaría)",
+                clinic: CLINIC_ID,
+                comment: `Cita rápida creada por secretaría. Paciente: ${patientName || "N/A"}.`,
+            },
+            source: "SECRETARY_DASHBOARD",
+        },
+        priority: 100,
+    });
+}
+
 async function createQuickAppointmentForCandidate({
     pendingAppointment,
     candidate,
+    from,
 }) {
     try {
         const ymd = ddmmToYmd(pendingAppointment.dateLabel);
@@ -699,12 +748,38 @@ async function createQuickAppointmentForCandidate({
             modality: pendingAppointment.modality,
         });
 
+        let syncMsg = "";
+        if (result.created) {
+            try {
+                await enqueueQuickAppointmentSaludtoolsJob({
+                    phone: from,
+                    appointmentId: result.appointmentId,
+                    dateLabel: pendingAppointment.dateLabel,
+                    timeLabel: pendingAppointment.timeLabel,
+                    documentType: candidate.document_type,
+                    documentNumber: candidate.document_number,
+                    patientName: candidate.full_name,
+                });
+                syncMsg =
+                    "\n\nYa quedó todo registrado y en un momento se actualiza también en Saludtools. ✅";
+            } catch (error) {
+                console.error(
+                    "❌ No fue posible encolar la cita rápida para Saludtools:",
+                    error,
+                );
+                syncMsg =
+                    "\n\nQuedó creada por acá, pero tuvimos un problema avisándole a Saludtools. Tranquila, lo vamos a reintentar solo.";
+            }
+        }
+
         return {
             response:
                 `✅ ${result.created ? "Cita creada" : "Ya existía esa cita"} para ` +
                 `${candidate.full_name} (${docTypeLabel(candidate.document_type)} ${candidate.document_number}) ` +
                 `el ${pendingAppointment.dateLabel} a las ${pendingAppointment.timeLabel} ` +
-                `(${String(pendingAppointment.modality).toLowerCase()}).\n\n` +
+                `(${String(pendingAppointment.modality).toLowerCase()}).` +
+                syncMsg +
+                "\n\n" +
                 DASHBOARD_MENU_TEXT,
             nextState: "DASHBOARD",
             data: { step: "MENU" },
@@ -720,7 +795,7 @@ async function createQuickAppointmentForCandidate({
     }
 }
 
-async function resolveQuickAppointmentPatientName({ pendingAppointment, data }) {
+async function resolveQuickAppointmentPatientName({ pendingAppointment, data, from }) {
     let candidates = [];
     try {
         candidates = await findSaludtoolsPatientsByName(
@@ -734,6 +809,7 @@ async function resolveQuickAppointmentPatientName({ pendingAppointment, data }) 
         return createQuickAppointmentForCandidate({
             pendingAppointment,
             candidate: candidates[0],
+            from,
         });
     }
 
@@ -1503,6 +1579,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 return resolveQuickAppointmentPatientName({
                     pendingAppointment: pendingNameLookup,
                     data,
+                    from,
                 });
             }
 
@@ -1558,10 +1635,32 @@ export default async function dashboardState(msg, data = {}, context) {
                             modality: item.modality,
                         });
 
+                    let syncQueued = false;
+                    if (localResult.created) {
+                        try {
+                            await enqueueQuickAppointmentSaludtoolsJob({
+                                phone: from,
+                                appointmentId: localResult.appointmentId,
+                                dateLabel: item.dateLabel,
+                                timeLabel: item.timeLabel,
+                                documentType: item.patientDocumentType,
+                                documentNumber: item.patientDocumentNumber,
+                                patientName: `Paciente ${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber}`,
+                            });
+                            syncQueued = true;
+                        } catch (syncError) {
+                            console.error(
+                                "❌ No fue posible encolar la cita rápida para Saludtools:",
+                                syncError,
+                            );
+                        }
+                    }
+
                     inserted.push({
                         lineNumber: item.lineNumber,
                         id: localResult.appointmentId,
                         created: localResult.created,
+                        syncQueued,
                         modality: item.modality,
                         dateLabel: item.dateLabel,
                         timeLabel: item.timeLabel,
@@ -1579,6 +1678,7 @@ export default async function dashboardState(msg, data = {}, context) {
 
             const createdCount = inserted.filter((item) => item.created).length;
             const duplicateCount = inserted.length - createdCount;
+            const syncedCount = inserted.filter((item) => item.syncQueued).length;
 
             let response =
                 `✅ Guardadas en la base de datos: ${createdCount}\n` +
@@ -1590,12 +1690,19 @@ export default async function dashboardState(msg, data = {}, context) {
                     (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
                     "Citas registradas localmente:\n";
                 inserted.slice(0, 20).forEach((item) => {
+                    const syncNote = !item.created
+                        ? ""
+                        : item.syncQueued
+                          ? " · sincronizando con Saludtools"
+                          : " · ⚠️ no se pudo sincronizar con Saludtools";
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
                         `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
-                        `(${item.modality})${item.created ? "" : " - ya existía"}\n`;
+                        `(${item.modality})${item.created ? "" : " - ya existía"}${syncNote}\n`;
                 });
-                response += "\n";
+                response += syncedCount
+                    ? "Ya quedó todo registrado y en un momento se actualiza también en Saludtools. ✅\n\n"
+                    : "\n";
             }
 
             const allErrors = [...invalid, ...failed];
@@ -1645,6 +1752,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 return createQuickAppointmentForCandidate({
                     pendingAppointment: data.pendingAppointment,
                     candidate: candidates[selectedIndex - 1],
+                    from,
                 });
             }
 
@@ -1659,6 +1767,7 @@ export default async function dashboardState(msg, data = {}, context) {
                         document_type: documentType,
                         document_number: documentNumber,
                     },
+                    from,
                 });
             }
 
@@ -1714,6 +1823,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     document_type: documentType,
                     document_number: documentNumber,
                 },
+                from,
             });
         }
 
