@@ -17,6 +17,7 @@ import {
     parseDashboardAppointmentsAI,
     summarizeSecretaryCasesAI,
     extractDoctorUnavailabilityAI,
+    classifyDashboardIntentAI,
 } from "../services/azure.ai.services.js";
 import {
     addDoctorUnavailability,
@@ -30,7 +31,6 @@ import {
  * =========================
  */
 const SECRETARY_CASES_PAGE_SIZE = 10;
-const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
@@ -66,17 +66,156 @@ const DASHBOARD_MENU_TEXT =
     "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario, o \"desbloquea el 1/09\" para quitarlo.\n\n" +
     "0️⃣ Salir";
 
-function returnToMainMenu() {
+// Antes, "0️⃣ Salir"/"1️⃣ Terminar" del panel reutilizaban por error la
+// misma función de salida que usan los pacientes al terminar en el menú
+// (MENU), que manda la plantilla de bienvenida del consultorio — la
+// secretaria terminaba viendo literalmente el mensaje de bienvenida de un
+// paciente nuevo. El panel nunca "sale" de verdad (chatbot.js siempre
+// devuelve a un número de secretaría a DASHBOARD), así que esto solo
+// despide y reinicia el paso interno al menú del panel.
+function exitDashboard() {
     return {
-        response: null,
-        nextState: "MENU",
-        data: {},
-        sendTemplate: true,
-        template: {
-            contentSid: TEMPLATE_MENU_PRINCIPAL,
-            variables: null,
-        },
+        response: "👋 Listo, quedo atenta a lo que necesites.",
+        nextState: "DASHBOARD",
+        data: { step: "MENU" },
     };
+}
+
+function buildQuickAppointmentPrompt() {
+    return (
+        "📝 *Crear cita rápida*\n\n" +
+        "Puedes enviar *una o varias citas por mensaje*.\n" +
+        "También puedes enviar *varios mensajes seguidos*.\n\n" +
+        "Escribe *una cita por línea* con este formato:\n\n" +
+        "*presencial 15/04 08:30 cc 123456789*\n" +
+        "*llamada 15/04 09:00 ce 987654321*\n\n" +
+        "Campos por línea:\n" +
+        "1. modalidad: presencial o llamada\n" +
+        "2. fecha: DD/MM\n" +
+        "3. hora: HH:MM\n" +
+        "4. tipo documento: cc, ce o ti\n" +
+        "5. número de documento\n\n" +
+        "🤖 O si no tienes el documento a la mano, también puedes escribirlo natural, dando el nombre del paciente:\n" +
+        "_\"cita para fabian mañana a las 8am\"_\n" +
+        "Busco al paciente por nombre y te confirmo o te pregunto el documento si no lo encuentro.\n\n" +
+        "Cuando termines, escribe *fin* o *0*."
+    );
+}
+
+// Filtro barato para no gastar una llamada real a Azure OpenAI en el caso
+// normal (número de menú, índice de lista, fecha DD/MM, documento con
+// prefijo): la IA de intención del panel solo debe llamarse cuando el texto
+// realmente no calzó con nada esperado en el paso actual.
+function looksLikeStructuredDashboardInput(raw) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) return true;
+    if (/^\d{1,4}$/.test(trimmed)) return true;
+    if (/^\d{1,2}\/\d{1,2}$/.test(trimmed)) return true;
+    if (/^(cc|ce|ti|rc|pa)\s*\d+$/i.test(trimmed)) return true;
+    return false;
+}
+
+const AI_DASHBOARD_FALLBACK_MIN_CONFIDENCE = Number(
+    process.env.AI_NAV_FALLBACK_MIN_CONFIDENCE || 0.7,
+);
+
+/**
+ * Único punto de entrada de IA para "no reconocí este mensaje" dentro del
+ * panel de secretaría — igual en espíritu a resolveFlowFallback() del lado
+ * de pacientes, pero con las acciones propias del dashboard. Se llama desde
+ * cada paso, justo antes de su propio mensaje de "opción inválida", y NUNCA
+ * lanza: si no hay nada confiable que hacer, devuelve null y el llamador
+ * simplemente sigue con su comportamiento de siempre.
+ */
+async function applyDashboardAIFallback(msg, currentStep) {
+    if (looksLikeStructuredDashboardInput(msg)) return null;
+
+    try {
+        const result = await classifyDashboardIntentAI({
+            message: msg,
+            currentStep,
+        });
+
+        const decision =
+            !result || result.confidence < AI_DASHBOARD_FALLBACK_MIN_CONFIDENCE
+                ? "LOW_CONFIDENCE"
+                : result.intent;
+
+        console.log("🧭 IA fallback dashboard:", {
+            currentStep,
+            message: msg,
+            intent: result?.intent || null,
+            confidence: result?.confidence ?? null,
+            decision,
+        });
+
+        if (decision === "LOW_CONFIDENCE" || decision === "UNKNOWN") return null;
+
+        switch (decision) {
+            case "GO_MAIN_MENU":
+                return {
+                    response: DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+
+            case "GO_PENDING_CASES": {
+                const cases = await getAllPendingCases();
+                return buildPendingCasesResponse(cases, 0);
+            }
+
+            case "GO_AI_SUMMARY": {
+                const cases = await getAllPendingCases();
+                const summary = await summarizeSecretaryCasesAI(cases);
+                return {
+                    response:
+                        "🤖 Resumen IA de pendientes\n\n" +
+                        (summary ||
+                            "No encontré suficientes datos para generar un resumen.") +
+                        "\n\n" +
+                        DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            case "GO_CANCEL":
+                return {
+                    response:
+                        "❌ *Cancelar cita*\n\n" +
+                        "¿A nombre de quién está la cita? Escribe el nombre del paciente o su número de documento.\n\n" +
+                        "0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data: { step: "CANCEL_ASK_PATIENT" },
+                };
+
+            case "GO_RESCHEDULE":
+                return {
+                    response:
+                        "🔄 *Reagendar cita*\n\n" +
+                        "¿A nombre de quién está la cita? Escribe el nombre del paciente o su número de documento.\n\n" +
+                        "0️⃣ Cancelar",
+                    nextState: "DASHBOARD",
+                    data: { step: "RESCHEDULE_ASK_PATIENT" },
+                };
+
+            case "GO_QUICK_APPOINTMENT":
+                return {
+                    response: buildQuickAppointmentPrompt(),
+                    nextState: "DASHBOARD",
+                    data: { step: "QUICK_BULK_MESSAGE" },
+                };
+
+            case "EXIT":
+                return exitDashboard();
+
+            default:
+                return null;
+        }
+    } catch (error) {
+        console.error("❌ applyDashboardAIFallback error inesperado:", error);
+        return null;
+    }
 }
 
 function capitalizeWords(str = "") {
@@ -1178,29 +1317,13 @@ export default async function dashboardState(msg, data = {}, context) {
     switch (data.step) {
         case "MENU": {
             if (msg === "0") {
-                return returnToMainMenu();
+                return exitDashboard();
             }
 
             if (msg === "1") {
                 data.step = "QUICK_BULK_MESSAGE";
                 return {
-                    response:
-                        "📝 *Crear cita rápida*\n\n" +
-                        "Puedes enviar *una o varias citas por mensaje*.\n" +
-                        "También puedes enviar *varios mensajes seguidos*.\n\n" +
-                        "Escribe *una cita por línea* con este formato:\n\n" +
-                        "*presencial 15/04 08:30 cc 123456789*\n" +
-                        "*llamada 15/04 09:00 ce 987654321*\n\n" +
-                        "Campos por línea:\n" +
-                        "1. modalidad: presencial o llamada\n" +
-                        "2. fecha: DD/MM\n" +
-                        "3. hora: HH:MM\n" +
-                        "4. tipo documento: cc, ce o ti\n" +
-                        "5. número de documento\n\n" +
-                        "🤖 O si no tienes el documento a la mano, también puedes escribirlo natural, dando el nombre del paciente:\n" +
-                        "_\"cita para fabian mañana a las 8am\"_\n" +
-                        "Busco al paciente por nombre y te confirmo o te pregunto el documento si no lo encuentro.\n\n" +
-                        "Cuando termines, escribe *fin* o *0*.",
+                    response: buildQuickAppointmentPrompt(),
                     nextState: "DASHBOARD",
                     data,
                 };
@@ -1351,6 +1474,9 @@ export default async function dashboardState(msg, data = {}, context) {
                     };
                 }
             }
+
+            const aiFallback = await applyDashboardAIFallback(msg, "MENU");
+            if (aiFallback) return aiFallback;
 
             return {
                 response: DASHBOARD_MENU_TEXT,
@@ -1536,6 +1662,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 });
             }
 
+            const quickSelectFallback = await applyDashboardAIFallback(
+                msg,
+                "QUICK_SELECT_PATIENT",
+            );
+            if (quickSelectFallback) return quickSelectFallback;
+
             return {
                 response:
                     "😊 No entendí tu respuesta.\n\n" +
@@ -1559,6 +1691,12 @@ export default async function dashboardState(msg, data = {}, context) {
             const { documentType, documentNumber } = parseQuickDocumentReply(msg);
 
             if (!documentNumber) {
+                const quickDocFallback = await applyDashboardAIFallback(
+                    msg,
+                    "QUICK_ASK_DOCUMENT",
+                );
+                if (quickDocFallback) return quickDocFallback;
+
                 return {
                     response:
                         "😊 No reconocí ese documento.\n\n" +
@@ -1646,6 +1784,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 });
             }
 
+            const cancelSelectPatientFallback = await applyDashboardAIFallback(
+                msg,
+                "CANCEL_SELECT_PATIENT",
+            );
+            if (cancelSelectPatientFallback) return cancelSelectPatientFallback;
+
             return {
                 response:
                     "😊 No entendí tu respuesta. Responde con el número de la lista, el documento directamente, o 0 para cancelar.",
@@ -1669,6 +1813,12 @@ export default async function dashboardState(msg, data = {}, context) {
             const index = Number(msg) - 1;
 
             if (!Number.isInteger(index) || !appointments[index]) {
+                const cancelSelectApptFallback = await applyDashboardAIFallback(
+                    msg,
+                    "CANCEL_SELECT_APPOINTMENT",
+                );
+                if (cancelSelectApptFallback) return cancelSelectApptFallback;
+
                 return {
                     response:
                         buildCancelAppointmentPrompt(appointments) +
@@ -1784,6 +1934,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 });
             }
 
+            const rescheduleSelectPatientFallback = await applyDashboardAIFallback(
+                msg,
+                "RESCHEDULE_SELECT_PATIENT",
+            );
+            if (rescheduleSelectPatientFallback) return rescheduleSelectPatientFallback;
+
             return {
                 response:
                     "😊 No entendí tu respuesta. Responde con el número de la lista, el documento directamente, o 0 para cancelar.",
@@ -1807,6 +1963,12 @@ export default async function dashboardState(msg, data = {}, context) {
             const index = Number(msg) - 1;
 
             if (!Number.isInteger(index) || !appointments[index]) {
+                const rescheduleSelectApptFallback = await applyDashboardAIFallback(
+                    msg,
+                    "RESCHEDULE_SELECT_APPOINTMENT",
+                );
+                if (rescheduleSelectApptFallback) return rescheduleSelectApptFallback;
+
                 return {
                     response:
                         buildRescheduleAppointmentPrompt(appointments) +
@@ -1845,7 +2007,7 @@ export default async function dashboardState(msg, data = {}, context) {
 
         case "SELECT_CASE": {
             if (msg === "0") {
-                return returnToMainMenu();
+                return exitDashboard();
             }
 
             const allCases = Array.isArray(data.cases) ? data.cases : [];
@@ -1883,6 +2045,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 : -1;
 
             if (!Number.isInteger(index) || !allCases[index]) {
+                const selectCaseFallback = await applyDashboardAIFallback(
+                    msg,
+                    "SELECT_CASE",
+                );
+                if (selectCaseFallback) return selectCaseFallback;
+
                 return buildPendingCasesResponse(
                     allCases,
                     currentPage,
@@ -1967,6 +2135,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 );
             }
 
+            const secretaryCaseFallback = await applyDashboardAIFallback(
+                msg,
+                "SECRETARY_CASE_ACTIONS",
+            );
+            if (secretaryCaseFallback) return secretaryCaseFallback;
+
             return {
                 response: "❌ Opción inválida",
                 nextState: "DASHBOARD",
@@ -2033,6 +2207,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 });
             }
 
+            const caseActionsFallback = await applyDashboardAIFallback(
+                msg,
+                "CASE_ACTIONS",
+            );
+            if (caseActionsFallback) return caseActionsFallback;
+
             return {
                 response: "❌ Opción inválida",
                 nextState: "DASHBOARD",
@@ -2058,6 +2238,12 @@ export default async function dashboardState(msg, data = {}, context) {
 
             const id = raw.replace(/\D/g, "");
             if (!id) {
+                const saludIdFallback = await applyDashboardAIFallback(
+                    msg,
+                    "ASK_SALUD_ID",
+                );
+                if (saludIdFallback) return saludIdFallback;
+
                 return {
                     response:
                         "❌ ID inválido. Escribe solo números, o 0️⃣ para omitir Saludtools:",
@@ -2096,6 +2282,9 @@ export default async function dashboardState(msg, data = {}, context) {
             }
 
             if (!isValidDateDDMM(msg)) {
+                const askDateFallback = await applyDashboardAIFallback(msg, "ASK_DATE");
+                if (askDateFallback) return askDateFallback;
+
                 return {
                     response:
                         "❌ Fecha inválida.\nDebe ser DD/MM y futura.\n\nIntenta de nuevo:",
@@ -2163,6 +2352,9 @@ export default async function dashboardState(msg, data = {}, context) {
             const hour = slots[index];
 
             if (!hour) {
+                const askTimeFallback = await applyDashboardAIFallback(msg, "ASK_TIME");
+                if (askTimeFallback) return askTimeFallback;
+
                 return {
                     response:
                         "❌ Opción inválida. Elige un número del listado.",
@@ -2341,16 +2533,26 @@ export default async function dashboardState(msg, data = {}, context) {
 
         case "AFTER_ACTION": {
             if (msg === "1") {
-                return returnToMainMenu();
+                return exitDashboard();
             }
 
+            // Antes esto saltaba directo al listado de casos pendientes
+            // (paso INBOX) aunque el botón decía "Volver al dashboard" — la
+            // secretaria terminaba en una pantalla distinta a la que
+            // esperaba. Ahora sí muestra el menú principal del panel.
             if (msg === "2") {
                 return {
-                    response: "📋 Volviendo al dashboard...\n",
+                    response: DASHBOARD_MENU_TEXT,
                     nextState: "DASHBOARD",
-                    data: { step: "INBOX" },
+                    data: { step: "MENU" },
                 };
             }
+
+            const afterActionFallback = await applyDashboardAIFallback(
+                msg,
+                "AFTER_ACTION",
+            );
+            if (afterActionFallback) return afterActionFallback;
 
             return {
                 response: "Selecciona 1️⃣ o 2️⃣",
@@ -2361,9 +2563,9 @@ export default async function dashboardState(msg, data = {}, context) {
 
         default:
             return {
-                response: "⚠️ Reiniciando dashboard...",
+                response: DASHBOARD_MENU_TEXT,
                 nextState: "DASHBOARD",
-                data: { step: "INBOX" },
+                data: { step: "MENU" },
             };
     }
 }

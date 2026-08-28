@@ -280,6 +280,67 @@ export async function classifyFlowIntentAI({
     }
 }
 
+const DASHBOARD_FALLBACK_INTENTS = [
+    "GO_MAIN_MENU",
+    "GO_PENDING_CASES",
+    "GO_AI_SUMMARY",
+    "GO_CANCEL",
+    "GO_RESCHEDULE",
+    "GO_QUICK_APPOINTMENT",
+    "EXIT",
+    "UNKNOWN",
+];
+
+/**
+ * Mismo propósito que classifyFlowIntentAI, pero para el panel de secretaría
+ * (dashboard.state.js), que tiene sus propias acciones (cancelar/reagendar
+ * citas, ver casos, etc.) sin relación con el menú de pacientes. Solo debe
+ * llamarse cuando el mensaje de la secretaria ya no calzó con el número/
+ * formato esperado del paso actual.
+ */
+export async function classifyDashboardIntentAI({ message, currentStep = null }) {
+    try {
+        const raw = await chatCompletion({
+            temperature: 0,
+            maxTokens: 150,
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "Eres un clasificador JSON de intención de navegación para el panel de secretaría (WhatsApp) de un consultorio médico. " +
+                        "La secretaria escribió un mensaje que NO coincidió con ninguna opción numerada ni formato esperado del paso actual del panel. " +
+                        "Devuelve únicamente JSON válido, sin markdown: {\"intent\":\"...\",\"confidence\":0.0}. " +
+                        "intent debe ser exactamente uno de: GO_MAIN_MENU, GO_PENDING_CASES, GO_AI_SUMMARY, GO_CANCEL, GO_RESCHEDULE, GO_QUICK_APPOINTMENT, EXIT, UNKNOWN. " +
+                        "GO_MAIN_MENU: quiere volver al menú principal del panel (ej: 'volver al menu', 'hola', 'inicio', 'menu'). " +
+                        "GO_PENDING_CASES: quiere ver los casos/citas pendientes. " +
+                        "GO_AI_SUMMARY: quiere un resumen de los pendientes. " +
+                        "GO_CANCEL: quiere cancelar una cita de un paciente. " +
+                        "GO_RESCHEDULE: quiere reagendar/cambiar la fecha u hora de una cita de un paciente. " +
+                        "GO_QUICK_APPOINTMENT: quiere crear/agendar una cita nueva rápida. " +
+                        "EXIT: quiere salir/terminar del panel (ej: 'listo', 'gracias', 'ya terminé', 'nada mas'). " +
+                        "UNKNOWN: no hay relación clara con ninguna acción del panel, o el mensaje en realidad parece ser el dato que el paso actual estaba esperando (ej: un nombre, un número de documento, una fecha) y no debe interrumpirse. No inventes intenciones fuera de la lista.",
+                },
+                {
+                    role: "user",
+                    content: JSON.stringify({ message, currentStep }),
+                },
+            ],
+        });
+
+        const parsed = extractJson(raw);
+        if (!parsed || typeof parsed !== "object") return null;
+
+        const intent = DASHBOARD_FALLBACK_INTENTS.includes(parsed.intent)
+            ? parsed.intent
+            : "UNKNOWN";
+
+        return { intent, confidence: Number(parsed.confidence || 0) };
+    } catch (error) {
+        console.error("Azure AI classifyDashboardIntentAI Error:", error?.message || error);
+        return null;
+    }
+}
+
 const REGISTRATION_INPUT_INTENTS = ["PROCEED", "CORRECT_PREVIOUS", "UNCLEAR"];
 
 /**
