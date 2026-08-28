@@ -157,10 +157,11 @@ export async function normalizeAppointmentInputAI({ message, step, data = {} }) 
 }
 
 /**
- * Interpreta un aviso de la secretaria en lenguaje natural sobre que el
- * doctor no va a atender ("el jueves no está", "mañana no hay consulta",
- * "del 10 al 12 de septiembre el doctor está de viaje") y lo convierte en
- * un rango de fechas concreto para bloquear en la agenda.
+ * Interpreta un aviso de la secretaria en lenguaje natural sobre la
+ * disponibilidad del doctor: puede ser que NO va a atender ("el jueves no
+ * está", "del 10 al 12 de septiembre está de viaje", "no está disponible de
+ * 8 a 9") o que quiere DESHACER un bloqueo ya puesto ("desbloquea el 1/09",
+ * "ya el jueves sí atiende", "quita el bloqueo del viernes").
  */
 export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
     try {
@@ -175,13 +176,16 @@ export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
                         "La secretaria puede avisar, en lenguaje natural, que el doctor NO va a atender uno o varios días, " +
                         "todo el día o solo un rango de horas puntual " +
                         "(ej: 'el jueves no está', 'mañana no hay consulta', 'del 10 al 12 de septiembre está de viaje', " +
-                        "'bloquea el 5 de septiembre', 'el jueves no está disponible de 8 a 9', 'mañana solo atiende en la tarde'). " +
+                        "'bloquea el 5 de septiembre', 'el jueves no está disponible de 8 a 9', 'mañana solo atiende en la tarde'), " +
+                        "o puede pedir DESHACER un bloqueo que ya había puesto (ej: 'desbloquea el 1/09', 'quita el bloqueo del jueves', " +
+                        "'ya el doctor sí atiende el viernes', 'cancela lo del 5 de septiembre'). " +
                         "Devuelve únicamente JSON válido, sin markdown: " +
-                        '{"isUnavailability":true|false,"startDate":"YYYY-MM-DD"|null,"endDate":"YYYY-MM-DD"|null,"startTime":"HH:MM"|null,"endTime":"HH:MM"|null,"reason":"..."|null,"confidence":0.0}. ' +
-                        "isUnavailability es true solo si el mensaje claramente avisa una ausencia/bloqueo del doctor (no una pregunta ni un agendamiento de paciente). " +
+                        '{"isUnavailability":true|false,"action":"BLOCK"|"UNBLOCK","startDate":"YYYY-MM-DD"|null,"endDate":"YYYY-MM-DD"|null,"startTime":"HH:MM"|null,"endTime":"HH:MM"|null,"reason":"..."|null,"confidence":0.0}. ' +
+                        "isUnavailability es true solo si el mensaje claramente avisa una ausencia/bloqueo o pide deshacer uno (no una pregunta ni un agendamiento de paciente). " +
+                        "action es 'UNBLOCK' solo si la secretaria pide explícitamente deshacer/quitar/cancelar un bloqueo anterior; en cualquier otro caso (avisar una ausencia nueva) usa 'BLOCK'. " +
                         "Si es un solo día, startDate y endDate deben ser la misma fecha. " +
                         "startTime/endTime SOLO si la secretaria menciona una hora o franja puntual (ej: 'de 8 a 9' -> startTime:08:00,endTime:09:00; 'solo en la tarde' -> startTime:12:00,endTime:23:59; 'solo en la mañana' -> startTime:00:00,endTime:12:00). " +
-                        "Si el aviso es de todo el día sin mencionar ninguna hora, deja startTime y endTime en null (bloquea el día completo). " +
+                        "Si el aviso es de todo el día sin mencionar ninguna hora, deja startTime y endTime en null (bloquea/desbloquea el día completo). " +
                         "Usa `today` para resolver fechas relativas ('mañana', 'el jueves', 'la próxima semana'); si el día de la semana ya pasó esta semana, usa la próxima ocurrencia. " +
                         "Si no hay certeza suficiente sobre las fechas, usa isUnavailability:false.",
                 },
@@ -197,6 +201,7 @@ export async function extractDoctorUnavailabilityAI({ message, todayYmd }) {
 
         return {
             isUnavailability: Boolean(parsed.isUnavailability),
+            action: parsed.action === "UNBLOCK" ? "UNBLOCK" : "BLOCK",
             startDate: parsed.startDate || null,
             endDate: parsed.endDate || parsed.startDate || null,
             startTime: parsed.startTime || null,

@@ -21,6 +21,7 @@ import {
 import {
     addDoctorUnavailability,
     getScheduleBlocksForYmd,
+    removeDoctorUnavailabilityForYmd,
 } from "../services/doctor-schedule.service.js";
 
 /**
@@ -62,7 +63,7 @@ const DASHBOARD_MENU_TEXT =
     "3️⃣ Resumen IA de pendientes\n" +
     "4️⃣ Cancelar cita\n" +
     "5️⃣ Reagendar cita\n\n" +
-    "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario.\n\n" +
+    "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario, o \"desbloquea el 1/09\" para quitarlo.\n\n" +
     "0️⃣ Salir";
 
 function returnToMainMenu() {
@@ -1265,11 +1266,53 @@ export default async function dashboardState(msg, data = {}, context) {
                 if (!unavailability.startDate) {
                     return {
                         response:
-                            "Entendí que el doctor no va a estar disponible, pero no logré identificar la fecha exacta.\n\n" +
+                            (unavailability.action === "UNBLOCK"
+                                ? "Entendí que quieres quitar un bloqueo, pero no logré identificar la fecha exacta.\n\n"
+                                : "Entendí que el doctor no va a estar disponible, pero no logré identificar la fecha exacta.\n\n") +
                             "¿Me confirmas el día? Por ejemplo: \"el jueves 4 de septiembre\" o \"del 10 al 12 de septiembre\".",
                         nextState: "DASHBOARD",
                         data,
                     };
+                }
+
+                const formatBlockDate = (ymd) => {
+                    const [y, m, d] = String(ymd).split("-");
+                    return `${d}/${m}/${y}`;
+                };
+                const rangeLabel =
+                    unavailability.startDate === unavailability.endDate
+                        ? formatBlockDate(unavailability.startDate)
+                        : `${formatBlockDate(unavailability.startDate)} al ${formatBlockDate(unavailability.endDate)}`;
+
+                if (unavailability.action === "UNBLOCK") {
+                    try {
+                        const removed = await removeDoctorUnavailabilityForYmd(
+                            unavailability.startDate,
+                        );
+
+                        return {
+                            response:
+                                (removed
+                                    ? `✅ Listo, quité el bloqueo del ${rangeLabel}.\n\nEl bot ya vuelve a ofrecer horarios normales ese día.`
+                                    : `😊 No tenía ningún bloqueo registrado para el ${rangeLabel}.`) +
+                                "\n\n" +
+                                DASHBOARD_MENU_TEXT,
+                            nextState: "DASHBOARD",
+                            data: { step: "MENU" },
+                        };
+                    } catch (error) {
+                        console.error(
+                            "❌ No fue posible quitar el bloqueo del doctor:",
+                            error,
+                        );
+                        return {
+                            response:
+                                "😊 Tuve un problema quitando el bloqueo. Intenta de nuevo en un momento.\n\n" +
+                                DASHBOARD_MENU_TEXT,
+                            nextState: "DASHBOARD",
+                            data: { step: "MENU" },
+                        };
+                    }
                 }
 
                 try {
@@ -1282,14 +1325,6 @@ export default async function dashboardState(msg, data = {}, context) {
                         createdBy: context.from,
                     });
 
-                    const formatBlockDate = (ymd) => {
-                        const [y, m, d] = String(ymd).split("-");
-                        return `${d}/${m}/${y}`;
-                    };
-                    const rangeLabel =
-                        unavailability.startDate === unavailability.endDate
-                            ? formatBlockDate(unavailability.startDate)
-                            : `${formatBlockDate(unavailability.startDate)} al ${formatBlockDate(unavailability.endDate)}`;
                     const hourLabel =
                         unavailability.startTime && unavailability.endTime
                             ? ` de ${unavailability.startTime} a ${unavailability.endTime}`
@@ -2095,6 +2130,29 @@ export default async function dashboardState(msg, data = {}, context) {
                     "↩️ Volviendo al listado",
                     Number(data.inboxPage ?? data.page ?? 0),
                 );
+            }
+
+            // Si el día resultó sin atención (festivo, bloqueado, o
+            // simplemente no le toca), el mensaje anterior invita a escribir
+            // otra fecha — pero seguíamos esperando solo un número de la
+            // lista (vacía) y cualquier fecha nueva caía en "Opción
+            // inválida". Ahora si escribe una fecha aquí, se reintenta con
+            // esa fecha en vez de quedar atascado.
+            if (isValidDateDDMM(msg)) {
+                const ymd = ddmmToYmd(msg);
+
+                if (isHoliday(ymd)) {
+                    return {
+                        response:
+                            "❌ La fecha seleccionada corresponde a un día festivo en Colombia.\n\nSelecciona otra fecha:",
+                        nextState: "DASHBOARD",
+                        data,
+                    };
+                }
+
+                data.newDate = msg;
+                data.page = 0;
+                return await buildTimeResponseForDashboard(data);
             }
 
             if (msg === "7") {

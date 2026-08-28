@@ -146,6 +146,21 @@ export async function addDoctorUnavailability({
     );
 }
 
+// Quita cualquier bloqueo que incluya esa fecha (día completo o por horas).
+// Simplificación deliberada: si el bloqueo era un rango de varios días (ej:
+// "del 10 al 12"), pedir "desbloquea el 11" borra el rango completo en vez
+// de recortarlo — es el caso normal (un bloqueo por vez) el que importa hoy.
+export async function removeDoctorUnavailabilityForYmd(ymd) {
+    const [result] = await db.query(
+        `
+        DELETE FROM doctor_unavailability
+        WHERE start_date <= ? AND end_date >= ?
+        `,
+        [ymd, ymd],
+    );
+    return result.affectedRows;
+}
+
 export async function getUpcomingDoctorUnavailability() {
     const [rows] = await db.query(
         `
