@@ -10,7 +10,11 @@ import {
     createSecretaryQuickAppointment,
     findSaludtoolsPatientsByName,
 } from "../services/chatbot-db.service.js";
-import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
+import {
+    createSaludtoolsJob,
+    getRecentFailedSaludtoolsJobs,
+    retrySaludtoolsJob,
+} from "../services/saludtools-jobs.service.js";
 import { searchAppointmentsByPatientInSaludtools } from "../services/saludtools-api.service.js";
 import { SALUDTOOLS, SECRETARY_PHONES } from "../constants.js";
 import {
@@ -62,7 +66,8 @@ const DASHBOARD_MENU_TEXT =
     "2️⃣ Ver casos pendientes\n" +
     "3️⃣ Resumen IA de pendientes\n" +
     "4️⃣ Cancelar cita\n" +
-    "5️⃣ Reagendar cita\n\n" +
+    "5️⃣ Reagendar cita\n" +
+    "6️⃣ Sincronizaciones fallidas\n\n" +
     "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario, o \"desbloquea el 1/09\" para quitarlo.\n\n" +
     "0️⃣ Salir";
 
@@ -205,6 +210,9 @@ async function applyDashboardAIFallback(msg, currentStep) {
                     nextState: "DASHBOARD",
                     data: { step: "QUICK_BULK_MESSAGE" },
                 };
+
+            case "GO_FAILED_JOBS":
+                return await buildFailedJobsResponse();
 
             case "EXIT":
                 return exitDashboard();
@@ -1022,6 +1030,63 @@ async function returnToInbox(extra = "", page = 0) {
     return buildPendingCasesResponse(cases, page, extra);
 }
 
+const FAILED_JOB_TYPE_LABELS = {
+    APPOINTMENT_CREATE: "Crear cita",
+    APPOINTMENT_UPDATE: "Reagendar cita",
+    APPOINTMENT_DELETE: "Cancelar cita",
+    SUPPORT_APPOINTMENT_SEARCH: "Buscar citas (soporte)",
+};
+
+// Jobs que agotaron todos sus reintentos automáticos (ver
+// computeRetryDelaySeconds en el worker): antes quedaban invisibles salvo
+// consultando la tabla saludtools_jobs a mano, aunque la cita nunca hubiera
+// llegado a Saludtools.
+function describeFailedSaludtoolsJob(job) {
+    const label = FAILED_JOB_TYPE_LABELS[job.job_type] || job.job_type;
+    const payload = job.payload || {};
+    const appt = payload.appointmentBody || {};
+    const docNumber = appt.patientDocumentNumber || payload.documento || "N/A";
+    const when =
+        appt.startAppointment ||
+        (payload.dateLabel && payload.timeLabel
+            ? `${payload.dateLabel} ${payload.timeLabel}`
+            : null);
+    const errorSnippet = String(job.last_error || "").slice(0, 140);
+
+    return (
+        `${label} — Doc ${docNumber}${when ? ` — ${when}` : ""}\n` +
+        `Intentos: ${job.attempts} · ${new Date(job.updated_at).toLocaleString("es-CO")}\n` +
+        `Error: ${errorSnippet}`
+    );
+}
+
+async function buildFailedJobsResponse(extra = "") {
+    const jobs = await getRecentFailedSaludtoolsJobs(15);
+
+    if (!jobs.length) {
+        return {
+            response:
+                `${extra}😊 No hay sincronizaciones fallidas con Saludtools pendientes de revisar.\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    const lines = jobs
+        .map((job, idx) => `${idx + 1}️⃣ ${describeFailedSaludtoolsJob(job)}`)
+        .join("\n\n");
+
+    return {
+        response:
+            `${extra}⚠️ Sincronizaciones fallidas con Saludtools (${jobs.length}):\n\n` +
+            `${lines}\n\n` +
+            "Escribe el número para reintentarla, o 0️⃣ para volver al menú.",
+        nextState: "DASHBOARD",
+        data: { step: "FAILED_JOBS_LIST", failedJobs: jobs },
+    };
+}
+
 async function cancelSelectedCase({ from, data }) {
     const apptId = data?.selectedCase?.appointment_id || null;
     const saludId = data?.selectedCase?.saludtools_appointment_id || null;
@@ -1448,6 +1513,10 @@ export default async function dashboardState(msg, data = {}, context) {
                     nextState: "DASHBOARD",
                     data,
                 };
+            }
+
+            if (msg === "6") {
+                return await buildFailedJobsResponse();
             }
 
             // Antes, bloquear un día del doctor requería que alguien tocara
@@ -2669,6 +2738,38 @@ export default async function dashboardState(msg, data = {}, context) {
                 nextState: "DASHBOARD",
                 data,
             };
+        }
+
+        case "FAILED_JOBS_LIST": {
+            if (msg === "0") {
+                return {
+                    response: DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const jobs = Array.isArray(data.failedJobs) ? data.failedJobs : [];
+            const index = Number(msg) - 1;
+            const chosen = jobs[index];
+
+            if (!Number.isInteger(index) || !chosen) {
+                const failedJobsFallback = await applyDashboardAIFallback(
+                    msg,
+                    "FAILED_JOBS_LIST",
+                );
+                if (failedJobsFallback) return failedJobsFallback;
+
+                return buildFailedJobsResponse("❌ No reconocí esa opción.\n\n");
+            }
+
+            const retried = await retrySaludtoolsJob(chosen.id);
+
+            return buildFailedJobsResponse(
+                retried
+                    ? "🔄 Listo, la puse de nuevo en la fila. En un momento el sistema la vuelve a intentar.\n\n"
+                    : "😊 Esa sincronización ya no estaba pendiente de reintento (puede que alguien ya la haya resuelto).\n\n",
+            );
         }
 
         default:

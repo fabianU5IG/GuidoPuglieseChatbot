@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS saludtools_jobs (
   dedupe_key VARCHAR(191) NULL,
   payload JSON NULL,
   attempts INT NOT NULL DEFAULT 0,
-  max_attempts INT NOT NULL DEFAULT 30,
+  max_attempts INT NOT NULL DEFAULT 60,
   next_run_at DATETIME NOT NULL,
   external_id VARCHAR(64) NULL,
   last_error TEXT NULL,

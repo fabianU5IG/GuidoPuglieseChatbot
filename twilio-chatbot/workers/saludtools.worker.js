@@ -33,7 +33,19 @@ import {
 } from "../services/saludtools-sync.service.js";
 
 const POLL_MS = 4000;
-const RETRY_DELAY_SECONDS = 60;
+
+// Antes se reintentaba cada 60s fijos con un tope de 30 intentos (~30 min
+// en total) — insuficiente para los cortes largos de Saludtools que ya
+// vimos en producción: jobs reales (ids 7-10, 20-ago) agotaron sus 30
+// intentos por un 429 sostenido y quedaron FAILED para siempre sin que
+// nadie se enterara. Ahora los primeros reintentos son rápidos (por si fue
+// un tropiezo puntual) y luego se espacian cada vez más, para aguantar un
+// corte de varias horas sin martillar la API cada minuto.
+function computeRetryDelaySeconds(nextAttempts) {
+    if (nextAttempts <= 5) return 60; // primeros 5: cada 1 min
+    if (nextAttempts <= 15) return 5 * 60; // siguientes 10: cada 5 min
+    return 15 * 60; // resto: cada 15 min
+}
 // El webhook de entrada de Saludtools nunca ha recibido una llamada real, así
 // que esta es la única forma de enterarnos de cambios hechos directamente
 // allá (cancelaciones, bloqueos). Cada 10 minutos, no en cada vuelta del
@@ -257,7 +269,11 @@ async function handleRetryOrFail({
             await safeSendWhatsApp(job.phone, userWaitingMessage);
         }
 
-        await markSaludtoolsJobRetry(job.id, lastError, RETRY_DELAY_SECONDS);
+        await markSaludtoolsJobRetry(
+            job.id,
+            lastError,
+            computeRetryDelaySeconds(nextAttempts),
+        );
         return;
     }
 

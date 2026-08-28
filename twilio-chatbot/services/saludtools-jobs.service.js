@@ -18,7 +18,11 @@ export async function createSaludtoolsJob({
   dedupeKey = null,
   payload,
   priority = 100,
-  maxAttempts = 30,
+  // Con el backoff creciente del worker (computeRetryDelaySeconds), 60
+  // intentos cubren cerca de 12 horas de reintentos antes de rendirse —
+  // antes eran 30 intentos a 60s fijos (~30 min), muy corto para un corte
+  // largo de Saludtools como el que ya se vio en producción.
+  maxAttempts = 60,
 }) {
   const [result] = await db.query(
     `
@@ -135,4 +139,43 @@ export async function markSaludtoolsJobFailed(jobId, lastError) {
 export async function getSaludtoolsJobById(jobId) {
   const [rows] = await db.query(`SELECT * FROM saludtools_jobs WHERE id = ? LIMIT 1`, [jobId]);
   return parsePayload(rows[0] || null);
+}
+
+// Jobs que agotaron todos sus reintentos: antes no había ninguna forma de
+// verlos salvo consultando la tabla a mano — quedaban invisibles para la
+// secretaria aunque la cita nunca hubiera llegado a Saludtools.
+export async function getRecentFailedSaludtoolsJobs(limit = 15) {
+  const [rows] = await db.query(
+    `
+      SELECT id, job_type, phone, appointment_id, payload, attempts, last_error, updated_at
+      FROM saludtools_jobs
+      WHERE status = 'FAILED'
+      ORDER BY updated_at DESC
+      LIMIT ?
+    `,
+    [Number(limit) || 15],
+  );
+
+  return rows.map((row) => parsePayload(row));
+}
+
+// Vuelve a poner un job FAILED en la cola (attempts en 0, para que tenga de
+// nuevo todo el presupuesto de reintentos) para que el worker lo recoja en
+// su próxima vuelta. Devuelve false si el job ya no está en FAILED (ej: se
+// resolvió solo, o ya lo reintentó otra persona).
+export async function retrySaludtoolsJob(jobId) {
+  const [result] = await db.query(
+    `
+      UPDATE saludtools_jobs
+      SET status = 'PENDING',
+          attempts = 0,
+          last_error = NULL,
+          next_run_at = NOW(),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'FAILED'
+    `,
+    [jobId],
+  );
+
+  return result.affectedRows > 0;
 }
