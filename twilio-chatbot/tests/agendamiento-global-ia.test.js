@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 process.env.TWILIO_ACCOUNT_SID ||= "AC00000000000000000000000000000000";
 process.env.TWILIO_AUTH_TOKEN ||= "test_auth_token";
 process.env.TWILIO_WHATSAPP_NUMBER ||= "+573114811385";
-process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573224811542";
+process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573203269984";
 process.env.SUPABASE_URL ||= "https://example.supabase.co";
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= "test_service_role_key";
 

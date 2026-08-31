@@ -6,7 +6,7 @@ import { db } from "../db/mysql.js";
 process.env.TWILIO_ACCOUNT_SID ||= "AC00000000000000000000000000000000";
 process.env.TWILIO_AUTH_TOKEN ||= "test_auth_token";
 process.env.TWILIO_WHATSAPP_NUMBER ||= "+573114811385";
-process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573224811542";
+process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573203269984";
 process.env.SUPABASE_URL ||= "https://example.supabase.co";
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= "test_service_role_key";
 
@@ -71,7 +71,7 @@ test("las citas rápidas se guardan localmente y también se encolan para SaludT
     const result = await dashboardState(
         `presencial 15/09 08:30 cc ${uniqueDoc}`,
         { step: "QUICK_BULK_MESSAGE" },
-        { from: "+573153573131" },
+        { from: "+573153573132" },
     );
 
     assert.equal(result.nextState, "DASHBOARD");

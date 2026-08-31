@@ -141,6 +141,41 @@ export async function getSaludtoolsJobById(jobId) {
   return parsePayload(rows[0] || null);
 }
 
+export async function markSaludtoolsJobNotified(jobId) {
+  await db.query(
+    `UPDATE saludtools_jobs SET last_notified_at = NOW() WHERE id = ?`,
+    [jobId],
+  );
+}
+
+// Jobs que llevan tiempo sin resolverse (PENDING/RETRY/PROCESSING) y a los
+// que no se les ha avisado nada en los últimos `olderThanMinutes` minutos —
+// independiente de si hay errores o no. Antes el único aviso intermedio
+// dependía de reintentos fallidos (5to intento); un job simplemente atascado
+// en la cola sin errores podía tardar mucho sin dar ninguna señal de vida.
+export async function getStaleUnresolvedSaludtoolsJobs({
+  olderThanMinutes = 5,
+  limit = 20,
+} = {}) {
+  const [rows] = await db.query(
+    `
+      SELECT id, phone, job_type, created_at, last_notified_at
+      FROM saludtools_jobs
+      WHERE status IN ('PENDING', 'RETRY', 'PROCESSING')
+        AND created_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+        AND (
+          last_notified_at IS NULL
+          OR last_notified_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+        )
+      ORDER BY created_at ASC
+      LIMIT ?
+    `,
+    [olderThanMinutes, olderThanMinutes, limit],
+  );
+
+  return rows;
+}
+
 // Jobs que agotaron todos sus reintentos: antes no había ninguna forma de
 // verlos salvo consultando la tabla a mano — quedaban invisibles para la
 // secretaria aunque la cita nunca hubiera llegado a Saludtools.

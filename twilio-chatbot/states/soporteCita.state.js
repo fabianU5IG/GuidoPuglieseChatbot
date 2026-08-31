@@ -3,6 +3,7 @@ import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS } from "../constants.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import { getScheduleBlocksForYmd } from "../services/doctor-schedule.service.js";
+import { recommendAppointmentOptionsAI } from "../services/azure.ai.services.js";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
@@ -612,9 +613,430 @@ async function handleDocumentSearch({ text, data, phone }) {
     }
 }
 
+// --- Recomendación de fecha con IA para el reagendamiento -----------------
+// Antes, escribir algo como "para lo más próximo" en ASK_NEW_DATE caía
+// directo al mensaje de "esa fecha no está disponible" porque solo se
+// aceptaba DD/MM literal. Este bloque replica el mismo mecanismo que ya
+// usa agendar.state.js (isRecommendationRequest + recommendAppointmentOptionsAI)
+// pero adaptado a este flujo: aquí se recomienda fecha+hora ya combinadas
+// (no solo la fecha) y al elegir una opción se reutiliza directamente el
+// paso CONFIRM_RESCHEDULE que ya existe para una fecha escrita a mano.
+function isRecommendationRequest(value) {
+    const key = normalizeOption(value);
+
+    if (
+        /\b(cancelar|cancela)\b/.test(key) ||
+        /\bya\s+no\b/.test(key) ||
+        /\bno\s+necesito\b/.test(key) ||
+        /\bno\s+quiero\b/.test(key)
+    ) {
+        return false;
+    }
+
+    return (
+        key === "recomendar" ||
+        key === "recomendacion" ||
+        key === "sugerir" ||
+        key === "sugerencia" ||
+        key.includes("recomiend") ||
+        key.includes("recomend") ||
+        key.includes("sugier") ||
+        key.includes("mejor horario") ||
+        key.includes("mejor fecha") ||
+        key.includes("proxima disponibilidad") ||
+        key.includes("primera disponibilidad") ||
+        key.includes("lo mas pronto") ||
+        key.includes("lo mas proximo") ||
+        key.includes("proximo horario") ||
+        key.includes("proxima fecha") ||
+        key.includes("lo antes posible") ||
+        key.includes("cuanto antes") ||
+        key.includes("primera que haya") ||
+        key.includes("primera que tenga") ||
+        key.includes("cuando haya") ||
+        key.includes("cita mas cercana") ||
+        key.includes("fecha mas cercana") ||
+        key.includes("primera cita disponible") ||
+        key.includes("urgente") ||
+        /\bpara\s+ya\b/.test(key) ||
+        /\bya\s+mismo\b/.test(key) ||
+        key.includes("cualquier horario") ||
+        key.includes("cualquier dia") ||
+        key.includes("esta semana") ||
+        key.includes("proxima semana") ||
+        key.includes("la semana que viene") ||
+        key.includes("por la manana") ||
+        key.includes("en la manana") ||
+        key.includes("por la tarde") ||
+        key.includes("en la tarde") ||
+        key.includes("despues de las") ||
+        key.includes("antes de las") ||
+        /\b(lunes|martes|miercoles|jueves|viernes)\b/.test(key)
+    );
+}
+
+function detectDayPartPreference(value) {
+    const key = normalizeOption(value);
+    if (key.includes("tarde")) return "AFTERNOON";
+    if (key.includes("manana") || key.includes("temprano")) return "MORNING";
+    return "ANY";
+}
+
+function orderSlotsByPreference(slots, preference) {
+    const morning = slots.filter((slot) => Number(slot.slice(0, 2)) < 12);
+    const afternoon = slots.filter((slot) => Number(slot.slice(0, 2)) >= 12);
+    if (preference === "AFTERNOON") return [...afternoon, ...morning];
+    if (preference === "MORNING") return [...morning, ...afternoon];
+    return slots;
+}
+
+function filterSlotsByTimeConstraint(slots, value) {
+    const key = normalizeOption(value);
+    const parseHour = (match, assumeAfternoon = false) => {
+        if (!match) return null;
+        let hour = Number(match[1]);
+        const minute = Number(match[2] || 0);
+        if (assumeAfternoon && hour >= 1 && hour <= 7) hour += 12;
+        return hour * 60 + minute;
+    };
+
+    const afterMatch = key.match(/despues de las?\s+(\d{1,2})(?::(\d{2}))?/);
+    const beforeMatch = key.match(/antes de las?\s+(\d{1,2})(?::(\d{2}))?/);
+    const afterMinutes = parseHour(afterMatch, true);
+    const beforeMinutes = parseHour(beforeMatch, false);
+
+    const filtered = slots.filter((slot) => {
+        const minutes = hmToMinutesForRecommendation(slot);
+        if (minutes == null) return false;
+        if (afterMinutes != null && minutes < afterMinutes) return false;
+        if (beforeMinutes != null && minutes >= beforeMinutes) return false;
+        return true;
+    });
+
+    return filtered.length ? filtered : slots;
+}
+
+function hmToMinutesForRecommendation(value) {
+    const match = String(value || "").match(/^(\d{1,2}):(\d{2})/);
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function addDaysForRecommendation(date, days) {
+    const copy = new Date(date);
+    copy.setDate(copy.getDate() + days);
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+}
+
+function maxDateForRecommendation(a, b) {
+    return a > b ? a : b;
+}
+
+const MONTH_NUMBER_BY_NAME_RECOMMENDATION = {
+    enero: 1,
+    febrero: 2,
+    marzo: 3,
+    abril: 4,
+    mayo: 5,
+    junio: 6,
+    julio: 7,
+    agosto: 8,
+    septiembre: 9,
+    setiembre: 9,
+    octubre: 10,
+    noviembre: 11,
+    diciembre: 12,
+};
+
+function resolveUpcomingYmdForDayRecommendation(day, month, notBefore) {
+    if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+
+    let year = notBefore.getFullYear();
+    let m = month || notBefore.getMonth() + 1;
+
+    for (let i = 0; i < 24; i += 1) {
+        const candidate = new Date(year, m - 1, day, 0, 0, 0, 0);
+        const isRealDate = candidate.getMonth() === m - 1;
+
+        if (isRealDate && candidate >= notBefore) {
+            return candidate;
+        }
+
+        if (month) {
+            year += 1;
+        } else {
+            m += 1;
+            if (m > 12) {
+                m = 1;
+                year += 1;
+            }
+        }
+    }
+
+    return null;
+}
+
+function getSchedulingDateWindowForRecommendation(value) {
+    const key = normalizeOption(value);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const minDate = addDaysForRecommendation(today, 2);
+
+    const monthNamesPattern = Object.keys(MONTH_NUMBER_BY_NAME_RECOMMENDATION).join("|");
+    const dayWithMonthMatch = key.match(
+        new RegExp(`\\b([0-3]?\\d)\\s+de\\s+(${monthNamesPattern})\\b`),
+    );
+    const bareDayMatch = !dayWithMonthMatch && key.match(/\bel\s+([0-3]?\d)\b/);
+
+    if (dayWithMonthMatch || bareDayMatch) {
+        const day = Number((dayWithMonthMatch || bareDayMatch)[1]);
+        const month = dayWithMonthMatch
+            ? MONTH_NUMBER_BY_NAME_RECOMMENDATION[dayWithMonthMatch[2]]
+            : null;
+        const resolved = resolveUpcomingYmdForDayRecommendation(day, month, minDate);
+
+        if (resolved) {
+            return { start: resolved, end: resolved };
+        }
+    }
+
+    if (key.includes("proxima semana") || key.includes("la semana que viene")) {
+        const daysUntilNextMonday = ((8 - today.getDay()) % 7) || 7;
+        const start = addDaysForRecommendation(today, daysUntilNextMonday);
+        return { start: maxDateForRecommendation(start, minDate), end: addDaysForRecommendation(start, 6) };
+    }
+
+    if (key.includes("esta semana")) {
+        const end = addDaysForRecommendation(today, 7 - today.getDay());
+        return { start: minDate, end };
+    }
+
+    const weekdayMap = {
+        domingo: 0,
+        lunes: 1,
+        martes: 2,
+        miercoles: 3,
+        jueves: 4,
+        viernes: 5,
+        sabado: 6,
+    };
+    const weekdayName = Object.keys(weekdayMap).find((name) =>
+        new RegExp(`\\b${name}\\b`).test(key),
+    );
+
+    if (weekdayName) {
+        const targetDow = weekdayMap[weekdayName];
+        const startFrom = key.includes(`proximo ${weekdayName}`)
+            ? addDaysForRecommendation(today, 1)
+            : minDate;
+        let target = new Date(startFrom);
+
+        for (let index = 0; index < 14; index += 1) {
+            if (target.getDay() === targetDow && target >= minDate) {
+                return { start: target, end: target };
+            }
+            target = addDaysForRecommendation(target, 1);
+        }
+    }
+
+    return { start: minDate, end: null };
+}
+
+function ymdFromDateForRecommendation(date) {
+    return [date.getFullYear(), pad2(date.getMonth() + 1), pad2(date.getDate())].join("-");
+}
+
+function formatDateForRecommendation(ymd) {
+    const [year, month, day] = String(ymd || "").split("-").map(Number);
+    const date = new Date(year, month - 1, day);
+    const weekday = new Intl.DateTimeFormat("es-CO", {
+        weekday: "long",
+    }).format(date);
+    return `${weekday} ${pad2(day)}/${pad2(month)}`;
+}
+
+async function findReagendarDateCandidates(message, doctorDoc, maxCandidates = 9) {
+    const preference = detectDayPartPreference(message);
+    const candidates = [];
+    const dateWindow = getSchedulingDateWindowForRecommendation(message);
+    const cursor = new Date(dateWindow.start);
+
+    const isSingleExactDate =
+        dateWindow.end && dateWindow.start.getTime() === dateWindow.end.getTime();
+    const perDateLimit = isSingleExactDate ? maxCandidates : 2;
+
+    for (let offset = 0; offset < 75 && candidates.length < maxCandidates; offset += 1) {
+        const date = new Date(cursor);
+        date.setDate(cursor.getDate() + offset);
+        if (dateWindow.end && date > dateWindow.end) break;
+
+        const ymd = ymdFromDateForRecommendation(date);
+        const blocks = await getScheduleBlocksForYmd(ymd);
+        if (!blocks.length) continue;
+
+        let booked = [];
+        try {
+            booked = await getBookedHmFromDb({ ymd, doctorDoc });
+        } catch (error) {
+            booked = [];
+        }
+
+        const bookedSet = new Set(Array.isArray(booked) ? booked : []);
+        const freeSlots = orderSlotsByPreference(
+            filterSlotsByTimeConstraint(
+                buildSlotsForBlocks(blocks, SLOT_MIN).filter(
+                    (slot) => !bookedSet.has(slot),
+                ),
+                message,
+            ),
+            preference,
+        );
+
+        for (const slot of freeSlots.slice(0, perDateLimit)) {
+            candidates.push({
+                candidateId: `reagendar_candidate_${candidates.length + 1}`,
+                ymd,
+                dateLabel: formatYmdToDdMm(ymd),
+                dateText: formatDateForRecommendation(ymd),
+                timeLabel: slot,
+                dayPart: Number(slot.slice(0, 2)) < 12 ? "MORNING" : "AFTERNOON",
+            });
+            if (candidates.length >= maxCandidates) break;
+        }
+    }
+
+    return candidates;
+}
+
+async function buildRecommendedNewDateResponse(message, data) {
+    const selectedAppointmentForDoc =
+        Array.isArray(data.citas) && Number.isInteger(data.selectedIndex)
+            ? data.citas[data.selectedIndex]
+            : null;
+    const doctorDoc =
+        selectedAppointmentForDoc?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER;
+
+    const candidates = await findReagendarDateCandidates(message, doctorDoc);
+    if (!candidates.length) {
+        return {
+            response:
+                "😊 No encontré disponibilidad próxima para recomendarte en este momento.\n\n" +
+                "Escribe una fecha en formato DD/MM o intenta más tarde.\n\n" +
+                "0️⃣ Volver al menú",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    let aiResult = null;
+    try {
+        aiResult = await recommendAppointmentOptionsAI({
+            message,
+            candidates,
+            consultationMode: "PRESENCIAL",
+        });
+    } catch (error) {
+        aiResult = null;
+    }
+
+    const selected = (
+        aiResult?.options?.length ? aiResult.options : candidates.slice(0, 3)
+    ).slice(0, 3);
+
+    const recommendations = selected.map((item) => ({
+        candidateId: item.candidateId,
+        ymd: item.ymd,
+        dateLabel: item.dateLabel,
+        dateText: item.dateText,
+        time: item.timeLabel,
+        reason: item.reason || "Primera disponibilidad encontrada",
+    }));
+
+    const intro = aiResult?.intro || "Encontré estas opciones para reagendar tu cita:";
+    const note = aiResult?.note || "La disponibilidad se valida nuevamente al confirmar.";
+
+    const lines = recommendations.map(
+        (item, idx) => `${idx + 1}️⃣ ${item.dateText} a las ${item.time} — ${item.reason}`,
+    );
+
+    return {
+        response:
+            `🤖 ${intro}\n\n${lines.join("\n")}\n\n` +
+            "Responde 1, 2 o 3 para elegir, o escribe otra fecha en formato DD/MM.\n\n" +
+            `${note}\n\n0️⃣ Volver al menú`,
+        nextState: "SOPORTE_CITA",
+        data: { ...data, newDateAiRecommendations: recommendations },
+    };
+}
+
+async function selectRecommendedNewDate({ text, data }) {
+    const recs = Array.isArray(data.newDateAiRecommendations)
+        ? data.newDateAiRecommendations
+        : [];
+    const selected = recs[Number(text) - 1];
+
+    if (!selected) {
+        return {
+            response:
+                "Selecciona una de las opciones recomendadas disponibles o escribe una fecha en formato DD/MM.\n\n" +
+                "0️⃣ Volver al menú",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    const selectedAppointment =
+        Array.isArray(data.citas) && Number.isInteger(data.selectedIndex)
+            ? data.citas[data.selectedIndex]
+            : null;
+
+    let bookedNow = false;
+    try {
+        bookedNow = await isSlotBookedInDb({
+            ymd: selected.ymd,
+            hm: selected.time,
+            doctorDoc: selectedAppointment?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER,
+        });
+    } catch (error) {
+        bookedNow = false;
+        console.error("Error verificando horario recomendado:", error);
+    }
+
+    if (bookedNow) {
+        return {
+            response:
+                `😊 Justo ahora se ocupó el horario del ${selected.dateText} a las ${selected.time}.\n\n` +
+                "Elige otra de las opciones recomendadas o escribe una fecha en formato DD/MM.\n\n" +
+                "0️⃣ Volver al menú",
+            nextState: "SOPORTE_CITA",
+            data,
+        };
+    }
+
+    return sendTemplate(
+        TEMPLATE_CONFIRMAR_ACCION,
+        "SOPORTE_CITA",
+        {
+            ...data,
+            step: "CONFIRM_RESCHEDULE",
+            newDate: selected.ymd,
+            newDateLabel: selected.dateLabel,
+            newTime: selected.time,
+        },
+        {
+            "1": `😊 Estás a punto de reagendar tu cita para el ${selected.dateLabel} a las ${selected.time}.`,
+        },
+    );
+}
+
 async function prepareNewDate({ text, data }) {
     const parsed = parseDateInput(text);
     if (!parsed) {
+        if (isRecommendationRequest(text)) {
+            return buildRecommendedNewDateResponse(text, data);
+        }
+
         return {
             response:
                  "😊 Esa fecha no está disponible para reagendamiento.\n\n" +
@@ -824,6 +1246,13 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
     }
 
     if (step === "ASK_NEW_DATE") {
+        if (
+            /^[1-3]$/.test(text) &&
+            Array.isArray(data.newDateAiRecommendations) &&
+            data.newDateAiRecommendations.length
+        ) {
+            return selectRecommendedNewDate({ text, data });
+        }
         return prepareNewDate({ text, data });
     }
 

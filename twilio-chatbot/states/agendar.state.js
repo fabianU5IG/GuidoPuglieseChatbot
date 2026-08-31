@@ -14,6 +14,7 @@ import {
 } from "../services/azure.ai.services.js";
 import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
+import { searchAppointmentsInSaludtools } from "../services/saludtools-api.service.js";
 import { db } from "../db/mysql.js";
 import {
     isHoliday,
@@ -578,6 +579,53 @@ async function getBookedHmFromDb({ ymd, doctorDoc }) {
 async function isSlotBookedInDb({ ymd, hm, doctorDoc }) {
     const booked = await getBookedHmFromDb({ ymd, doctorDoc });
     return booked.includes(hm);
+}
+
+// Antes, la disponibilidad que ofrecíamos al elegir hora dependía solo de
+// nuestra copia local (saludtools_appointments) -- si alguien reservó ese
+// mismo horario directamente en Saludtools (fuera del bot) y nuestra copia
+// local aún no se había enterado (la reconciliación solo revisa citas que YA
+// conocíamos, no descubre horarios nuevos tomados por otros), el paciente
+// podía llegar hasta "Confirmar" creyendo que el horario estaba libre, y
+// solo se enteraba del choque real minutos después, cuando el worker lo
+// intentaba crear y Saludtools lo rechazaba. Esta consulta en vivo se hace
+// justo antes de confirmar, para avisar de una vez si el horario ya no está
+// disponible en el sistema real, en vez de dejar avanzar el flujo con un
+// dato que puede estar desactualizado.
+async function isSlotTakenInSaludtoolsLive({ ymd, hm, doctorDoc, durationMin }) {
+    try {
+        const startAppointment = `${ymd} ${hm}`;
+        const end = addMinutesToYmdHm(ymd, hm, durationMin);
+        const endAppointment = `${end.ymd} ${end.hm}`;
+
+        const resp = await searchAppointmentsInSaludtools({
+            doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+            doctorDocumentNumber: doctorDoc,
+            startAppointment,
+            endAppointment,
+            page: 0,
+            size: 19,
+        });
+
+        const content = resp?.body?.content;
+        if (!Array.isArray(content) || !content.length) return false;
+
+        return content.some((item) => {
+            const status = String(
+                item?.stateAppointment || item?.status || "",
+            ).toUpperCase();
+            return status !== "CANCELLED" && status !== "CANCELED";
+        });
+    } catch (error) {
+        // Si la consulta en vivo falla (ej: Saludtools caído/429), no se
+        // bloquea al paciente con esto -- el chequeo definitivo sigue
+        // ocurriendo de todas formas justo antes de crear la cita real en el
+        // worker (searchAppointmentsInSaludtools + hasAppointmentConflict).
+        if (SALUDTOOLS_DEBUG) {
+            console.error("Error en chequeo en vivo de disponibilidad:", error);
+        }
+        return false;
+    }
 }
 
 const ALLOWED_DOC_TYPES = new Set([1, 2, 4, 5, 6]);
@@ -2681,6 +2729,104 @@ export default async function agendarState(msg, data, context = {}) {
                 };
             }
 
+            // Chequeo en vivo justo antes de confirmar: si el horario ya no
+            // está disponible en el sistema real (ej: alguien más lo tomó
+            // directamente en Saludtools mientras el paciente completaba el
+            // registro), se avisa aquí mismo en vez de dejarlo avanzar con
+            // "quedó en proceso" para luego contradecirse minutos después con
+            // un mensaje de error del worker.
+            const takenLive = await isSlotTakenInSaludtoolsLive({
+                ymd: data.ymd,
+                hm: data.time,
+                doctorDoc: DOCTOR_DOCUMENT_NUMBER,
+                durationMin: APPOINTMENT_DURATION_MIN,
+            });
+
+            if (takenLive) {
+                data.step = "ASK_DATE";
+                data.aiRecommendations = [];
+                return {
+                    response:
+                        `😊 El horario ${data.time} del ${data.date} ya no está disponible.\n\n` +
+                        "Por favor elige otra fecha en formato DD/MM, o dime tu preferencia (ej: \"lo más pronto posible\").\n\n" +
+                        "0️⃣ Volver al menú",
+                    nextState: "AGENDAR",
+                    data,
+                };
+            }
+
+            // Si el paciente repite "agendar" para la MISMA fecha/hora que ya
+            // tiene registrada (ej: pensó que no funcionó por la demora y
+            // volvió a intentarlo), antes se creaba SIEMPRE una cita local
+            // nueva y un job de Saludtools nuevo. El job nuevo choca por
+            // dedupe_key con el ya existente (mismo doc+fecha+hora) y
+            // Saludtools solo actualiza el timestamp del job viejo sin
+            // re-encolar nada — la cita local nueva quedaba huérfana en
+            // QUEUED para siempre, sin sincronizar jamás ni avisar nada.
+            //
+            // IMPORTANTE: la verificación se hace contra saludtools_appointments
+            // (el espejo real de Saludtools, la misma tabla que usa
+            // "reagendar/cancelar" en soporteCita.state.js) y NO contra la
+            // tabla propia `appointments` -- esta última puede quedar
+            // desactualizada porque cancelar una cita desde soporteCita.state.js
+            // actualiza saludtools_appointments pero nunca toca `appointments`.
+            // Confiar solo en `appointments` hacía que una cita YA CANCELADA en
+            // el sistema real siguiera reportándose como "confirmada" para
+            // siempre, bloqueando que el paciente agendara de verdad.
+            let existingAppointmentId = null;
+            try {
+                const [dupRows] = await db.query(
+                    `
+                    SELECT id
+                    FROM saludtools_appointments
+                    WHERE patient_document_type = ?
+                      AND patient_document_number = ?
+                      AND start_date = ?
+                      AND TIME_FORMAT(start_time, '%H:%i') = ?
+                      AND UPPER(status) NOT IN ('CANCELLED', 'CANCELED')
+                    ORDER BY id DESC
+                    LIMIT 1
+                    `,
+                    [
+                        Number(data.patientDocumentType),
+                        String(data.patientDocumentNumber),
+                        data.ymd,
+                        data.time,
+                    ],
+                );
+
+                if (dupRows?.[0]) {
+                    const [localRows] = await db.query(
+                        `
+                        SELECT a.id
+                        FROM appointments a
+                        JOIN patients p ON p.id = a.patient_id
+                        WHERE p.phone = ?
+                          AND a.scheduled_date = ?
+                          AND a.scheduled_time = ?
+                          AND a.status NOT IN ('CANCELLED', 'FAILED')
+                        ORDER BY a.id DESC
+                        LIMIT 1
+                        `,
+                        [phone, data.ymd, data.time],
+                    );
+                    existingAppointmentId = localRows?.[0]?.id || null;
+                }
+            } catch (error) {
+                if (SALUDTOOLS_DEBUG) {
+                    console.error("Error verificando cita duplicada:", error);
+                }
+            }
+
+            if (existingAppointmentId) {
+                data.appointmentId = existingAppointmentId;
+                data.step = "POST_CREATED";
+                return sendTemplate(TEMPLATE_SOLICITUD_REGISTRADA, "AGENDAR", data, {
+                    "1": data.firstName,
+                    "2": data.attentionType,
+                });
+            }
+
             const appointmentId = await createProposedAppointment({
                 phone,
                 fullName: data.fullName,
@@ -2775,7 +2921,14 @@ export default async function agendarState(msg, data, context = {}) {
                 jobType: "APPOINTMENT_CREATE",
                 phone,
                 appointmentId,
-                dedupeKey: `appointment:${data.patientDocumentType}:${data.patientDocumentNumber}:${ymd}:${data.time}`,
+                // Se incluye el id local (único por cada fila de `appointments`)
+                // porque antes la clave solo era doc+fecha+hora: si esa cita se
+                // cancelaba después y el paciente volvía a agendar ESE MISMO
+                // horario (ahora libre otra vez), el job nuevo chocaba para
+                // siempre contra el job viejo ya terminado (createSaludtoolsJob
+                // solo actualiza su updated_at sin re-encolar nada), y la cita
+                // local nueva quedaba huérfana sin sincronizar jamás.
+                dedupeKey: `appointment:${data.patientDocumentType}:${data.patientDocumentNumber}:${ymd}:${data.time}:${appointmentId}`,
                 payload: {
                     fullName: data.fullName,
                     dateLabel: data.date,
@@ -2806,7 +2959,14 @@ export default async function agendarState(msg, data, context = {}) {
                                 : ""),
                     },
                 },
-                priority: 110,
+                // Un paciente agendando su propia cita está esperando en vivo la
+                // respuesta por WhatsApp; antes esto quedaba en prioridad 110 (la
+                // más baja de todo el proyecto), por debajo de la búsqueda de
+                // soporte (90) y de las citas rápidas/reagendar de secretaría
+                // (100) — con actividad de secretaría en curso, la cita real de
+                // un paciente podía quedar esperando en la cola largos minutos
+                // sin ningún error de por medio, solo por orden de turno.
+                priority: 80,
             });
 
             data.step = "POST_CREATED";

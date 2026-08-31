@@ -3,6 +3,28 @@ import {
     notifySecretarySupportRequest,
     sendWhatsAppMessage,
 } from "./whatsapp.service.js";
+import { db } from "../db/mysql.js";
+
+// Antes, si el paciente preguntaba algo como "¿sigue intentando mi cita?"
+// mientras esperaba, la IA respondía con una reafirmación genérica ("tiene
+// una solicitud en curso") sin mirar el estado real en la base de datos —
+// podía sonar tranquilizadora sin de verdad saber si ya se había confirmado,
+// seguía en proceso, o había fallado. Se consulta el estado real (misma
+// tabla que revisa el botón "1" de POST_CREATED en agendar.state.js) para
+// que la respuesta esté fundamentada en el dato real, no en una suposición.
+async function getRealAppointmentStatus(appointmentId) {
+    if (!appointmentId) return null;
+
+    try {
+        const [rows] = await db.query(
+            "SELECT status FROM appointments WHERE id = ? LIMIT 1",
+            [appointmentId],
+        );
+        return rows?.[0]?.status || null;
+    } catch {
+        return null;
+    }
+}
 
 // Duplicados a propósito: cada states/*.state.js ya repite estos mismos
 // contentSid en vez de importarlos de un módulo compartido. Se sigue el mismo
@@ -302,15 +324,29 @@ export async function resolveFlowFallback({
                 (data.fullName ? String(data.fullName).split(/\s+/)[0] : null);
 
             // Si ya hay una cita en curso/recién creada en esta sesión, se le
-            // pasa la fecha/hora reales a la IA para que pueda tranquilizar
-            // con datos concretos (ej: "no se ha agendado la cita, espera")
-            // en vez de una respuesta genérica.
-            const appointmentContext =
-                data.date && data.time
-                    ? ` El paciente ya tiene una solicitud de cita en curso para el ${data.date} a las ${data.time}` +
-                      (data.appointmentId ? " (quedó registrada en el sistema)" : "") +
-                      "."
-                    : "";
+            // pasa la fecha/hora reales a la IA, y el estado ACTUAL consultado
+            // en la base de datos (no una suposición), para que pueda
+            // responder con datos concretos y verdaderos (ej: "sí, tu cita ya
+            // quedó confirmada" o "todavía la estamos procesando") en vez de
+            // una reafirmación genérica que podría no ser cierta en este
+            // momento.
+            let appointmentContext = "";
+            if (data.date && data.time) {
+                const realStatus = await getRealAppointmentStatus(
+                    data.appointmentId,
+                );
+                const statusText =
+                    realStatus === "CONFIRMED"
+                        ? "Su cita YA QUEDÓ CONFIRMADA en el sistema."
+                        : realStatus === "FAILED"
+                          ? "Hubo un problema confirmando su cita en el sistema; nuestro equipo ya fue notificado y la resolverá manualmente."
+                          : data.appointmentId
+                            ? "Su solicitud todavía se está procesando en el sistema; aún NO ha sido confirmada."
+                            : "Su solicitud quedó registrada pero todavía no se ha enviado a confirmar.";
+
+                appointmentContext =
+                    ` El paciente tiene una solicitud de cita para el ${data.date} a las ${data.time}. ${statusText}`;
+            }
 
             const answer = await askAI(
                 message,

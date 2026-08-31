@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 process.env.TWILIO_ACCOUNT_SID ||= "AC00000000000000000000000000000000";
 process.env.TWILIO_AUTH_TOKEN ||= "test_auth_token";
 process.env.TWILIO_WHATSAPP_NUMBER ||= "+573114811385";
-process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573224811542";
+process.env.SECRETARY_WHATSAPP_NUMBER ||= "+573203269984";
 
 const { default: infoCostosState } = await import(
     "../states/infoCostos.state.js"

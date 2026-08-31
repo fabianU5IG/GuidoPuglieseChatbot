@@ -125,14 +125,22 @@ export default async function chatbotResponse(message, session, context = {}) {
                   }
                 : { step: "MENU" };
     } else {
-        state = session.state || "MENU";
+        // DASHBOARD es un estado exclusivo de secretaría. Si esta sesión lo
+        // trae de cuando el número sí estaba autorizado (ej. se quitó de
+        // SECRETARY_PHONES), evitamos que caiga en dashboardState y se
+        // bloquee con "Acceso no autorizado" antes de recién al siguiente
+        // mensaje volver al menú.
+        const wasStaleDashboard = session.state === "DASHBOARD";
+        state = wasStaleDashboard ? "MENU" : session.state || "MENU";
         // La memoria se combina con los datos del flujo, pero los datos del
         // flujo tienen prioridad. Así puede reutilizarse identidad sin mezclar
         // fechas/horas de operaciones anteriores.
-        data = {
-            ...(session.memory || {}),
-            ...(session.data || {}),
-        };
+        data = wasStaleDashboard
+            ? {}
+            : {
+                  ...(session.memory || {}),
+                  ...(session.data || {}),
+              };
     }
 
     console.log(

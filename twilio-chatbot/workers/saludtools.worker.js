@@ -5,6 +5,8 @@ import {
     markSaludtoolsJobDone,
     markSaludtoolsJobRetry,
     markSaludtoolsJobFailed,
+    markSaludtoolsJobNotified,
+    getStaleUnresolvedSaludtoolsJobs,
 } from "../services/saludtools-jobs.service.js";
 
 import {
@@ -52,6 +54,33 @@ function computeRetryDelaySeconds(nextAttempts) {
 // loop, para no repetir el 429 de Saludtools que salió al probarlo seguido.
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
 let lastReconcileAt = 0;
+
+// Aviso periódico independiente de errores: antes, mientras un job seguía
+// PENDING/RETRY/PROCESSING sin fallar (ej: esperando su turno en la cola por
+// prioridad, como le pasó a una cita real que quedó detrás de trabajo de
+// secretaría), el paciente no recibía ninguna señal de vida hasta que el job
+// terminara — podían pasar minutos en silencio total. Cada 5 minutos se
+// revisan los jobs "viejos" sin resolver y se les manda un aviso genérico,
+// se hayan reintentado o no.
+const STALE_NOTIFY_INTERVAL_MS = 5 * 60_000;
+const STALE_NOTIFY_AFTER_MINUTES = 5;
+let lastStaleNotifyAt = 0;
+
+async function notifyStaleUnresolvedJobs() {
+    const staleJobs = await getStaleUnresolvedSaludtoolsJobs({
+        olderThanMinutes: STALE_NOTIFY_AFTER_MINUTES,
+    });
+
+    for (const job of staleJobs) {
+        await safeSendWhatsApp(
+            job.phone,
+            "⏳ Seguimos trabajando en tu solicitud, puede tardar unos minutos más. Te avisaremos por este medio en cuanto quede confirmada.",
+        );
+        await markSaludtoolsJobNotified(job.id);
+    }
+
+    return staleJobs.length;
+}
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -191,6 +220,20 @@ function isSlotUnavailableError(error) {
         text.includes("ya existe una cita");
 
     return mentionsSlot && unavailable;
+}
+
+// La cita rápida del dashboard (dashboard.state.js) siempre marca
+// patientExistsLocal=true y nunca envía patientBody (no colecta el registro
+// completo), así que si el documento no existe todavía en Saludtools, la
+// creación de la cita falla con HTTP 412 y este mensaje textual. Ese 412 es
+// un status HTTP, no el "businessCode" que revisa handleRetryOrFail (ese solo
+// aplica a errores 200 con un "code" de negocio en el body), así que caía
+// directo al mensaje genérico "no fue posible crear tu cita" sin decir por
+// qué — la secretaria no tenía forma de saber que faltaba registrar al
+// paciente, y la cita nunca llegaba a crearse sin más contexto.
+function isPatientNotFoundError(error) {
+    const text = normalizeErrorText(error);
+    return text.includes("no se ha encontrado") && text.includes("paciente");
 }
 
 // Se manda una sola vez por solicitud (al 5to intento, ~5 minutos), no en cada
@@ -488,6 +531,26 @@ async function processAppointmentCreate(job) {
             return;
         }
 
+        if (isPatientNotFoundError(error)) {
+            if (job.appointment_id) {
+                await updateAppointmentStatusById(job.appointment_id, "FAILED");
+            }
+
+            await markSaludtoolsJobFailed(
+                job.id,
+                `PACIENTE_NO_REGISTRADO: ${safeErrorMessage(error)}`,
+            );
+
+            const docNumber =
+                appointmentBody.patientDocumentNumber || "ese documento";
+            await safeSendWhatsApp(
+                job.phone,
+                `⚠️ No fue posible crear la cita: el documento ${docNumber} no está registrado como paciente en SaludTools.\n\n` +
+                    "Regístralo primero en SaludTools, o pídele al paciente que escriba *AGENDAR* para crear su registro completo automáticamente.",
+            );
+            return;
+        }
+
         await handleRetryOrFail({
             job,
             error,
@@ -543,11 +606,26 @@ async function processSupportAppointmentSearch(job) {
             patientDocumentNumber: documento,
         });
 
-        const content = appointmentsResp?.body?.content || [];
+        const allContent = appointmentsResp?.body?.content || [];
+
+        // Saludtools devuelve el historial completo (canceladas y pasadas
+        // incluidas). Aquí solo debe verse lo "actual": citas vigentes
+        // (no canceladas) y que aún no han pasado — igual que ya filtra
+        // findLocalAppointmentsByDocument() en soporteCita.state.js.
+        const todayYmd = new Date().toISOString().slice(0, 10);
+        const content = Array.isArray(allContent)
+            ? allContent.filter((it) => {
+                  if (isCancelledAppointment(it)) return false;
+                  const startYmd = String(
+                      it?.startAppointment || "",
+                  ).slice(0, 10);
+                  return !startYmd || startYmd >= todayYmd;
+              })
+            : [];
 
         await markSaludtoolsJobDone(job.id, null);
 
-        if (!Array.isArray(content) || !content.length) {
+        if (!content.length) {
             await safeSendWhatsApp(
                 job.phone,
                 "No encontramos citas asociadas a tu documento en el sistema.",
@@ -773,6 +851,23 @@ async function run() {
                 } catch (error) {
                     console.error(
                         "[saludtools.worker] error buscando bloqueos:",
+                        error?.message || error,
+                    );
+                }
+            }
+
+            if (Date.now() - lastStaleNotifyAt >= STALE_NOTIFY_INTERVAL_MS) {
+                lastStaleNotifyAt = Date.now();
+                try {
+                    const notified = await notifyStaleUnresolvedJobs();
+                    if (notified) {
+                        console.log(
+                            `[saludtools.worker] aviso de "seguimos trabajando" enviado a ${notified} solicitud(es) pendientes`,
+                        );
+                    }
+                } catch (error) {
+                    console.error(
+                        "[saludtools.worker] error avisando jobs pendientes:",
                         error?.message || error,
                     );
                 }
