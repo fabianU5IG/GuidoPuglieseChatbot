@@ -594,9 +594,14 @@ async function processSupportAppointmentSearch(job) {
 
         if (!patientFound) {
             await markSaludtoolsJobDone(job.id, null);
+            // Este aviso llega en segundo plano (a veces minutos después de la
+            // solicitud original) y puede caer en medio de una conversación
+            // totalmente distinta que el paciente ya empezó mientras
+            // esperaba -- sin mencionar a qué documento se refiere, parecía
+            // un error del flujo que estaba usando en ese momento.
             await safeSendWhatsApp(
                 job.phone,
-                "No encontramos un paciente asociado a ese documento en el sistema. Por favor valida el número o contacta a la secretaria.",
+                `Sobre el documento ${documento} que nos diste antes: no encontramos ningún paciente asociado en el sistema. Por favor valida el número o contacta a la secretaria.`,
             );
             return;
         }
@@ -628,7 +633,7 @@ async function processSupportAppointmentSearch(job) {
         if (!content.length) {
             await safeSendWhatsApp(
                 job.phone,
-                "No encontramos citas asociadas a tu documento en el sistema.",
+                `Sobre el documento ${documento} que nos diste antes: no encontramos citas asociadas en el sistema.`,
             );
             return;
         }
@@ -646,9 +651,9 @@ async function processSupportAppointmentSearch(job) {
 
         await safeSendWhatsApp(
             job.phone,
-            "Encontramos estas citas asociadas a tu documento:\n\n" +
+            `Sobre el documento ${documento} que nos diste antes, encontramos estas citas asociadas:\n\n` +
                 lines.join("\n") +
-                `\n\nPor favor vuelve al flujo y elige cuál deseas ${actionText}.`,
+                `\n\nEscribe *${tipo === "CANCELAR" ? "CANCELAR" : "REAGENDAR"}* para volver al flujo y elegir cuál deseas ${actionText}.`,
         );
     } catch (error) {
         await handleRetryOrFail({
