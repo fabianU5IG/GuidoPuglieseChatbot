@@ -92,6 +92,27 @@ export async function syncSaludtoolsPatient(eventType, payload) {
 
     if (!saludtoolsId && (!docType || !docNum)) return;
 
+    // DELETE: se borra la fila espejo en vez de actualizarla. En el resto
+    // del código, "existe una fila en saludtools_patients" se usa como
+    // equivalente a "el paciente existe en Saludtools" (ver
+    // findSaludtoolsPatientInDb en agendar.state.js/soporteCita.state.js),
+    // así que dejar la fila desactualizada haría que el bot siguiera
+    // creyendo que el paciente existe después de eliminado.
+    if (eventType === "DELETE") {
+      if (saludtoolsId) {
+        await db.query(
+          "DELETE FROM saludtools_patients WHERE saludtools_id = ?",
+          [saludtoolsId],
+        );
+      } else {
+        await db.query(
+          "DELETE FROM saludtools_patients WHERE document_type = ? AND document_number = ?",
+          [docType, docNum],
+        );
+      }
+      return true;
+    }
+
     const fullName = [
       payload?.firstName,
       payload?.secondName,

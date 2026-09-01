@@ -84,4 +84,11 @@ router.post("/patient/update", async (req, res) => {
   return res.sendStatus(200);
 });
 
+/* Eliminar paciente */
+router.post("/patient/delete", async (req, res) => {
+  logWebhook("PATIENT_DELETE", req);
+  await syncSaludtoolsPatient("DELETE", req.body);
+  return res.sendStatus(200);
+});
+
 export default router;
