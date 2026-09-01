@@ -106,8 +106,11 @@ export async function sendWhatsAppMessageWithMedia(
 
 // "copy_img_postoperatorio": duplicado de la plantilla anterior que agrega
 // el mensaje del paciente como {{4}} (antes no se mostraba) y corre la
-// imagen a {{5}}. Pendiente de aprobación de WhatsApp al momento de este
-// cambio — revisar el estado en el Content Template Builder de Twilio.
+// imagen a {{5}}. Ya aprobada por WhatsApp (confirmado 01-sep-2026). Si se
+// sobreescribe TWILIO_POST_SURGERY_IMAGE_TEMPLATE_SID en el .env con el SID
+// de la plantilla vieja ("img_postoperatorio", solo 4 variables), el envío
+// falla con error 400 por el desajuste de variables — no dejar esa variable
+// puesta a menos que sea con este mismo SID.
 const POST_SURGERY_IMAGE_TEMPLATE_SID =
     process.env.TWILIO_POST_SURGERY_IMAGE_TEMPLATE_SID ||
     "HX35cb52ef7fc6c9d1e4a1135bdabbbd4e";
