@@ -46,7 +46,15 @@ export default async function secretariaState(msg, data = {}, context = {}) {
         return menuState(directMenuOption, {}, context);
     }
 
-    const note = String(context?.rawBody?.Body || msg || "").trim();
+    // Importante: se prioriza `msg` (ya resuelto por index.js como
+    // ButtonPayload cuando el mensaje viene de un botón, ej: "menu_secretaria")
+    // sobre el texto crudo (context.rawBody.Body sería el texto visible del
+    // botón, ej: "Sí, comunicarme"). Antes se usaba el texto crudo primero:
+    // el chequeo de botón al inicio de resolveFlowFallback (que compara
+    // contra el id exacto "menu_secretaria") nunca coincidía, la IA volvía a
+    // clasificar el texto como "quiere hablar con alguien" y reenviaba la
+    // misma tarjeta de confirmación en bucle infinito.
+    const note = String(msg || context?.rawBody?.Body || "").trim();
 
     // Antes, cualquier mensaje del paciente mientras espera a la secretaria
     // (una pregunta real, una duda, "hola", lo que sea) solo repetía "tu
