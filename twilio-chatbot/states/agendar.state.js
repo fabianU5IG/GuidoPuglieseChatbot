@@ -3040,6 +3040,34 @@ export default async function agendarState(msg, data, context = {}) {
 
             if (msg === "0" || msg === "2") return returnToMenu();
 
+            // Antes esto se dejaba en manos de resolveFlowFallback(), pero su
+            // regla general "GO_SCHEDULE + currentState AGENDAR -> null" (para
+            // no perder un registro en curso en otros pasos) también aplicaba
+            // aquí, donde el registro YA terminó (falló o quedó confirmado) y
+            // no hay nada que perder. Además, la IA a veces clasificaba
+            // "agendar" como GO_MENU en vez de GO_SCHEDULE, así que el
+            // paciente terminaba viendo el menú principal en vez de volver a
+            // agendar -- justo después de que el propio bot le dijera
+            // "Escribe *AGENDAR*". Se reconoce la palabra de forma
+            // determinística para no depender de esa clasificación.
+            const wantsToRestartAgendar =
+                msg === "agendar" ||
+                msg === "agendar cita" ||
+                msg.includes("agendar cita") ||
+                msg.includes("agendar una cita") ||
+                msg.includes("quiero agendar");
+
+            if (wantsToRestartAgendar) {
+                return {
+                    response:
+                        "Vamos a iniciar el agendamiento.\n\n" +
+                        "La IA podrá ayudarte a escoger entre fechas y horas verificadas como disponibles.\n\n" +
+                        "¿Cuál es tu nombre completo?",
+                    nextState: "AGENDAR",
+                    data: initializeGlobalSchedulingContext({ step: "ASK_NAME" }),
+                };
+            }
+
             const aiFallback = await resolveFlowFallback({
                 message: msg,
                 currentState: "AGENDAR",
