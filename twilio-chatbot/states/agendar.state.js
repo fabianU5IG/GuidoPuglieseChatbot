@@ -2117,7 +2117,23 @@ export default async function agendarState(msg, data, context = {}) {
         }
 
         case "REG_EMAIL": {
-            if (msg === "0") data.regPatient.email = "";
+            // El correo es opcional y el botón de la plantilla envía "0" para
+            // omitirlo, pero un paciente que escribe libremente (ej. alguien
+            // mayor que no usa botones) suele decir "no tengo correo" en vez
+            // de tocar el botón. Antes eso no calzaba con normalizeEmail(),
+            // la IA respondía "no es obligatorio, escribe 0" pero el paso
+            // nunca avanzaba -- si el paciente no entendía que debía escribir
+            // literalmente "0", quedaba atascado en este paso para siempre
+            // (cualquier otra cosa que escribiera, como su teléfono pensando
+            // que era la siguiente pregunta, seguía siendo "correo inválido").
+            const wantsToSkipEmail =
+                msg === "0" ||
+                /\bno\s+(tengo|manejo|uso|cuento con)\s+(correo|email|e-?mail)\b/.test(
+                    msg,
+                ) ||
+                /^(no|ninguno|no tengo|sin correo)$/.test(msg);
+
+            if (wantsToSkipEmail) data.regPatient.email = "";
             else {
                 const em = normalizeEmail(msg);
                 if (em === null) {
