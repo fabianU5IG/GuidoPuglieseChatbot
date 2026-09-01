@@ -4,6 +4,7 @@ import { SALUDTOOLS } from "../constants.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import { getScheduleBlocksForYmd } from "../services/doctor-schedule.service.js";
 import { recommendAppointmentOptionsAI } from "../services/azure.ai.services.js";
+import { searchAppointmentsInSaludtools } from "../services/saludtools-api.service.js";
 
 const APPOINTMENT_DURATION_MIN = Number(
     process.env.SALUDTOOLS_APPOINTMENT_DURATION_MIN ||
@@ -12,6 +13,9 @@ const APPOINTMENT_DURATION_MIN = Number(
 // Debe ser igual a APPOINTMENT_DURATION_MIN: cada slot ofrecido debe durar exactamente
 // lo mismo que la cita que va a ocupar, para que no queden huecos ni cruces.
 const SLOT_MIN = APPOINTMENT_DURATION_MIN;
+const DOCTOR_DOCUMENT_TYPE = Number(
+    process.env.SALUDTOOLS_DOCTOR_DOCUMENT_TYPE || 1,
+);
 const DOCTOR_DOCUMENT_NUMBER =
     process.env.SALUDTOOLS_DOCTOR_DOCUMENT_NUMBER || "72134079";
 const DEFAULT_CLINIC_ID = Number(process.env.SALUDTOOLS_CLINIC_ID || 18569);
@@ -281,6 +285,44 @@ function addMinutesToYmdHm(ymd, hm, minutes) {
     const mm2 = String(dt.getMinutes()).padStart(2, "0");
 
     return { ymd: `${y2}-${m2}-${d2}`, hm: `${hh2}:${mm2}` };
+}
+
+// Antes el paciente veía "¡Listo! Recibimos tu solicitud de
+// reagendamiento" y, segundos después (mismo minuto), "el horario ya no
+// está disponible" del worker asíncrono -- confuso, porque el bot ya le
+// había dicho que todo iba bien. Este chequeo en vivo (igual al que ya
+// existe en agendar.state.js) se hace justo antes de confirmar, para
+// avisar de una vez si el horario ya no es viable en vez de decir "listo"
+// y desmentirlo casi al instante.
+async function isSlotTakenInSaludtoolsLive({ ymd, hm, doctorDoc, durationMin }) {
+    try {
+        const startAppointment = `${ymd} ${hm}`;
+        const end = addMinutesToYmdHm(ymd, hm, durationMin);
+        const endAppointment = `${end.ymd} ${end.hm}`;
+
+        const resp = await searchAppointmentsInSaludtools({
+            doctorDocumentType: DOCTOR_DOCUMENT_TYPE,
+            doctorDocumentNumber: doctorDoc,
+            startAppointment,
+            endAppointment,
+            page: 0,
+            size: 19,
+        });
+
+        const content = resp?.body?.content;
+        if (!Array.isArray(content) || !content.length) return false;
+
+        return content.some((item) => {
+            const status = String(
+                item?.stateAppointment || item?.status || "",
+            ).toUpperCase();
+            return status !== "CANCELLED" && status !== "CANCELED";
+        });
+    } catch (error) {
+        // Si la consulta en vivo falla, no se bloquea al paciente -- el
+        // chequeo definitivo sigue ocurriendo en el worker de todas formas.
+        return false;
+    }
 }
 
 function buildSlots(startHm, endHm, slotMin = SLOT_MIN) {
@@ -1381,6 +1423,24 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
             selectedAppointment?.doctor_document_number || DOCTOR_DOCUMENT_NUMBER,
         );
         const clinic = Number(selectedAppointment?.clinic || DEFAULT_CLINIC_ID);
+
+        const takenLive = await isSlotTakenInSaludtoolsLive({
+            ymd: data.newDate,
+            hm: data.newTime,
+            doctorDoc: doctorDocumentNumber,
+            durationMin: APPOINTMENT_DURATION_MIN,
+        });
+
+        if (takenLive) {
+            return {
+                response:
+                    `😊 El horario ${data.newTime} del ${data.newDateLabel || formatYmdToDdMm(data.newDate)} ya no está disponible.\n\n` +
+                    "Por favor elige otra fecha en formato DD/MM, o dime tu preferencia (ej: \"lo más pronto posible\").\n\n" +
+                    "0️⃣ Volver al menú",
+                nextState: "SOPORTE_CITA",
+                data: { ...data, step: "ASK_NEW_DATE" },
+            };
+        }
 
         await createSaludtoolsJob({
             jobType: "APPOINTMENT_UPDATE",
