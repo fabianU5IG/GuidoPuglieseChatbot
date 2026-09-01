@@ -253,9 +253,17 @@ export default async function menuState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
 
-    if (data?.renderMenu) {
-        return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
-    }
+    // `renderMenu` lo dejan varios estados (agendar.state.js, teleconsulta.state.js,
+    // flowFallback.service.js) al volver a MENU tras un mensaje de texto plano
+    // (sin plantilla), para que la próxima vez que el bot muestre el menú lo
+    // haga como plantilla. El problema: como bandera de "primera línea" acá
+    // interceptaba CUALQUIER mensaje siguiente -incluido uno real como
+    // "agendar", "1" o "menu"- y solo reenviaba el menú, ignorando por
+    // completo lo que el paciente acababa de escribir. Se quita el atajo: el
+    // resto de esta función ya reconoce esos mensajes, y si de verdad no
+    // reconoce nada, el fallback final (línea de abajo) igual termina
+    // mostrando la plantilla del menú -- mismo resultado, sin bloquear los
+    // mensajes válidos.
 
     if (
         normalizedMsg === "hola" ||
