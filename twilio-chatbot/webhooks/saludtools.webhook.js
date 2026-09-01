@@ -63,6 +63,13 @@ router.post("/appointment/update", async (req, res) => {
   return res.sendStatus(200);
 });
 
+/* Eliminar/cancelar cita */
+router.post("/appointment/delete", async (req, res) => {
+  logWebhook("APPOINTMENT_DELETE", req);
+  await syncSaludtoolsAppointment("DELETE", req.body);
+  return res.sendStatus(200);
+});
+
 /* Crear paciente */
 router.post("/patient/create", async (req, res) => {
   logWebhook("PATIENT_CREATE", req);

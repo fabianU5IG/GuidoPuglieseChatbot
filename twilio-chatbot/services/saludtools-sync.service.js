@@ -23,7 +23,13 @@ export async function syncSaludtoolsAppointment(eventType, payload) {
     const doctorDoc = payload?.doctorDocumentNumber ?? null;
     const patientDocType = payload?.patientDocumentType ?? null;
     const patientDocNum = payload?.patientDocumentNumber ?? null;
-    const status = payload?.stateAppointment ?? null; // PENDING / CANCELLED / etc (según Saludtools)
+    // El evento DELETE de Saludtools cancela la cita; a veces el payload no
+    // trae stateAppointment actualizado, así que se fuerza aquí para no
+    // depender de que Saludtools lo mande correcto.
+    const status =
+      eventType === "DELETE"
+        ? "CANCELLED"
+        : (payload?.stateAppointment ?? null); // PENDING / CANCELLED / etc (según Saludtools)
     const clinic = payload?.clinic ?? null;
 
     // 1) UPSERT en tabla espejo de saludtools (tu compa ajusta nombre/columnas)
