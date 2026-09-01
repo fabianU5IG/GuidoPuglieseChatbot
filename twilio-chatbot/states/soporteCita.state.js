@@ -3,7 +3,10 @@ import { createSaludtoolsJob } from "../services/saludtools-jobs.service.js";
 import { SALUDTOOLS } from "../constants.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 import { getScheduleBlocksForYmd } from "../services/doctor-schedule.service.js";
-import { recommendAppointmentOptionsAI } from "../services/azure.ai.services.js";
+import {
+    recommendAppointmentOptionsAI,
+    normalizeAppointmentInputAI,
+} from "../services/azure.ai.services.js";
 import { searchAppointmentsInSaludtools } from "../services/saludtools-api.service.js";
 
 const APPOINTMENT_DURATION_MIN = Number(
@@ -1073,7 +1076,34 @@ async function selectRecommendedNewDate({ text, data }) {
 }
 
 async function prepareNewDate({ text, data }) {
-    const parsed = parseDateInput(text);
+    let parsed = parseDateInput(text);
+
+    // Antes solo se aceptaba DD/MM exacto (o YYYY-MM-DD) -- una fecha en
+    // lenguaje natural como "el 8 de septiembre a las 3pm" no calzaba con
+    // ese regex y cualquier isRecommendationRequest(text) tampoco la
+    // reconocía (no es una preferencia tipo "lo más pronto", es una fecha
+    // puntual), así que caía siempre en el mensaje genérico de "esa fecha
+    // no está disponible" -- engañoso, porque el problema real era que no
+    // se entendió la fecha, no que estuviera ocupada. agendar.state.js ya
+    // resuelve esto mismo con normalizeAppointmentInputAI antes de agendar;
+    // se aplica el mismo normalizador aquí como último intento.
+    if (!parsed && !isRecommendationRequest(text)) {
+        try {
+            const ai = await normalizeAppointmentInputAI({
+                message: text,
+                step: "ASK_NEW_DATE",
+                data,
+            });
+            if (ai?.intent === "DATE_DDMM" && ai.confidence >= 0.7 && ai.value) {
+                parsed = parseDateInput(String(ai.value));
+            } else if (ai?.intent === "RECOMMENDATION" && ai.confidence >= 0.7) {
+                return buildRecommendedNewDateResponse(ai.value || text, data);
+            }
+        } catch {
+            // Si la IA falla, se sigue con el mensaje genérico de abajo.
+        }
+    }
+
     if (!parsed) {
         if (isRecommendationRequest(text)) {
             return buildRecommendedNewDateResponse(text, data);
@@ -1081,7 +1111,7 @@ async function prepareNewDate({ text, data }) {
 
         return {
             response:
-                 "😊 Esa fecha no está disponible para reagendamiento.\n\n" +
+                 "😊 No pude identificar esa fecha.\n\n" +
                     "Recuerda que las citas deben solicitarse con mínimo 2 días de anticipación y el Dr. no atiende miércoles, sábados, domingos ni festivos.\n\n" +
                     "Por favor, intenta con otra fecha en formato DD/MM.\n\n" +
                     "0️⃣ Volver al menú",
