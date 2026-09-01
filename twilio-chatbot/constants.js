@@ -22,6 +22,27 @@ export const EPS_CONVENIO = {
 // si Saludtools NO tiene EPS “Particular”, entonces usamos 0
 export const EPS_PARTICULAR_ID = 0;
 
+// Mismo contenido que la plantilla de Twilio "copy_copy_copy_guido_info_costos"
+// (información general/costos, estática, sin variables). No hay forma de leer
+// el texto de esa plantilla desde el código, así que esta lista se mantiene a
+// mano en paralelo -- si se actualiza la plantilla en Twilio, hay que
+// actualizar esto también para que la IA (askAI en preguntas abiertas) no
+// responda "no tengo esa información" sobre datos que sí se le muestran al
+// paciente en el menú de información.
+export const ATTENDED_ENTITIES = [
+  "ARL",
+  "Allianz",
+  "AXA",
+  "Colpatria",
+  "Colmedica",
+  "Colsanitas",
+  "Coomeva",
+  "Suramericana",
+  "Medisanitas",
+  "Medplus",
+];
+export const CONSULTA_PARTICULAR_COP = 400000;
+
 // Números autorizados como secretaría.
 // Acepta en el .env cualquiera de estos formatos:
 //   SECRETARY_PHONES=+573153573131
