@@ -3015,10 +3015,26 @@ export default async function agendarState(msg, data, context = {}) {
             });
             if (aiFallback) return aiFallback;
 
+            // Antes este mensaje era fijo ("ya fue registrada") sin importar
+            // el estado real. Si el worker ya había avisado por WhatsApp que
+            // el horario dejó de estar disponible (cita FAILED), este texto
+            // contradecía ese aviso un minuto después, confundiendo al
+            // paciente. Se consulta el estado real, igual que en la rama
+            // msg === "1" de este mismo paso.
+            const currentStatus = await getAppointmentStatusById(
+                data.appointmentId,
+            );
+
+            const response =
+                currentStatus === "CONFIRMED"
+                    ? `Listo ${data.firstName}. Tu cita ya quedó confirmada. ✅\n\nNos vemos pronto.`
+                    : currentStatus === "FAILED"
+                      ? `${data.firstName}, ese horario ya no quedó disponible. Escribe *AGENDAR* para elegir una nueva fecha y hora.`
+                      : "😊 Tu solicitud de cita ya fue registrada.\n\n" +
+                        "Puedes escribir *MENÚ* para volver al inicio o decirme qué necesitas, por ejemplo: *cancelar cita* o *reagendar cita*.";
+
             return {
-                response:
-                    "😊 Tu solicitud de cita ya fue registrada.\n\n" +
-                    "Puedes escribir *MENÚ* para volver al inicio o decirme qué necesitas, por ejemplo: *cancelar cita* o *reagendar cita*.",
+                response,
                 nextState: "AGENDAR",
                 data,
             };
