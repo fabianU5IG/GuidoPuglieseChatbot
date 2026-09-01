@@ -1405,7 +1405,14 @@ export default async function soporteCitaState(msg, data = {}, context = {}) {
                     modality: "CONVENTIONAL",
                     stateAppointment: "PENDING",
                     notificationState: "ATTEND",
-                    appointmentType: DEFAULT_APPOINTMENT_TYPE,
+                    // Antes esto siempre sobreescribía el tipo de cita original
+                    // (ej: "Consulta de primera vez", "Cita posoperatoria") con
+                    // el valor de prueba fijo, perdiendo esa clasificación con
+                    // solo reagendar. Se conserva el tipo real guardado en el
+                    // último evento sincronizado de esta cita si está disponible.
+                    appointmentType:
+                        selectedAppointment?.raw_payload?.appointmentType ||
+                        DEFAULT_APPOINTMENT_TYPE,
                     clinic,
                     comment: `Reagendada por chatbot. Documento: ${data.documento}`,
                 },

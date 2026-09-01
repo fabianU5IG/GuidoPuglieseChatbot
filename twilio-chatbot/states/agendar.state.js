@@ -35,8 +35,6 @@ const APPOINTMENT_DURATION_MIN = Number(
 const APPOINTMENT_MODALITY =
     process.env.SALUDTOOLS_APPOINTMENT_MODALITY || "CONVENTIONAL";
 const APPOINTMENT_STATE = process.env.SALUDTOOLS_APPOINTMENT_STATE || "PENDING";
-const APPOINTMENT_TYPE_DEFAULT =
-    process.env.SALUDTOOLS_APPOINTMENT_TYPE || "Pruebas Luis";
 
 const SALUDTOOLS_DEBUG =
     String(process.env.SALUDTOOLS_DEBUG || "").toLowerCase() === "true" ||
@@ -2946,8 +2944,18 @@ export default async function agendarState(msg, data, context = {}) {
                         doctorDocumentNumber: DOCTOR_DOCUMENT_NUMBER,
                         modality: appointmentModality,
                         stateAppointment: APPOINTMENT_STATE,
+                        // "Cita posoperatoria" ya llega explícita en
+                        // data.appointmentType (postSurgery.state.js). Para el
+                        // resto, se distingue primera vez vs. control con el
+                        // mismo dato que ya se calculó para saber si había que
+                        // registrar al paciente (patientExistsLocal) — antes
+                        // todo caía en el mismo valor de prueba "Pruebas Luis"
+                        // sin importar si era la primera consulta o no.
                         appointmentType:
-                            data.appointmentType || APPOINTMENT_TYPE_DEFAULT,
+                            data.appointmentType ||
+                            (data.patientExistsLocal
+                                ? "Consulta de control"
+                                : "Consulta de primera vez"),
                         clinic: CLINIC_ID,
                         comment:
                             `Creada por chatbot. Paciente: ${data.fullName}. Tel: ${phone}` +

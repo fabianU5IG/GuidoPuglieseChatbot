@@ -71,7 +71,7 @@ test("las citas rápidas se guardan localmente y también se encolan para SaludT
     const result = await dashboardState(
         `presencial 15/09 08:30 cc ${uniqueDoc}`,
         { step: "QUICK_BULK_MESSAGE" },
-        { from: "+573153573132" },
+        { from: "+573005376530" },
     );
 
     assert.equal(result.nextState, "DASHBOARD");
