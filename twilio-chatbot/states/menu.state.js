@@ -148,6 +148,15 @@ function isDirectScheduleRequest(normalizedMsg = "") {
 }
 
 function isScheduleIntent(normalizedMsg, compactMsg) {
+    // "reagendar cita" contiene la subcadena "agendar cita" (re+agendar), así
+    // que sin esta exclusión un paciente pidiendo reagendar su cita existente
+    // terminaba enviado a registrar una cita NUEVA desde cero. Mismo guard
+    // que ya usan isExpressBookingIntent/isDirectScheduleRequest en este
+    // archivo para "cancelar/reagendar/reprogramar/cambiar/mover/eliminar".
+    if (/\b(cancelar|cancela|reagendar|reprogramar|cambiar|mover|eliminar)\b/.test(normalizedMsg)) {
+        return false;
+    }
+
     return (
         normalizedMsg === "agendar" ||
         normalizedMsg === "agendar cita" ||

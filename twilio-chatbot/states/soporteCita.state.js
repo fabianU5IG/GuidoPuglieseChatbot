@@ -182,6 +182,20 @@ function normalizeDocType(input) {
 function normalizeYesNo(input) {
     const t = normalizeOption(input);
     const c = compact(input);
+    // El botón de confirmación muestra literalmente "Sí, confirmar" / "Sí,
+    // cancelar" -- un paciente que escribe eso a mano (en vez de tocar el
+    // botón) manda "si, confirmar", que con la coma nunca calzaba con
+    // ninguna palabra exacta de la lista de abajo (t sigue siendo la frase
+    // completa "si, confirmar", no solo "si"). El bot lo mandaba entonces al
+    // fallback de IA, que en este paso no sabe reconocerlo como confirmación
+    // y termina regresando a un menú distinto sin cancelar/reagendar nada,
+    // dejando al paciente creyendo que ya confirmó cuando en realidad no pasó
+    // nada. Se compara también solo la primera palabra, quitando puntuación.
+    const firstWord = t
+        .replace(/[,.;:!¡¿?]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .split(" ")[0];
 
     if (
         [
@@ -196,6 +210,11 @@ function normalizeYesNo(input) {
             "confirmo",
         ].includes(t) ||
         [
+            "si",
+            "confirmar",
+            "confirmo",
+        ].includes(firstWord) ||
+        [
             "si_cancelar",
             "confirmar_cancelacion",
             "cancelar_confirmar",
@@ -209,6 +228,7 @@ function normalizeYesNo(input) {
 
     if (
         ["no", "n", "2", "abortar", "volver", "cancelar"].includes(t) ||
+        ["no", "abortar"].includes(firstWord) ||
         [
             "no_cancelar",
             "no_reagendar",
