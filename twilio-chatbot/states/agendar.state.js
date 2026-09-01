@@ -1289,20 +1289,54 @@ async function buildRecommendedTimeResponse(message, data) {
     }));
     data.aiTimeRecommendationActive = true;
 
-    const lines = data.aiTimeRecommendations.map(
-        (item, index) => `${index + 1}️⃣ ${item.time} — ${item.reason}`,
-    );
+    // Antes esta respuesta era texto plano mientras que
+    // buildRecommendedAppointmentResponse (recomendación de fecha) usaba
+    // Content Template de Twilio, así que el paciente veía a veces una
+    // tarjeta con lista y a veces un mensaje plano para el mismo tipo de
+    // recomendación. Se usa la misma familia de plantillas aquí para que
+    // la presentación sea consistente en ambos casos.
+    const recs = data.aiTimeRecommendations;
+    const dateText = formatDateForRecommendation(data.ymd);
+    const intro =
+        aiResult?.intro ||
+        `Encontré estos horarios disponibles para ${data.date}:`;
+    const note =
+        aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar.";
 
-    return {
-        response:
-            `🤖 Para el ${data.date}, estas son las opciones más convenientes:\n\n` +
-            `${lines.join("\n")}\n\n` +
-            "Responde 1, 2 o 3 para elegir. También puedes escribir otra fecha en formato DD/MM.\n\n" +
-            `${aiResult?.note || "La disponibilidad se valida nuevamente al seleccionar."}\n\n` +
-            "0️⃣ Volver al menú",
-        nextState: "AGENDAR",
-        data,
-    };
+    if (recs.length === 1) {
+        return sendTemplate(TEMPLATE_RECOMENDACION_1, "AGENDAR", data, {
+            "1": intro,
+            "2": dateText,
+            "3": recs[0].time,
+            "4": recs[0].reason,
+            "5": note,
+        });
+    }
+    if (recs.length === 2) {
+        return sendTemplate(TEMPLATE_RECOMENDACION_2, "AGENDAR", data, {
+            "1": intro,
+            "2": dateText,
+            "3": recs[0].time,
+            "4": recs[0].reason,
+            "5": dateText,
+            "6": recs[1].time,
+            "7": recs[1].reason,
+            "8": note,
+        });
+    }
+    return sendTemplate(TEMPLATE_RECOMENDACION_3, "AGENDAR", data, {
+        "1": intro,
+        "2": dateText,
+        "3": recs[0].time,
+        "4": recs[0].reason,
+        "5": dateText,
+        "6": recs[1].time,
+        "7": recs[1].reason,
+        "8": dateText,
+        "9": recs[2].time,
+        "10": recs[2].reason,
+        "11": note,
+    });
 }
 
 function buildAskDateMessage() {
