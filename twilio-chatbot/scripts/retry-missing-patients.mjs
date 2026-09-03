@@ -11,8 +11,32 @@ import { db } from "../db/mysql.js";
 import { readPatientInSaludtools } from "../services/saludtools-api.service.js";
 import { syncSaludtoolsPatient } from "../services/saludtools-sync.service.js";
 
+// El worker de producción (workers/saludtools.worker.js) corre en paralelo y
+// también se autentica contra Saludtools de vez en cuando -- un solo intento
+// manual puede chocar justo con eso. Se reintenta varias veces con espera
+// larga en vez de fallar de una.
+const RETRY_429_WAIT_MS = 75000;
+const MAX_RETRIES_PER_CALL = 4;
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callWithRetry(fn, label) {
+    for (let attempt = 1; attempt <= MAX_RETRIES_PER_CALL; attempt += 1) {
+        try {
+            return await fn();
+        } catch (error) {
+            if (error?.status === 429 && attempt < MAX_RETRIES_PER_CALL) {
+                console.log(
+                    `  [429] ${label}: esperando ${RETRY_429_WAIT_MS / 1000}s antes de reintentar (intento ${attempt}/${MAX_RETRIES_PER_CALL})...`,
+                );
+                await sleep(RETRY_429_WAIT_MS);
+                continue;
+            }
+            throw error;
+        }
+    }
 }
 
 async function main() {
@@ -39,9 +63,13 @@ async function main() {
             `\nDocumento ${row.patient_document_number} (tipo ${row.patient_document_type}):`,
         );
         try {
-            const resp = await readPatientInSaludtools(
-                row.patient_document_type,
-                row.patient_document_number,
+            const resp = await callWithRetry(
+                () =>
+                    readPatientInSaludtools(
+                        row.patient_document_type,
+                        row.patient_document_number,
+                    ),
+                `paciente doc ${row.patient_document_number}`,
             );
             console.log("  Respuesta cruda:", JSON.stringify(resp?.body || resp));
 
