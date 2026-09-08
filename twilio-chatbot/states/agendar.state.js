@@ -817,7 +817,7 @@ function formatDateForRecommendation(ymd) {
     return `${weekday} ${pad2(day)}/${pad2(month)}`;
 }
 
-function isRecommendationRequest(value) {
+export function isRecommendationRequest(value) {
     const key = normKey(value);
 
     // No debe interpretar como "recomiéndame una fecha" un mensaje donde el
@@ -864,6 +864,9 @@ function isRecommendationRequest(value) {
         key.includes("esta semana") ||
         key.includes("proxima semana") ||
         key.includes("la semana que viene") ||
+        key.includes("ultima semana") ||
+        key.includes("final del mes") ||
+        key.includes("fin de mes") ||
         key.includes("por la manana") ||
         key.includes("en la manana") ||
         key.includes("por la tarde") ||
@@ -899,6 +902,17 @@ function addDays(date, days) {
 
 function maxDate(a, b) {
     return a > b ? a : b;
+}
+
+function getLastCalendarWeekOfMonth({ year, month }) {
+    // Semana calendario de lunes a domingo que contiene el último día del mes,
+    // limitada al propio mes. Ejemplo: septiembre de 2026 termina un miércoles,
+    // así que su última semana va del lunes 28 al miércoles 30.
+    const end = new Date(year, month, 0, 0, 0, 0, 0);
+    const daysSinceMonday = (end.getDay() + 6) % 7;
+    const start = addDays(end, -daysSinceMonday);
+
+    return { start, end };
 }
 
 const MONTH_NUMBER_BY_NAME = {
@@ -950,7 +964,7 @@ function resolveUpcomingYmdForDay(day, month, notBefore) {
     return null;
 }
 
-function getSchedulingDateWindow(value) {
+export function getSchedulingDateWindow(value) {
     const key = normKey(value);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -979,6 +993,44 @@ function getSchedulingDateWindow(value) {
         if (resolved) {
             return { start: resolved, end: resolved };
         }
+    }
+
+    // "La última semana del mes" no puede quedar en manos de la IA: primero
+    // se calcula el rango real y DESPUÉS se le entregan únicamente candidatos
+    // de ese rango. Así la IA puede ordenar/explicar, pero jamás convertir el
+    // 15 o el 17 en "última semana" cuando el mes termina el 30.
+    if (
+        key.includes("ultima semana") ||
+        key.includes("final del mes") ||
+        key.includes("fin de mes")
+    ) {
+        const explicitMonthEntry = Object.entries(MONTH_NUMBER_BY_NAME).find(
+            ([name]) => new RegExp(`\\b${name}\\b`).test(key),
+        );
+        const explicitYearMatch = key.match(/\b(20\d{2})\b/);
+
+        let month = explicitMonthEntry
+            ? explicitMonthEntry[1]
+            : today.getMonth() + 1;
+        let year = explicitYearMatch
+            ? Number(explicitYearMatch[1])
+            : today.getFullYear();
+
+        // Si se menciona un mes que ya quedó atrás y no se indicó año, se
+        // interpreta como ese mes del próximo año.
+        if (
+            explicitMonthEntry &&
+            !explicitYearMatch &&
+            month < today.getMonth() + 1
+        ) {
+            year += 1;
+        }
+
+        const lastWeek = getLastCalendarWeekOfMonth({ year, month });
+        return {
+            start: maxDate(lastWeek.start, minDate),
+            end: lastWeek.end,
+        };
     }
 
     if (key.includes("proxima semana") || key.includes("la semana que viene")) {

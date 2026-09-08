@@ -47,6 +47,35 @@ function compact(value = "") {
     return normalizeOption(value).replace(/\s+/g, "_");
 }
 
+function getInteractionVariants(msg, context = {}) {
+    const rawBody = context?.rawBody || {};
+
+    return [...new Set([
+        msg,
+        rawBody.ButtonPayload,
+        rawBody.ButtonText,
+        rawBody.Body,
+    ])]
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+}
+
+function matchesAnyInteractionVariant(variants, matcher) {
+    return variants.some((value) =>
+        matcher(normalizeOption(value), compact(value)),
+    );
+}
+
+const TELECONSULTA_FALLBACK_TEXT =
+    "📱 *Teleconsulta / lectura de estudios*\n\n" +
+    "La teleconsulta está orientada principalmente a la revisión de resultados o estudios. " +
+    "Si es tu primera consulta, te recomendamos agendar una consulta presencial.\n\n" +
+    "1️⃣ Agendar teleconsulta\n" +
+    "2️⃣ Requisitos\n" +
+    "3️⃣ Más información\n" +
+    "4️⃣ Hablar con secretaria\n" +
+    "0️⃣ Volver al menú";
+
 const MONTH_NUMBER_BY_NAME = {
     enero: 1,
     febrero: 2,
@@ -261,6 +290,7 @@ function isInfoIntent(normalizedMsg, compactMsg) {
 export default async function menuState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
+    const interactionVariants = getInteractionVariants(msg, context);
 
     // `renderMenu` lo dejan varios estados (agendar.state.js, teleconsulta.state.js,
     // flowFallback.service.js) al volver a MENU tras un mensaje de texto plano
@@ -291,7 +321,9 @@ export default async function menuState(msg, data = {}, context = {}) {
 
     // Se evalúa antes de cualquier solicitud general de cita para evitar que
     // payloads como "agendar cita postoperatoria" entren al flujo equivocado.
-    if (isPostSurgeryIntent(normalizedMsg, compactMsg)) {
+    if (
+        matchesAnyInteractionVariant(interactionVariants, isPostSurgeryIntent)
+    ) {
         return sendTemplate(TEMPLATE_POSTOP_TIEMPO_CIRUGIA, "POST_SURGERY", {
             step: "ASK_POST_SURGERY_DAYS",
         });
@@ -347,7 +379,12 @@ export default async function menuState(msg, data = {}, context = {}) {
     }
 
     // Botón / payload del menú principal: gestionar cita.
-    if (isManageAppointmentIntent(normalizedMsg, compactMsg)) {
+    if (
+        matchesAnyInteractionVariant(
+            interactionVariants,
+            isManageAppointmentIntent,
+        )
+    ) {
         return sendTemplate(
             TEMPLATE_GESTION_CITA,
             "GESTION_CITAS",
@@ -365,21 +402,29 @@ export default async function menuState(msg, data = {}, context = {}) {
         }
 
     // Botón / payload del menú principal: información y costos.
-    if (isInfoIntent(normalizedMsg, compactMsg)) {
+    if (matchesAnyInteractionVariant(interactionVariants, isInfoIntent)) {
         return sendTemplate(TEMPLATE_INFO_COSTOS, "INFO_COSTOS", {
             rendered: true,
         });
     }
 
     // Teleconsulta tiene una plantilla y un flujo independientes.
-    if (isTeleconsultaIntent(normalizedMsg, compactMsg)) {
-        return sendTemplate(TEMPLATE_TELECONSULTA, "TELECONSULTA", {
+    if (
+        matchesAnyInteractionVariant(interactionVariants, isTeleconsultaIntent)
+    ) {
+        const result = sendTemplate(TEMPLATE_TELECONSULTA, "TELECONSULTA", {
             renderTemplate: false,
         });
+
+        // Si Twilio rechaza esta Content Template (por ejemplo, porque el SID
+        // configurado quedó desactualizado), index.js usa este texto como
+        // degradación segura en vez de dejar al paciente sin respuesta.
+        result.templateFallbackResponse = TELECONSULTA_FALLBACK_TEXT;
+        return result;
     }
 
     // Botón desde plantilla de costos: iniciar directamente agendamiento.
-    if (isScheduleIntent(normalizedMsg, compactMsg)) {
+    if (matchesAnyInteractionVariant(interactionVariants, isScheduleIntent)) {
         return sendTemplate(TEMPLATE_AGENDAMIENTO_INICIO, "AGENDAR", {
             step: "ASK_NAME",
             origin: "CONSULTA_GENERAL",
@@ -388,7 +433,7 @@ export default async function menuState(msg, data = {}, context = {}) {
         });
     }
 
-    if (isAdvisorIntent(normalizedMsg, compactMsg)) {
+    if (matchesAnyInteractionVariant(interactionVariants, isAdvisorIntent)) {
         try {
             await notifySecretarySupportRequest({
                 patientPhone: context.from,
