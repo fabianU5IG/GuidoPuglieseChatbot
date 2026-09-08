@@ -184,7 +184,15 @@ export async function notifySecretarySupportRequest({
     });
 }
 
-export async function downloadTwilioMedia(mediaUrl) {
+// Twilio a veces todavía no tiene el archivo disponible en el instante en
+// que llega el webhook (404 momentáneo). Reintentamos un par de veces con
+// una espera corta antes de darlo por perdido.
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function downloadTwilioMedia(mediaUrl, attempt = 1) {
+    const maxAttempts = 3;
     const response = await fetch(mediaUrl, {
         headers: {
             Authorization:
@@ -194,6 +202,10 @@ export async function downloadTwilioMedia(mediaUrl) {
     });
 
     if (!response.ok) {
+        if (response.status === 404 && attempt < maxAttempts) {
+            await sleep(1000 * attempt);
+            return downloadTwilioMedia(mediaUrl, attempt + 1);
+        }
         throw new Error(
             `No se pudo descargar media de Twilio. Status: ${response.status}`,
         );
