@@ -1,12 +1,12 @@
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
-const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
-const TEMPLATE_GESTION_CITA = "HXe1da2f8036073f44fad55c7a72f9e155";
+const TEMPLATE_MENU_PRINCIPAL = "HX58b32a7d0047f3359d9680ecf201c250";
+const TEMPLATE_GESTION_CITA = "HXee09a2af164f7e140b257e6fbc0c061c";
 const TEMPLATE_ASK_DOC_TYPE =
     process.env.TWILIO_TEMPLATE_SUPPORT_DOC_TYPE_SID ||
     process.env.TWILIO_TEMPLATE_ASK_DOC_TYPE_SID ||
-    "HX3b07c0984e3fc8c6d2f96630752ef101";
-const TEMPLATE_AGENDAMIENTO_INICIO = "HX94711af7408f422962cb914731d0bae6";
+    "HX56d2df1230476630f2a1edfd19b9815e";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HXb4e3cc876818f3affb9035fb0bd13c17";
 
 function sendTemplate(contentSid, nextState, data = {}, variables = null) {
     return {

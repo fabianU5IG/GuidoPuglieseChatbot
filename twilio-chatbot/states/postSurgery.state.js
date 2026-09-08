@@ -11,8 +11,8 @@ import {
 import { savePatientImageToMySql } from "../services/post-surgery-media.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
-const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
-const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
+const TEMPLATE_MENU_PRINCIPAL = "HX58b32a7d0047f3359d9680ecf201c250";
+const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HX6c1722022a73ccc66a147b3be033fa2d";
 
 function returnMenu() {
     return {

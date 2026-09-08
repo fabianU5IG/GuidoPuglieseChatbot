@@ -15,7 +15,7 @@ const { default: gestionCitasState } = await import(
 );
 
 // Bug reportado en QA en vivo: la plantilla real de info/costos
-// (HX5256580c02d8a037cbafa7e5a3c1fd55) usa el id de botón "costos_volver"
+// (HXb039d2b0b02ef16a1b381d9319adf433) usa el id de botón "costos_volver"
 // para "Volver", no "volver" a secas. Antes del fix, ese payload no calzaba
 // con ninguna de las variantes de isBackIntent y caía en isInfoIntent (por
 // incluir la palabra "costos"), repitiendo la misma plantilla y dejando al

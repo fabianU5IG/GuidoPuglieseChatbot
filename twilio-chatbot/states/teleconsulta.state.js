@@ -1,12 +1,12 @@
 import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
-const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
+const TEMPLATE_MENU_PRINCIPAL = "HX58b32a7d0047f3359d9680ecf201c250";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
-    "HXdcf56e75504920c35e7e46f4f6c6753b";
-const TEMPLATE_TELECONSULTA_REQUISITOS = "HXc09271c38baeaa3ba666f67352280bcc";
-const TEMPLATE_TELECONSULTA_INFO_GENERAL = "HX3d6f8d50fc9cbb42d1daf4874de00520";
+    "HX232d7e27f762934d6456e700a79f1ea9";
+const TEMPLATE_TELECONSULTA_REQUISITOS = "HX39c73662399234891896eba0b6c60130";
+const TEMPLATE_TELECONSULTA_INFO_GENERAL = "HX3f9a2eb766b90108d0839ed831706712";
 
 function sendTemplate(contentSid, nextState = "TELECONSULTA", data = {}, variables = null) {
     return {

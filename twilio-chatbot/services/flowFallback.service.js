@@ -35,15 +35,15 @@ async function getRealAppointmentStatus(appointmentId) {
 // Duplicados a propósito: cada states/*.state.js ya repite estos mismos
 // contentSid en vez de importarlos de un módulo compartido. Se sigue el mismo
 // patrón aquí en vez de convertir menu.state.js en una fuente compartida.
-const TEMPLATE_MENU_PRINCIPAL = "HX8a87673651f780a2781725fb23872427";
-const TEMPLATE_GESTION_CITA = "HXe1da2f8036073f44fad55c7a72f9e155";
-const TEMPLATE_INFO_COSTOS = "HX5256580c02d8a037cbafa7e5a3c1fd55";
+const TEMPLATE_MENU_PRINCIPAL = "HX58b32a7d0047f3359d9680ecf201c250";
+const TEMPLATE_GESTION_CITA = "HXee09a2af164f7e140b257e6fbc0c061c";
+const TEMPLATE_INFO_COSTOS = "HXb039d2b0b02ef16a1b381d9319adf433";
 const TEMPLATE_TELECONSULTA =
     process.env.TWILIO_TELECONSULTA_TEMPLATE_SID ||
-    "HXdcf56e75504920c35e7e46f4f6c6753b";
-const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HXac4185b56c6a8f99a45e9aabc91b74ff";
-const TEMPLATE_AGENDAMIENTO_INICIO = "HX94711af7408f422962cb914731d0bae6";
-const TEMPLATE_IA_REDIRECCION_SECRETARIA = "HXb3c1b58fd9b398790b07579f054885e5";
+    "HX232d7e27f762934d6456e700a79f1ea9";
+const TEMPLATE_POSTOP_TIEMPO_CIRUGIA = "HX6c1722022a73ccc66a147b3be033fa2d";
+const TEMPLATE_AGENDAMIENTO_INICIO = "HXb4e3cc876818f3affb9035fb0bd13c17";
+const TEMPLATE_IA_REDIRECCION_SECRETARIA = "HXc9454ff2482a3e72f65cbc4c6dece3ba";
 
 function normalizeButtonPayload(value = "") {
     return String(value || "")
@@ -137,7 +137,7 @@ export async function resolveFlowFallback({
     const buttonPayload = normalizeButtonPayload(message);
 
     // Respuesta a los botones de la plantilla "ia_redireccion_secretaria"
-    // (HXb3c1b58fd9b398790b07579f054885e5). Se resuelve aquí de forma
+    // (HXc9454ff2482a3e72f65cbc4c6dece3ba). Se resuelve aquí de forma
     // centralizada -y antes que cualquier otra cosa- porque el botón puede
     // llegar estando en cualquier estado (se pregunta sin cambiar de state),
     // y no todos los states/*.state.js reconocen estos payloads por su cuenta.

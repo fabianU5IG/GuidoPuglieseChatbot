@@ -113,7 +113,7 @@ export async function sendWhatsAppMessageWithMedia(
 // puesta a menos que sea con este mismo SID.
 const POST_SURGERY_IMAGE_TEMPLATE_SID =
     process.env.TWILIO_POST_SURGERY_IMAGE_TEMPLATE_SID ||
-    "HX35cb52ef7fc6c9d1e4a1135bdabbbd4e";
+    "HX6b921fbd838384cdb2dc178f88e8497e";
 
 export async function notifySecretaryPostSurgeryImage({
     patientPhone,
