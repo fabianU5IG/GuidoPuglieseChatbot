@@ -156,19 +156,20 @@ export async function notifySecretaryPostSurgeryImage({
     );
 }
 
+// Antes se enviaba como mensaje de texto libre, pero WhatsApp bloquea el
+// texto libre business-initiated si la secretaria no le ha escrito al bot
+// en las ultimas 24h (error 63016). Se cambio a plantilla aprobada, que no
+// tiene esa restriccion.
+const SECRETARY_NOTIFICATION_TEMPLATE_SID =
+    process.env.TWILIO_SECRETARY_NOTIFICATION_TEMPLATE_SID ||
+    "HX8eda3d18d10efe8ade4fa7427f96cd51";
+
 export async function notifySecretarySupportRequest({
     patientPhone,
     patientName = "Paciente",
     reason = "Solicitud de atención",
     note = "",
 }) {
-    const body =
-        `📥 *Solicitud para secretaria*\n\n` +
-        `👤 Paciente: ${patientName}\n` +
-        `📞 Tel: ${patientPhone}\n` +
-        `📌 Motivo: ${reason}` +
-        (note ? `\n📝 Mensaje: ${note}` : "");
-
     console.log("📤 Notificando solicitud a secretaria:", {
         to: SECRETARY_WHATSAPP,
         patientPhone,
@@ -177,10 +178,11 @@ export async function notifySecretarySupportRequest({
         hasNote: Boolean(note),
     });
 
-    return client.messages.create({
-        from: FROM_WHATSAPP,
-        to: SECRETARY_WHATSAPP,
-        body,
+    return sendWhatsAppTemplate(SECRETARY_WHATSAPP, SECRETARY_NOTIFICATION_TEMPLATE_SID, {
+        1: patientName,
+        2: patientPhone,
+        3: reason,
+        4: note && note.trim() ? note.trim() : "Sin mensaje adicional",
     });
 }
 
