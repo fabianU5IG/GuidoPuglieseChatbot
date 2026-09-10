@@ -361,6 +361,50 @@ function ddmmToYmd(ddmm) {
     return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+// Chequeo local (espejo saludtools_patients), sin llamada en vivo a la API
+// -- evita latencia/rate-limit en el resumen de confirmación. El chequeo
+// real y definitivo sigue pasando en el worker al momento de crear.
+async function findLocalSaludtoolsPatient(documentType, documentNumber) {
+    try {
+        const [rows] = await db.query(
+            `
+            SELECT saludtools_id, full_name, document_type, document_number
+            FROM saludtools_patients
+            WHERE document_type = ?
+              AND document_number = ?
+            LIMIT 1
+            `,
+            [Number(documentType), String(documentNumber)],
+        );
+        return rows?.[0] || null;
+    } catch {
+        return null;
+    }
+}
+
+// Solo hay un doctor en el sistema, así que a diferencia del dedupe
+// por-paciente de agendar.state.js, aquí basta con preguntar "¿ya hay
+// alguna cita activa en ese horario, de quien sea?". Contra el espejo real
+// (saludtools_appointments), no contra la tabla propia `appointments`. Si
+// la consulta falla, no se bloquea nada -- solo se omite la advertencia.
+async function isDoctorSlotOccupiedLocally({ ymd, hm }) {
+    try {
+        const [rows] = await db.query(
+            `
+            SELECT id FROM saludtools_appointments
+            WHERE start_date = ?
+              AND TIME_FORMAT(start_time, '%H:%i') = ?
+              AND UPPER(status) NOT IN ('CANCELLED', 'CANCELED')
+            LIMIT 1
+            `,
+            [ymd, hm],
+        );
+        return Boolean(rows?.[0]);
+    } catch {
+        return false;
+    }
+}
+
 function isValidDateDDMM(value) {
     if (!/^\d{2}\/\d{2}$/.test(value)) return false;
 
@@ -1730,32 +1774,158 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
+            // Antes de mostrar el resumen para confirmar, se revisan (contra
+            // los espejos locales, sin llamadas en vivo a Saludtools) si el
+            // paciente parece registrado y si el horario parece libre. Son
+            // solo advertencias -- el espejo local puede tener minutos de
+            // rezago, así que la secretaria puede confirmar igual y el
+            // chequeo real/definitivo sigue pasando en el worker al crear.
+            const failed = [];
+            const pending = [];
+
+            for (const item of valid) {
+                const ymd = ddmmToYmd(item.dateLabel);
+
+                if (isHoliday(ymd)) {
+                    failed.push({
+                        lineNumber: item.lineNumber,
+                        error: "La fecha corresponde a un festivo en Colombia",
+                    });
+                    continue;
+                }
+
+                const warnings = [];
+
+                const localPatient = await findLocalSaludtoolsPatient(
+                    item.patientDocumentType,
+                    item.patientDocumentNumber,
+                );
+                if (!localPatient) {
+                    warnings.push("paciente no registrado en Saludtools");
+                }
+
+                const occupied = await isDoctorSlotOccupiedLocally({
+                    ymd,
+                    hm: item.timeLabel,
+                });
+                if (occupied) {
+                    warnings.push("horario ya tiene una cita activa");
+                }
+
+                pending.push({
+                    lineNumber: item.lineNumber,
+                    ymd,
+                    modality: item.modality,
+                    dateLabel: item.dateLabel,
+                    timeLabel: item.timeLabel,
+                    rawDocType: item.rawDocType,
+                    patientDocumentType: item.patientDocumentType,
+                    patientDocumentNumber: item.patientDocumentNumber,
+                    warnings,
+                });
+            }
+
+            const allErrors = [...invalid, ...failed];
+
+            if (!pending.length) {
+                let response = `❌ Con error: ${allErrors.length}\n\n`;
+                if (allErrors.length) {
+                    response += "Errores:\n";
+                    allErrors.slice(0, 20).forEach((item) => {
+                        response += `Línea ${item.lineNumber}: ${item.error}\n`;
+                    });
+                    response += "\n";
+                }
+                response +=
+                    "Puedes enviar otro mensaje con más citas.\n" +
+                    "Escribe *fin* o *0* para salir.";
+
+                return {
+                    response,
+                    nextState: "DASHBOARD",
+                    data: { ...data, step: "QUICK_BULK_MESSAGE" },
+                };
+            }
+
+            let response =
+                (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
+                "Vas a crear estas citas:\n\n";
+
+            pending.forEach((item) => {
+                const warningText = item.warnings.length
+                    ? ` ⚠️ ${item.warnings.join(", ")}`
+                    : " ✅";
+                response +=
+                    `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
+                    `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
+                    `(${item.modality})${warningText}\n`;
+            });
+
+            if (allErrors.length) {
+                response += "\nLíneas con error (no se crearán):\n";
+                allErrors.slice(0, 20).forEach((item) => {
+                    response += `Línea ${item.lineNumber}: ${item.error}\n`;
+                });
+            }
+
+            response +=
+                "\nResponde 1️⃣ para confirmar y crear estas citas, o 0️⃣ para cancelar.";
+
+            return {
+                response,
+                nextState: "DASHBOARD",
+                data: {
+                    ...data,
+                    step: "QUICK_BULK_CONFIRM",
+                    pendingQuickAppointments: pending,
+                },
+            };
+        }
+
+        case "QUICK_BULK_CONFIRM": {
+            if (msg === "0" || isExitQuickBulkCommand(msg)) {
+                return {
+                    response:
+                        "✅ Cancelado, no se creó ninguna cita.\n\n" +
+                        "Puedes enviar otro mensaje con citas.\n" +
+                        "Escribe *fin* o *0* para salir.",
+                    nextState: "DASHBOARD",
+                    data: { step: "QUICK_BULK_MESSAGE" },
+                };
+            }
+
+            if (msg !== "1") {
+                const quickBulkConfirmFallback = await applyDashboardAIFallback(
+                    msg,
+                    "QUICK_BULK_CONFIRM",
+                );
+                if (quickBulkConfirmFallback) return quickBulkConfirmFallback;
+
+                return {
+                    response:
+                        "Responde 1️⃣ para confirmar y crear estas citas, o 0️⃣ para cancelar.",
+                    nextState: "DASHBOARD",
+                    data,
+                };
+            }
+
+            const pending = Array.isArray(data.pendingQuickAppointments)
+                ? data.pendingQuickAppointments
+                : [];
+
             const inserted = [];
             const failed = [];
 
-            for (const item of valid) {
+            for (const item of pending) {
                 try {
-                    const ymd = ddmmToYmd(item.dateLabel);
-
-                    if (isHoliday(ymd)) {
-                        failed.push({
-                            lineNumber: item.lineNumber,
-                            raw: item.raw,
-                            error: "La fecha corresponde a un festivo en Colombia",
-                        });
-                        continue;
-                    }
-
-                    const localResult =
-                        await createSecretaryQuickAppointment({
-                            date: ymd,
-                            time: item.timeLabel,
-                            durationMinutes: APPOINTMENT_DURATION_MIN,
-                            patientDocumentType: item.patientDocumentType,
-                            patientDocumentNumber:
-                                item.patientDocumentNumber,
-                            modality: item.modality,
-                        });
+                    const localResult = await createSecretaryQuickAppointment({
+                        date: item.ymd,
+                        time: item.timeLabel,
+                        durationMinutes: APPOINTMENT_DURATION_MIN,
+                        patientDocumentType: item.patientDocumentType,
+                        patientDocumentNumber: item.patientDocumentNumber,
+                        modality: item.modality,
+                    });
 
                     let syncQueued = false;
                     if (localResult.created) {
@@ -1792,7 +1962,6 @@ export default async function dashboardState(msg, data = {}, context) {
                 } catch (err) {
                     failed.push({
                         lineNumber: item.lineNumber,
-                        raw: item.raw,
                         error: String(err?.message || err).slice(0, 180),
                     });
                 }
@@ -1805,17 +1974,15 @@ export default async function dashboardState(msg, data = {}, context) {
             let response =
                 `✅ Guardadas en la base de datos: ${createdCount}\n` +
                 `ℹ️ Ya existentes: ${duplicateCount}\n` +
-                `❌ Con error: ${invalid.length + failed.length}\n\n`;
+                `❌ Con error: ${failed.length}\n\n`;
 
             if (inserted.length) {
-                response +=
-                    (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
-                    "Citas registradas localmente:\n";
+                response += "Citas registradas localmente:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     const syncNote = !item.created
                         ? ""
                         : item.syncQueued
-                          ? " · sincronizando con Saludtools"
+                          ? " · enviando a Saludtools para confirmación final"
                           : " · ⚠️ no se pudo sincronizar con Saludtools";
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
@@ -1823,14 +1990,13 @@ export default async function dashboardState(msg, data = {}, context) {
                         `(${item.modality})${item.created ? "" : " - ya existía"}${syncNote}\n`;
                 });
                 response += syncedCount
-                    ? "Ya quedó todo registrado y en un momento se actualiza también en Saludtools. ✅\n\n"
+                    ? "Guardado localmente. Enviando a Saludtools para confirmación final — te aviso por este medio en cuanto quede confirmada allá. ✅\n\n"
                     : "\n";
             }
 
-            const allErrors = [...invalid, ...failed];
-            if (allErrors.length) {
+            if (failed.length) {
                 response += "Errores:\n";
-                allErrors.slice(0, 20).forEach((item) => {
+                failed.slice(0, 20).forEach((item) => {
                     response += `Línea ${item.lineNumber}: ${item.error}\n`;
                 });
                 response += "\n";
@@ -1843,10 +2009,7 @@ export default async function dashboardState(msg, data = {}, context) {
             return {
                 response,
                 nextState: "DASHBOARD",
-                data: {
-                    ...data,
-                    step: "QUICK_BULK_MESSAGE",
-                },
+                data: { step: "QUICK_BULK_MESSAGE" },
             };
         }
 

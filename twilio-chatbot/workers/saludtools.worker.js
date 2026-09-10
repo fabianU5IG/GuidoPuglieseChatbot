@@ -505,14 +505,14 @@ async function processAppointmentCreate(job) {
             saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
         );
 
-        // Igual que en reagendar/cancelar: si el job viene del dashboard, la
-        // secretaria ya recibió la confirmación al crear la cita rápida.
-        if (payload.source !== "SECRETARY_DASHBOARD") {
-            await safeSendWhatsApp(
-                job.phone,
-                `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`,
-            );
-        }
+        // A diferencia de reagendar/cancelar, la respuesta inmediata del
+        // dashboard para "crear cita rápida" ya NO promete que quedó
+        // confirmada -- solo dice que se envía a Saludtools y que se avisará
+        // por este medio. Así que aquí sí se manda el aviso real de éxito
+        // también cuando el job viene del dashboard (antes se suprimía,
+        // dejando a la secretaria sin saber nunca si Saludtools la aceptó).
+        const successMessage = `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`;
+        await safeSendWhatsApp(job.phone, successMessage);
     } catch (error) {
         if (isSlotUnavailableError(error)) {
             if (job.appointment_id) {

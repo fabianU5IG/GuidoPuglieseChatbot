@@ -68,16 +68,38 @@ test("las citas rápidas se guardan localmente y también se encolan para SaludT
     // "created" quedaría en false, sin encolar nada nuevo para Saludtools.
     const uniqueDoc = `1${Date.now()}`.slice(0, 10);
 
-    const result = await dashboardState(
+    // Paso 1: la línea válida ahora muestra un resumen para confirmar, en
+    // vez de crear la cita de inmediato (no se conoce en el espejo local,
+    // así que debe salir marcada con la advertencia de paciente no
+    // registrado -- eso no bloquea, solo se avisa).
+    const preview = await dashboardState(
         `presencial 15/09 08:30 cc ${uniqueDoc}`,
         { step: "QUICK_BULK_MESSAGE" },
+        { from: "+573005376530" },
+    );
+
+    assert.equal(preview.nextState, "DASHBOARD");
+    assert.equal(preview.data.step, "QUICK_BULK_CONFIRM");
+    assert.match(preview.response, /Vas a crear estas citas/i);
+    assert.match(preview.response, new RegExp(uniqueDoc));
+    assert.match(preview.response, /paciente no registrado en Saludtools/i);
+    assert.ok(Array.isArray(preview.data.pendingQuickAppointments));
+    assert.equal(preview.data.pendingQuickAppointments.length, 1);
+
+    // Paso 2: al confirmar con "1", ahí sí se crea localmente y se encola.
+    const result = await dashboardState(
+        "1",
+        {
+            step: "QUICK_BULK_CONFIRM",
+            pendingQuickAppointments: preview.data.pendingQuickAppointments,
+        },
         { from: "+573005376530" },
     );
 
     assert.equal(result.nextState, "DASHBOARD");
     assert.match(result.response, /Guardadas en la base de datos/i);
     assert.match(result.response, /Citas registradas localmente/i);
-    assert.match(result.response, /sincronizando con Saludtools/i);
+    assert.match(result.response, /confirmación final/i);
 
     const [rows] = await db.query(
         "SELECT id FROM saludtools_jobs WHERE job_type = 'APPOINTMENT_CREATE' AND dedupe_key LIKE ?",
