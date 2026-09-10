@@ -21,6 +21,26 @@ test("el menú principal envía la plantilla nueva de teleconsulta", async () =>
     assert.equal(result.nextState, "TELECONSULTA");
 });
 
+
+test("el menú reconoce Teleconsulta aunque Twilio cambie el payload interno del botón", async () => {
+    const result = await menuState(
+        "opcion_3",
+        {},
+        {
+            rawBody: {
+                ButtonPayload: "opcion_3",
+                ButtonText: "Teleconsulta / lectura de estudios",
+                Body: "Teleconsulta / lectura de estudios",
+            },
+        },
+    );
+
+    assert.equal(result.sendTemplate, true);
+    assert.equal(result.template.contentSid, TELECONSULTA_SID);
+    assert.equal(result.nextState, "TELECONSULTA");
+    assert.match(result.templateFallbackResponse, /teleconsulta/i);
+});
+
 test("el estado de teleconsulta vuelve a mostrar su plantilla", async () => {
     const result = await teleconsultaState("", {}, {});
 

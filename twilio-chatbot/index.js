@@ -4,7 +4,10 @@ import bodyParser from "body-parser";
 import twilio from "twilio";
 import chatbotResponse from "./chatbot.js";
 import saludtoolsWebhook from "./webhooks/saludtools.webhook.js";
-import { sendWhatsAppTemplate } from "./services/whatsapp.service.js";
+import {
+    sendWhatsAppMessage,
+    sendWhatsAppTemplate,
+} from "./services/whatsapp.service.js";
 import { getPostSurgeryMediaByToken } from "./services/post-surgery-media.service.js";
 import {
     loadChatSession,
@@ -185,18 +188,39 @@ app.post("/webhook", twilio.webhook(), async (req, res) => {
         if (result.sendTemplate && result.template?.contentSid) {
             console.log("📤 Enviando template:", result.template.contentSid);
 
-            const twilioResponse = await sendWhatsAppTemplate(
-                from,
-                result.template.contentSid,
-                result.template.variables || null,
-            );
+            try {
+                const twilioResponse = await sendWhatsAppTemplate(
+                    from,
+                    result.template.contentSid,
+                    result.template.variables || null,
+                );
 
-            console.log("✅ Template enviado:", {
-                sid: twilioResponse.sid,
-                status: twilioResponse.status,
-                errorCode: twilioResponse.errorCode,
-                errorMessage: twilioResponse.errorMessage,
-            });
+                console.log("✅ Template enviado:", {
+                    sid: twilioResponse.sid,
+                    status: twilioResponse.status,
+                    errorCode: twilioResponse.errorCode,
+                    errorMessage: twilioResponse.errorMessage,
+                });
+            } catch (templateError) {
+                console.error("❌ Error enviando Content Template Twilio:", {
+                    contentSid: result.template.contentSid,
+                    code: templateError?.code,
+                    status: templateError?.status,
+                    message: templateError?.message || templateError,
+                });
+
+                if (result.templateFallbackResponse) {
+                    await sendWhatsAppMessage(
+                        from,
+                        result.templateFallbackResponse,
+                    );
+                    console.log(
+                        "↪️ Se envió respuesta de respaldo en texto plano.",
+                    );
+                } else {
+                    throw templateError;
+                }
+            }
 
             return res.send("<Response></Response>");
         }

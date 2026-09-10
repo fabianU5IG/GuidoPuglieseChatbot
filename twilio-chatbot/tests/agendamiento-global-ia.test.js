@@ -21,7 +21,11 @@ const { default: infoCostosState } = await import(
 const { default: teleconsultaState } = await import(
     "../states/teleconsulta.state.js"
 );
-const { default: agendarState } = await import("../states/agendar.state.js");
+const {
+    default: agendarState,
+    getSchedulingDateWindow,
+    isRecommendationRequest,
+} = await import("../states/agendar.state.js");
 const { default: chatbotResponse } = await import("../chatbot.js");
 
 // Se calcula en cada corrida (en vez de usar una fecha fija) para que estos
@@ -136,6 +140,26 @@ test("teleconsulta notifica a la secretaría en vez de abrir agendamiento con IA
     assert.equal(result.nextState, "MENU");
     assert.equal(result.data.renderMenu, true);
     assert.match(result.response, /secretaria/i);
+});
+
+
+test("la última semana del mes se calcula antes de pedir recomendaciones a la IA", () => {
+    const targetYear = new Date().getFullYear() + 1;
+    const window = getSchedulingDateWindow(
+        `la última semana de septiembre de ${targetYear}`,
+    );
+
+    const expectedEnd = new Date(targetYear, 8, 30, 0, 0, 0, 0);
+    const daysSinceMonday = (expectedEnd.getDay() + 6) % 7;
+    const expectedStart = new Date(expectedEnd);
+    expectedStart.setDate(expectedEnd.getDate() - daysSinceMonday);
+
+    assert.equal(window.start.getTime(), expectedStart.getTime());
+    assert.equal(window.end.getTime(), expectedEnd.getTime());
+    assert.equal(
+        isRecommendationRequest("la última semana del mes"),
+        true,
+    );
 });
 
 test("una preferencia natural activa recomendaciones globales de fecha", async () => {
