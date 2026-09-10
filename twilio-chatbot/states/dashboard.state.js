@@ -1977,6 +1977,17 @@ export default async function dashboardState(msg, data = {}, context) {
                 };
             }
 
+            // classifyDashboardIntentAI devuelve UNKNOWN (y aquí null) cuando
+            // el texto en realidad parece el nombre que se estaba esperando,
+            // así que esto solo intercepta salidas/cambios de intención
+            // reales (ej. "mejor olvídalo", "ver pendientes") sin afectar la
+            // búsqueda normal por nombre.
+            const cancelAskPatientFallback = await applyDashboardAIFallback(
+                msg,
+                "CANCEL_ASK_PATIENT",
+            );
+            if (cancelAskPatientFallback) return cancelAskPatientFallback;
+
             return startCancelFlowForPatientName({ patientName, data });
         }
 
@@ -2077,6 +2088,12 @@ export default async function dashboardState(msg, data = {}, context) {
 
         case "CANCEL_CONFIRM": {
             if (msg !== "1") {
+                const cancelConfirmFallback = await applyDashboardAIFallback(
+                    msg,
+                    "CANCEL_CONFIRM",
+                );
+                if (cancelConfirmFallback) return cancelConfirmFallback;
+
                 return {
                     response: "✅ No se realizaron cambios.\n\n" + DASHBOARD_MENU_TEXT,
                     nextState: "DASHBOARD",
@@ -2125,6 +2142,12 @@ export default async function dashboardState(msg, data = {}, context) {
                     data,
                 };
             }
+
+            const rescheduleAskPatientFallback = await applyDashboardAIFallback(
+                msg,
+                "RESCHEDULE_ASK_PATIENT",
+            );
+            if (rescheduleAskPatientFallback) return rescheduleAskPatientFallback;
 
             return startRescheduleFlowForPatientName({ patientName, data });
         }
@@ -2621,6 +2644,12 @@ export default async function dashboardState(msg, data = {}, context) {
             }
 
             if (msg !== "1") {
+                const confirmRescheduleFallback = await applyDashboardAIFallback(
+                    msg,
+                    "CONFIRM_RESCHEDULE",
+                );
+                if (confirmRescheduleFallback) return confirmRescheduleFallback;
+
                 return {
                     response: "Responde 1️⃣ para confirmar o 0️⃣ para cancelar.",
                     nextState: "DASHBOARD",
