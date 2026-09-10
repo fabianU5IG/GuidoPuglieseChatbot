@@ -633,9 +633,33 @@ function normalizeAiDashboardAppointments(aiResult = {}) {
     return { valid, invalid };
 }
 
+// Solo vale la pena llamar a la IA de extracción de citas cuando el mensaje
+// realmente parece un intento de escribir una fecha/hora/cita (ej. "cita
+// para fabian mañana a las 8am", "15/04 3pm cc 123"). Para cualquier otra
+// cosa (saludos, "listo", preguntas sueltas) se evita la llamada y se deja
+// que el fallback de intención del panel (applyDashboardAIFallback) decida
+// qué hacer, sin gastar una segunda consulta a Azure OpenAI.
+function looksLikeAppointmentAttempt(msg = "") {
+    const text = String(msg || "").toLowerCase();
+
+    const hasDateOrTimePattern =
+        /\d{1,2}\s*[\/\-]\s*\d{1,2}/.test(text) || // 15/04, 15-04
+        /\d{1,2}\s*:\s*\d{2}/.test(text) || // 08:30
+        /\d{1,2}\s*(am|pm)\b/.test(text); // 8am, 3 pm
+
+    const hasSchedulingWords =
+        /\b(cita|presencial|llamada|agendar|agenda|hoy|mañana|manana)\b/.test(
+            text,
+        ) ||
+        /\b(cc|ce|ti)\s*\d{5,}/.test(text);
+
+    return hasDateOrTimePattern || hasSchedulingWords;
+}
+
 async function parseQuickAppointmentsMessageWithAI(msg = "") {
     const parsed = parseQuickAppointmentsMessage(msg);
     if (parsed.valid.length || !parsed.invalid.length) return parsed;
+    if (!looksLikeAppointmentAttempt(msg)) return parsed;
 
     const ai = await parseDashboardAppointmentsAI(msg);
     if (!ai) return parsed;
