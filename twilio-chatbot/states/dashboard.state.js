@@ -1671,6 +1671,17 @@ export default async function dashboardState(msg, data = {}, context) {
             }
 
             if (!valid.length) {
+                // Antes de asumir que fue un intento de cita mal escrito, se
+                // consulta a la IA si en realidad es una salida/saludo/otra
+                // intención del panel (ej. "hola", "listo", "ver pendientes")
+                // — así no se le devuelve el error de formato a la secretaria
+                // por mensajes que ni siquiera eran una cita.
+                const aiFallback = await applyDashboardAIFallback(
+                    msg,
+                    "QUICK_BULK_MESSAGE",
+                );
+                if (aiFallback) return aiFallback;
+
                 let response =
                     "❌ No se pudo procesar ninguna cita.\n\n" +
                     "Formato por línea:\n" +
