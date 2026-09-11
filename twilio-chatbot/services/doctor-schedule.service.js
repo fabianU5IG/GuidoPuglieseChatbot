@@ -102,6 +102,46 @@ async function getDoctorUnavailabilityForYmd(ymd) {
     }
 }
 
+const WEEKDAY_NAMES = {
+    0: "domingo",
+    1: "lunes",
+    2: "martes",
+    3: "miércoles",
+    4: "jueves",
+    5: "viernes",
+    6: "sábado",
+};
+
+// Antes, la IA de preguntas abiertas (askAI) no tenía ningún dato real del
+// horario semanal y respondía preguntas como "¿atiende los miércoles?" por
+// pura suposición del modelo -- llegó a decir que sí cuando en realidad
+// miércoles, sábado y domingo el consultorio está cerrado. Esta función
+// arma un resumen en texto plano del horario REAL (WEEKLY_SCHEDULE de
+// arriba) para inyectarlo como contexto y que la IA responda con el dato
+// verdadero en vez de inventarlo.
+export function getWeeklyScheduleSummary() {
+    const openParts = [];
+    const closedDays = [];
+
+    for (let day = 0; day <= 6; day += 1) {
+        const blocks = WEEKLY_SCHEDULE[day];
+        if (blocks && blocks.length) {
+            const blockText = blocks
+                .map((b) => `${b.start} a ${b.end}`)
+                .join(" y ");
+            openParts.push(`${WEEKDAY_NAMES[day]} de ${blockText}`);
+        } else {
+            closedDays.push(WEEKDAY_NAMES[day]);
+        }
+    }
+
+    return (
+        `Horario semanal REAL de atención del Dr. Guido Pugliese: ${openParts.join(", ")}. ` +
+        `NO atiende (consultorio cerrado) los días: ${closedDays.join(", ")}. ` +
+        "Usa exactamente este horario para responder cualquier pregunta sobre qué días u horas atiende -- nunca asumas ni inventes un día distinto."
+    );
+}
+
 /**
  * Devuelve los bloques de atención reales de un día ("YYYY-MM-DD"): un
  * arreglo vacío significa que no hay atención (no le toca ese día de la

@@ -5,11 +5,13 @@ import {
 } from "./whatsapp.service.js";
 import { db } from "../db/mysql.js";
 import { ATTENDED_ENTITIES, CONSULTA_PARTICULAR_COP } from "../constants.js";
+import { getWeeklyScheduleSummary } from "./doctor-schedule.service.js";
 
 const ADMINISTRATIVE_INFO_CONTEXT =
     ` Información administrativa vigente del consultorio: atiende con las siguientes entidades/EPS/aseguradoras: ${ATTENDED_ENTITIES.join(", ")}. ` +
     `Consulta particular (sin convenio): $${CONSULTA_PARTICULAR_COP.toLocaleString("es-CO")} COP. ` +
-    "Usa este dato si preguntan si el doctor atiende una entidad específica o por el valor de la consulta particular; si preguntan por una entidad que NO está en esta lista, dile que no tiene convenio con esa entidad (no digas que no tienes la información).";
+    "Usa este dato si preguntan si el doctor atiende una entidad específica o por el valor de la consulta particular; si preguntan por una entidad que NO está en esta lista, dile que no tiene convenio con esa entidad (no digas que no tienes la información). " +
+    ` ${getWeeklyScheduleSummary()}`;
 
 // Antes, si el paciente preguntaba algo como "¿sigue intentando mi cita?"
 // mientras esperaba, la IA respondía con una reafirmación genérica ("tiene
