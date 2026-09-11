@@ -64,10 +64,10 @@ const DASHBOARD_MENU_TEXT =
     "👋 Panel de Secretaría\n\n" +
     "1️⃣ Crear cita rápida\n" +
     "2️⃣ Ver casos pendientes\n" +
-    "3️⃣ Resumen IA de pendientes\n" +
+    "3️⃣ Resumen automático de pendientes 🤖\n" +
     "4️⃣ Cancelar cita\n" +
     "5️⃣ Reagendar cita\n" +
-    "6️⃣ Sincronizaciones fallidas\n\n" +
+    "6️⃣ Citas con problemas\n\n" +
     "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario, o \"desbloquea el 1/09\" para quitarlo.\n\n" +
     "0️⃣ Salir";
 
@@ -89,20 +89,18 @@ function exitDashboard() {
 function buildQuickAppointmentPrompt() {
     return (
         "📝 *Crear cita rápida*\n\n" +
-        "Puedes enviar *una o varias citas por mensaje*.\n" +
-        "También puedes enviar *varios mensajes seguidos*.\n\n" +
-        "Escribe *una cita por línea* con este formato:\n\n" +
+        "🤖 Escríbelo como si le hablaras a alguien, por ejemplo:\n" +
+        "_\"cita para fabian mañana a las 8am\"_\n" +
+        "Busco al paciente por nombre y te confirmo o te pregunto el documento si no lo encuentro.\n\n" +
+        "También puedes enviar *varias citas en el mismo mensaje* (una por línea) o *varios mensajes seguidos*.\n\n" +
+        "📋 Si prefieres darlo con datos exactos, este es el formato:\n\n" +
         "*presencial 15/04 08:30 cc 123456789*\n" +
         "*llamada 15/04 09:00 ce 987654321*\n\n" +
-        "Campos por línea:\n" +
         "1. modalidad: presencial o llamada\n" +
         "2. fecha: DD/MM\n" +
         "3. hora: HH:MM\n" +
-        "4. tipo documento: cc, ce o ti\n" +
+        "4. tipo documento: cc (cédula), ce (cédula de extranjería) o ti (tarjeta de identidad, para menores)\n" +
         "5. número de documento\n\n" +
-        "🤖 O si no tienes el documento a la mano, también puedes escribirlo natural, dando el nombre del paciente:\n" +
-        "_\"cita para fabian mañana a las 8am\"_\n" +
-        "Busco al paciente por nombre y te confirmo o te pregunto el documento si no lo encuentro.\n\n" +
         "Cuando termines, escribe *fin* o *0*."
     );
 }
@@ -174,7 +172,7 @@ async function applyDashboardAIFallback(msg, currentStep) {
                 const summary = await summarizeSecretaryCasesAI(cases);
                 return {
                     response:
-                        "🤖 Resumen IA de pendientes\n\n" +
+                        "🤖 Resumen automático de pendientes\n\n" +
                         (summary ||
                             "No encontré suficientes datos para generar un resumen.") +
                         "\n\n" +
@@ -1178,7 +1176,7 @@ async function buildFailedJobsResponse(extra = "", page = 0) {
     if (!jobs.length) {
         return {
             response:
-                `${extra}😊 No hay sincronizaciones fallidas con Saludtools pendientes de revisar.\n\n` +
+                `${extra}😊 No hay citas con problemas por revisar.\n\n` +
                 DASHBOARD_MENU_TEXT,
             nextState: "DASHBOARD",
             data: { step: "MENU" },
@@ -1188,7 +1186,7 @@ async function buildFailedJobsResponse(extra = "", page = 0) {
     const paginated = paginateCases(jobs, page, FAILED_JOBS_PAGE_SIZE);
 
     let response =
-        `${extra}⚠️ Sincronizaciones fallidas con Saludtools (${paginated.total} en total):\n\n`;
+        `${extra}⚠️ Citas con problemas al enviarlas a Saludtools (${paginated.total} en total):\n\n`;
 
     paginated.items.forEach((job, i) => {
         response += describeFailedSaludtoolsJob(job, paginated.start + i);
@@ -1607,7 +1605,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 const summary = await summarizeSecretaryCasesAI(cases);
                 return {
                     response:
-                        "🤖 Resumen IA de pendientes\n\n" +
+                        "🤖 Resumen automático de pendientes\n\n" +
                         (summary ||
                             "No encontré suficientes datos para generar un resumen.") +
                         "\n\n" +
@@ -1909,15 +1907,23 @@ export default async function dashboardState(msg, data = {}, context) {
                 (usedAI ? "🤖 Interpreté el mensaje con IA.\n\n" : "") +
                 "Vas a crear estas citas:\n\n";
 
+            let anyWarnings = false;
             pending.forEach((item) => {
                 const warningText = item.warnings.length
                     ? ` ⚠️ ${item.warnings.join(", ")}`
                     : " ✅";
+                if (item.warnings.length) anyWarnings = true;
                 response +=
                     `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
                     `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
                     `(${item.modality})${warningText}\n`;
             });
+
+            if (anyWarnings) {
+                response +=
+                    "\n💡 Las marcadas con ⚠️ no son un error -- puedes confirmar igual. " +
+                    "Solo es un aviso por si quieres revisar el dato antes; el sistema las termina de completar solo.\n";
+            }
 
             if (allErrors.length) {
                 response += "\nLíneas con error (no se crearán):\n";
