@@ -1205,7 +1205,7 @@ async function cancelSelectedCase({ from, data }) {
                 priority: 90,
             });
 
-            workerMsg = "Ya quedó todo registrado y en un momento se actualiza también en Saludtools. ✅";
+            workerMsg = "Enviando la cancelación a Saludtools para confirmación final — te aviso por este medio en cuanto quede confirmada allá.";
 
             if (apptId) {
                 await logAppointmentMessage(
@@ -2917,7 +2917,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     });
 
                     workerMsg =
-                        "Ya quedó todo registrado y en un momento se actualiza también en Saludtools. ✅";
+                        "Enviando el reagendamiento a Saludtools para confirmación final — te aviso por este medio en cuanto quede confirmada allá.";
 
                     if (apptId) {
                         await logAppointmentMessage(
