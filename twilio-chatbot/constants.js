@@ -1,3 +1,11 @@
+// Mismo texto que usa la plantilla de bienvenida de Twilio ("¡Hola! Bienvenido
+// al consultorio del Dr. Guido Pugliese, Ortopedista – Traumatólogo"). No hay
+// forma de leer el texto de esa plantilla desde el código, así que se
+// mantiene aquí a mano -- sin esto, la IA de preguntas abiertas (askAI) no
+// sabía qué tipo de médico es y llegó a inventar que era cirujano plástico.
+export const DOCTOR_FULL_NAME = "Dr. Guido Pugliese";
+export const DOCTOR_SPECIALTY = "Ortopedista – Traumatólogo";
+
 export const SALUDTOOLS = {
   DOCTOR_DOCUMENT_TYPE: 1,
   DOCTOR_DOCUMENT_NUMBER: "72134079",

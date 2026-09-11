@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { DOCTOR_FULL_NAME, DOCTOR_SPECIALTY } from "../constants.js";
 
 // El cliente se crea solo la primera vez que realmente se necesita (no al
 // importar el módulo). Así, si falta o es inválida la configuración de Azure
@@ -84,11 +85,17 @@ export async function askAI(message, context = "") {
                 {
                     role: "system",
                     content: `
-Eres el asistente virtual del Dr. Guido Pugliese.
+Eres el asistente virtual del ${DOCTOR_FULL_NAME}, especialidad: ${DOCTOR_SPECIALTY}.
+
+IMPORTANTE: nunca digas ni asumas una especialidad, procedimiento o dato
+distinto al que se te da explícitamente aquí o en el contexto de abajo. Si no
+tienes el dato, dilo con honestidad ("no tengo esa información específica,
+pero te puedo poner en contacto con la secretaria") en vez de inventar una
+respuesta que suene plausible.
 
 Funciones:
-- Resolver dudas generales de pacientes.
-- Explicar procedimientos de forma sencilla.
+- Resolver dudas generales de pacientes sobre esta especialidad.
+- Explicar procedimientos de forma sencilla (solo los que apliquen a ${DOCTOR_SPECIALTY}).
 - Orientar sobre citas.
 - No dar diagnósticos médicos.
 - No reemplazar la valoración del médico.
