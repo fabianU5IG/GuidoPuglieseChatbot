@@ -1109,7 +1109,14 @@ const FAILED_JOB_TYPE_LABELS = {
 // computeRetryDelaySeconds en el worker): antes quedaban invisibles salvo
 // consultando la tabla saludtools_jobs a mano, aunque la cita nunca hubiera
 // llegado a Saludtools.
-function describeFailedSaludtoolsJob(job) {
+// Página pequeña a propósito: cada item incluye un volcado crudo de error de
+// Saludtools, así que con 15 a la vez el mensaje superaba los ~1600
+// caracteres que WhatsApp permite por mensaje -- Twilio simplemente
+// descartaba el TwiML sin generar ningún mensaje de salida ni error visible
+// en ningún log (el bug real detrás de "el menú 6 no muestra nada").
+const FAILED_JOBS_PAGE_SIZE = 5;
+
+function describeFailedSaludtoolsJob(job, absoluteIndex) {
     const label = FAILED_JOB_TYPE_LABELS[job.job_type] || job.job_type;
     const payload = job.payload || {};
     const appt = payload.appointmentBody || {};
@@ -1119,16 +1126,17 @@ function describeFailedSaludtoolsJob(job) {
         (payload.dateLabel && payload.timeLabel
             ? `${payload.dateLabel} ${payload.timeLabel}`
             : null);
-    const errorSnippet = String(job.last_error || "").slice(0, 140);
+    const errorSnippet = String(job.last_error || "").slice(0, 70);
+    const emojiIndex = toEmojiNumber(absoluteIndex + 1);
 
     return (
-        `${label} — Doc ${docNumber}${when ? ` — ${when}` : ""}\n` +
+        `${emojiIndex} ${label} — Doc ${docNumber}${when ? ` — ${when}` : ""}\n` +
         `Intentos: ${job.attempts} · ${new Date(job.updated_at).toLocaleString("es-CO")}\n` +
-        `Error: ${errorSnippet}`
+        `Error: ${errorSnippet}\n\n`
     );
 }
 
-async function buildFailedJobsResponse(extra = "") {
+async function buildFailedJobsResponse(extra = "", page = 0) {
     const jobs = await getRecentFailedSaludtoolsJobs(15);
 
     if (!jobs.length) {
@@ -1141,17 +1149,31 @@ async function buildFailedJobsResponse(extra = "") {
         };
     }
 
-    const lines = jobs
-        .map((job, idx) => `${idx + 1}️⃣ ${describeFailedSaludtoolsJob(job)}`)
-        .join("\n\n");
+    const paginated = paginateCases(jobs, page, FAILED_JOBS_PAGE_SIZE);
+
+    let response =
+        `${extra}⚠️ Sincronizaciones fallidas con Saludtools (${paginated.total} en total):\n\n`;
+
+    paginated.items.forEach((job, i) => {
+        response += describeFailedSaludtoolsJob(job, paginated.start + i);
+    });
+
+    response += `Página ${paginated.page + 1} de ${Math.max(1, paginated.totalPages)}\n`;
+
+    if (paginated.hasNext) {
+        response += "\n1️⃣1️⃣ Ver más";
+    }
+    if (paginated.hasPrev) {
+        response += "\n1️⃣2️⃣ Ver anteriores";
+    }
+
+    response +=
+        "\n\nEscribe el número global para reintentarla, o 0️⃣ para volver al menú.";
 
     return {
-        response:
-            `${extra}⚠️ Sincronizaciones fallidas con Saludtools (${jobs.length}):\n\n` +
-            `${lines}\n\n` +
-            "Escribe el número para reintentarla, o 0️⃣ para volver al menú.",
+        response,
         nextState: "DASHBOARD",
-        data: { step: "FAILED_JOBS_LIST", failedJobs: jobs },
+        data: { step: "FAILED_JOBS_LIST", failedJobs: jobs, page: paginated.page },
     };
 }
 
@@ -2995,7 +3017,37 @@ export default async function dashboardState(msg, data = {}, context) {
             }
 
             const jobs = Array.isArray(data.failedJobs) ? data.failedJobs : [];
-            const index = Number(msg) - 1;
+            const currentPage = Number(data.page || 0);
+            const raw = String(msg || "").trim();
+
+            if (raw === "11") {
+                const paginated = paginateCases(
+                    jobs,
+                    currentPage,
+                    FAILED_JOBS_PAGE_SIZE,
+                );
+                return buildFailedJobsResponse(
+                    paginated.hasNext ? "" : "⚠️ No hay más para mostrar.\n\n",
+                    paginated.hasNext ? currentPage + 1 : currentPage,
+                );
+            }
+
+            if (raw === "12") {
+                const paginated = paginateCases(
+                    jobs,
+                    currentPage,
+                    FAILED_JOBS_PAGE_SIZE,
+                );
+                return buildFailedJobsResponse(
+                    paginated.hasPrev ? "" : "⚠️ Ya estás en la primera página.\n\n",
+                    paginated.hasPrev ? currentPage - 1 : currentPage,
+                );
+            }
+
+            const requestedNumber = parseInt(raw, 10);
+            const index = Number.isInteger(requestedNumber)
+                ? requestedNumber - 1
+                : -1;
             const chosen = jobs[index];
 
             if (!Number.isInteger(index) || !chosen) {
@@ -3005,7 +3057,10 @@ export default async function dashboardState(msg, data = {}, context) {
                 );
                 if (failedJobsFallback) return failedJobsFallback;
 
-                return buildFailedJobsResponse("❌ No reconocí esa opción.\n\n");
+                return buildFailedJobsResponse(
+                    "❌ No reconocí esa opción.\n\n",
+                    currentPage,
+                );
             }
 
             const retried = await retrySaludtoolsJob(chosen.id);
