@@ -19,6 +19,19 @@ import {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// El texto de respuesta se inserta directo dentro de un <Message> de TwiML
+// (XML). Si contiene "&", "<" o ">" sin escapar -- muy común en errores
+// crudos de Saludtools que se muestran tal cual (ej. "Sincronizaciones
+// fallidas") -- el XML queda inválido y Twilio ni siquiera llega a generar
+// un mensaje de salida: no hay error visible en los logs del bot, el
+// paciente/secretaria simplemente no recibe nada.
+function escapeXml(value = "") {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
 // Fallback local: mantiene el bot operativo si MySQL tiene una falla temporal.
 // La fuente durable de la sesión es la tabla `chat_sessions`.
 const fallbackSessions = {};
@@ -232,7 +245,7 @@ app.post("/webhook", twilio.webhook(), async (req, res) => {
 
         return res.send(`
 <Response>
-    <Message>${result.response}</Message>
+    <Message>${escapeXml(result.response)}</Message>
 </Response>
         `);
     } catch (error) {
