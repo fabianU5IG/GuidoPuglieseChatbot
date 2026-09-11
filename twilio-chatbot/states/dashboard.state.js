@@ -1003,8 +1003,7 @@ function formatCaseLine(c, absoluteIndex) {
     return (
         `${emojiIndex} ${buildPatientDisplay(c)}\n` +
         `${when}\n` +
-        `Estado Saludtools: ${c.status || "N/A"}\n` +
-        `${c.internal_status ? `Estado local: ${c.internal_status}\n` : ""}\n`
+        `Estado: ${c.status || "sin confirmar"}\n\n`
     );
 }
 
@@ -1116,23 +1115,60 @@ const FAILED_JOB_TYPE_LABELS = {
 // en ningún log (el bug real detrás de "el menú 6 no muestra nada").
 const FAILED_JOBS_PAGE_SIZE = 5;
 
+// Traduce los mensajes de error crudos de Saludtools (JSON, códigos
+// internos) a frases simples -- Darys (secretaria) no es técnica, así que
+// mostrarle "PACIENTE_NO_REGISTRADO: {"id":null,"code":412,...}" no le decía
+// nada útil, solo se veía como un error del sistema.
+function humanizeJobError(job) {
+    const raw = String(job.last_error || "");
+
+    if (raw.startsWith("PACIENTE_NO_REGISTRADO")) {
+        return "el paciente todavía no está registrado en Saludtools";
+    }
+    if (raw.startsWith("HORARIO_NO_DISPONIBLE")) {
+        return "ese horario ya estaba ocupado en Saludtools";
+    }
+    if (raw.includes("429")) {
+        return "Saludtools estaba saturado en ese momento y no respondió a tiempo";
+    }
+    return "hubo un problema técnico al enviarlo a Saludtools";
+}
+
+function formatDateTimeForHumans(value) {
+    const match = String(value || "").match(
+        /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/,
+    );
+    if (!match) return value || null;
+    const [, year, month, day, hour, minute] = match;
+    return `${day}/${month}/${year} ${hour}:${minute}`;
+}
+
 function describeFailedSaludtoolsJob(job, absoluteIndex) {
     const label = FAILED_JOB_TYPE_LABELS[job.job_type] || job.job_type;
     const payload = job.payload || {};
     const appt = payload.appointmentBody || {};
-    const docNumber = appt.patientDocumentNumber || payload.documento || "N/A";
-    const when =
+    const docNumber =
+        appt.patientDocumentNumber || payload.documento || "sin documento";
+    const whenRaw =
         appt.startAppointment ||
         (payload.dateLabel && payload.timeLabel
             ? `${payload.dateLabel} ${payload.timeLabel}`
             : null);
-    const errorSnippet = String(job.last_error || "").slice(0, 70);
+    const when = formatDateTimeForHumans(whenRaw) || whenRaw;
     const emojiIndex = toEmojiNumber(absoluteIndex + 1);
+    const attemptsLabel = `${job.attempts} intento${job.attempts === 1 ? "" : "s"}`;
+    const lastTried = new Date(job.updated_at).toLocaleString("es-CO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+    });
 
     return (
         `${emojiIndex} ${label} — Doc ${docNumber}${when ? ` — ${when}` : ""}\n` +
-        `Intentos: ${job.attempts} · ${new Date(job.updated_at).toLocaleString("es-CO")}\n` +
-        `Error: ${errorSnippet}\n\n`
+        `Motivo: ${humanizeJobError(job)}\n` +
+        `(${attemptsLabel}, última vez ${lastTried})\n\n`
     );
 }
 
@@ -1823,7 +1859,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     item.patientDocumentNumber,
                 );
                 if (!localPatient) {
-                    warnings.push("paciente no registrado en Saludtools");
+                    warnings.push("el paciente no aparece registrado todavía");
                 }
 
                 const occupied = await isDoctorSlotOccupiedLocally({
@@ -1831,7 +1867,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     hm: item.timeLabel,
                 });
                 if (occupied) {
-                    warnings.push("horario ya tiene una cita activa");
+                    warnings.push("ese horario ya está ocupado");
                 }
 
                 pending.push({
@@ -1850,9 +1886,9 @@ export default async function dashboardState(msg, data = {}, context) {
             const allErrors = [...invalid, ...failed];
 
             if (!pending.length) {
-                let response = `❌ Con error: ${allErrors.length}\n\n`;
+                let response = `❌ No pude crear ninguna cita (${allErrors.length}).\n\n`;
                 if (allErrors.length) {
-                    response += "Errores:\n";
+                    response += "Motivo:\n";
                     allErrors.slice(0, 20).forEach((item) => {
                         response += `Línea ${item.lineNumber}: ${item.error}\n`;
                     });
@@ -1994,30 +2030,30 @@ export default async function dashboardState(msg, data = {}, context) {
             const syncedCount = inserted.filter((item) => item.syncQueued).length;
 
             let response =
-                `✅ Guardadas en la base de datos: ${createdCount}\n` +
-                `ℹ️ Ya existentes: ${duplicateCount}\n` +
-                `❌ Con error: ${failed.length}\n\n`;
+                `✅ Citas creadas: ${createdCount}\n` +
+                `ℹ️ Ya estaban creadas antes: ${duplicateCount}\n` +
+                `❌ No se pudieron crear: ${failed.length}\n\n`;
 
             if (inserted.length) {
-                response += "Citas registradas localmente:\n";
+                response += "Detalle:\n";
                 inserted.slice(0, 20).forEach((item) => {
                     const syncNote = !item.created
                         ? ""
                         : item.syncQueued
-                          ? " · enviando a Saludtools para confirmación final"
-                          : " · ⚠️ no se pudo sincronizar con Saludtools";
+                          ? " · confirmando con Saludtools"
+                          : " · ⚠️ no se pudo enviar a Saludtools";
                     response +=
                         `Línea ${item.lineNumber}: ${item.dateLabel} ${item.timeLabel} ` +
                         `${item.rawDocType.toUpperCase()} ${item.patientDocumentNumber} ` +
                         `(${item.modality})${item.created ? "" : " - ya existía"}${syncNote}\n`;
                 });
                 response += syncedCount
-                    ? "Guardado localmente. Enviando a Saludtools para confirmación final — te aviso por este medio en cuanto quede confirmada allá. ✅\n\n"
+                    ? "Ya quedaron guardadas. En unos minutos te aviso por este medio si Saludtools las confirmó. ✅\n\n"
                     : "\n";
             }
 
             if (failed.length) {
-                response += "Errores:\n";
+                response += "No se pudieron crear:\n";
                 failed.slice(0, 20).forEach((item) => {
                     response += `Línea ${item.lineNumber}: ${item.error}\n`;
                 });
@@ -2507,7 +2543,7 @@ export default async function dashboardState(msg, data = {}, context) {
                     `Motivo: ${SECRETARY_CASE_REASON_LABELS[selectedCase.reason] || selectedCase.reason || "Solicitud"}\n` +
                     `${selectedCase.note ? `Mensaje: ${selectedCase.note}\n` : ""}` +
                     `${selectedCase.media_url ? `Imagen: ${selectedCase.media_url}\n` : ""}` +
-                    `Teléfono: ${selectedCase.phone || "N/A"}\n\n` +
+                    `Teléfono: ${selectedCase.phone || "sin número"}\n\n` +
                     "1️⃣ Marcar como atendido\n" +
                     "0️⃣ Volver";
 
@@ -2527,12 +2563,9 @@ export default async function dashboardState(msg, data = {}, context) {
             const details =
                 `🔔 Caso seleccionado\n\n` +
                 `Paciente: ${buildPatientDisplay(selectedCase)}\n` +
-                `Documento: ${extractPatientDocument(selectedCase) || "N/A"}\n` +
+                `Documento: ${extractPatientDocument(selectedCase) || "sin documento"}\n` +
                 `Cita: ${selectedCase.date || "Sin fecha"} ${selectedCase.time || ""}\n` +
-                `Estado Saludtools: ${selectedCase.status || "N/A"}\n` +
-                `Estado local: ${selectedCase.internal_status || "N/A"}\n` +
-                `Appointment ID local: ${selectedCase.appointment_id || "N/A"}\n` +
-                `Saludtools ID: ${selectedCase.saludtools_appointment_id || "N/A"}\n\n` +
+                `Estado: ${selectedCase.status || "sin confirmar"}\n\n` +
                 "1️⃣ Reagendar\n" +
                 "2️⃣ Cancelar\n" +
                 "0️⃣ Volver";
@@ -2601,8 +2634,8 @@ export default async function dashboardState(msg, data = {}, context) {
                 if (!saludId) {
                     return {
                         response:
-                            "⚠️ Este caso no tiene *Saludtools ID*.\n\n" +
-                            "Escribe el ID de Saludtools para reagendar, o escribe 0️⃣ para continuar sin actualizar en Saludtools:",
+                            "⚠️ No tengo el número de esta cita en Saludtools.\n\n" +
+                            "Si lo tienes a la mano, escríbelo para reagendar también allá, o escribe 0️⃣ para continuar sin actualizar Saludtools:",
                         nextState: "DASHBOARD",
                         data: {
                             ...data,
@@ -2630,8 +2663,8 @@ export default async function dashboardState(msg, data = {}, context) {
                 if (!saludId) {
                     return {
                         response:
-                            "⚠️ Este caso no tiene *Saludtools ID*.\n\n" +
-                            "Escribe el ID de Saludtools para cancelar también en Saludtools, o escribe 0️⃣ para cancelar solo en el sistema interno:",
+                            "⚠️ No tengo el número de esta cita en Saludtools.\n\n" +
+                            "Si lo tienes a la mano, escríbelo para cancelarla también allá, o escribe 0️⃣ para cancelarla solo aquí en el chatbot:",
                         nextState: "DASHBOARD",
                         data: {
                             ...data,
@@ -2811,7 +2844,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 response:
                     "✅ Confirma la reprogramación:\n\n" +
                     `Paciente: ${buildPatientDisplay(sel)}\n` +
-                    `Tel: ${sel.phone || "N/A"}\n` +
+                    `Tel: ${sel.phone || "sin número"}\n` +
                     `Nueva cita: ${data.newDate} ${data.newTime}\n\n` +
                     "1️⃣ Confirmar\n" +
                     "0️⃣ Cancelar",

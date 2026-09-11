@@ -82,7 +82,7 @@ test("las citas rápidas se guardan localmente y también se encolan para SaludT
     assert.equal(preview.data.step, "QUICK_BULK_CONFIRM");
     assert.match(preview.response, /Vas a crear estas citas/i);
     assert.match(preview.response, new RegExp(uniqueDoc));
-    assert.match(preview.response, /paciente no registrado en Saludtools/i);
+    assert.match(preview.response, /el paciente no aparece registrado todavía/i);
     assert.ok(Array.isArray(preview.data.pendingQuickAppointments));
     assert.equal(preview.data.pendingQuickAppointments.length, 1);
 
@@ -97,9 +97,9 @@ test("las citas rápidas se guardan localmente y también se encolan para SaludT
     );
 
     assert.equal(result.nextState, "DASHBOARD");
-    assert.match(result.response, /Guardadas en la base de datos/i);
-    assert.match(result.response, /Citas registradas localmente/i);
-    assert.match(result.response, /confirmación final/i);
+    assert.match(result.response, /Citas creadas/i);
+    assert.match(result.response, /Detalle/i);
+    assert.match(result.response, /si Saludtools las confirmó/i);
 
     const [rows] = await db.query(
         "SELECT id FROM saludtools_jobs WHERE job_type = 'APPOINTMENT_CREATE' AND dedupe_key LIKE ?",
