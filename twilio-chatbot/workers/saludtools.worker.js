@@ -72,10 +72,16 @@ async function notifyStaleUnresolvedJobs() {
     });
 
     for (const job of staleJobs) {
-        await safeSendWhatsApp(
-            job.phone,
-            "⏳ Seguimos trabajando en tu solicitud, puede tardar unos minutos más. Te avisaremos por este medio en cuanto quede confirmada.",
-        );
+        // Las citas de AGENDAR (optimisticPatientConfirm) ya le dijeron al
+        // paciente que quedó agendada -- avisarle acá que "seguimos
+        // trabajando" sonaría contradictorio, así que ese aviso se omite y
+        // solo se marca como notificado para no volver a evaluarlo.
+        if (!job.payload?.optimisticPatientConfirm) {
+            await safeSendWhatsApp(
+                job.phone,
+                "⏳ Seguimos trabajando en tu solicitud, puede tardar unos minutos más. Te avisaremos por este medio en cuanto quede confirmada.",
+            );
+        }
         await markSaludtoolsJobNotified(job.id);
     }
 
@@ -255,6 +261,10 @@ async function safeSendWhatsApp(phone, body) {
     }
 }
 
+async function notifySecretary(body) {
+    await safeSendWhatsApp(process.env.SECRETARY_WHATSAPP_NUMBER, body);
+}
+
 function formatAppointmentForUser(item, idx) {
     const id = item?.id || item?.saludtools_id || "";
     const start = String(item?.startAppointment || "").replace("T", " ");
@@ -424,6 +434,14 @@ async function processAppointmentCreate(job) {
     const patientExistsLocal = Boolean(payload.patientExistsLocal);
     const patientBody = payload.patientBody || null;
     const appointmentBody = { ...(payload.appointmentBody || {}) };
+    // Cuando la cita viene de AGENDAR (paciente por WhatsApp), ya se le dijo
+    // de una que su cita quedó agendada (agendar.state.js), para no hacerlo
+    // esperar en los picos de tráfico con Saludtools. Por eso aquí no se le
+    // manda ni el aviso de éxito (ya cree que está confirmada) ni el de
+    // "seguimos procesando" (sonaría contradictorio) -- solo se le avisa si
+    // termina fallando de verdad. La secretaría sí recibe el detalle de cada
+    // paso para poder intervenir si Saludtools no responde.
+    const quietForPatient = Boolean(payload.optimisticPatientConfirm);
 
     try {
         if (!patientExistsLocal) {
@@ -505,14 +523,23 @@ async function processAppointmentCreate(job) {
             saludtoolsAppointmentId ? String(saludtoolsAppointmentId) : null,
         );
 
-        // A diferencia de reagendar/cancelar, la respuesta inmediata del
-        // dashboard para "crear cita rápida" ya NO promete que quedó
-        // confirmada -- solo dice que se envía a Saludtools y que se avisará
-        // por este medio. Así que aquí sí se manda el aviso real de éxito
-        // también cuando el job viene del dashboard (antes se suprimía,
-        // dejando a la secretaria sin saber nunca si Saludtools la aceptó).
-        const successMessage = `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`;
-        await safeSendWhatsApp(job.phone, successMessage);
+        if (quietForPatient) {
+            await notifySecretary(
+                `✅ Cita confirmada en Saludtools\n\n` +
+                    `👤 ${payload.fullName || "Paciente"}\n📞 ${job.phone}\n` +
+                    `📅 ${payload.dateLabel || "fecha seleccionada"} ${payload.timeLabel || "hora seleccionada"}\n\n` +
+                    `Ya quedó sincronizada, no requiere nada más de tu parte.`,
+            );
+        } else {
+            // A diferencia de reagendar/cancelar, la respuesta inmediata del
+            // dashboard para "crear cita rápida" ya NO promete que quedó
+            // confirmada -- solo dice que se envía a Saludtools y que se avisará
+            // por este medio. Así que aquí sí se manda el aviso real de éxito
+            // también cuando el job viene del dashboard (antes se suprimía,
+            // dejando a la secretaria sin saber nunca si Saludtools la aceptó).
+            const successMessage = `✅ Tu cita fue creada correctamente para ${payload.dateLabel || "la fecha seleccionada"} a las ${payload.timeLabel || "hora seleccionada"}.`;
+            await safeSendWhatsApp(job.phone, successMessage);
+        }
     } catch (error) {
         if (isSlotUnavailableError(error)) {
             if (job.appointment_id) {
@@ -527,6 +554,12 @@ async function processAppointmentCreate(job) {
             await safeSendWhatsApp(
                 job.phone,
                 `El horario ${payload.timeLabel || "seleccionado"} del ${payload.dateLabel || "día solicitado"} ya no está disponible en SaludTools. Escribe *AGENDAR* para escoger una nueva fecha y hora.`,
+            );
+            await notifySecretary(
+                `⚠️ Cita NO se pudo confirmar (horario ya no disponible)\n\n` +
+                    `👤 ${payload.fullName || "Paciente"}\n📞 ${job.phone}\n` +
+                    `📅 ${payload.dateLabel || "fecha seleccionada"} ${payload.timeLabel || "hora seleccionada"}\n\n` +
+                    `Ya se le avisó al paciente para que vuelva a agendar otro horario.`,
             );
             return;
         }
@@ -548,14 +581,20 @@ async function processAppointmentCreate(job) {
                 `⚠️ No fue posible crear la cita: el documento ${docNumber} no está registrado como paciente en SaludTools.\n\n` +
                     "Regístralo primero en SaludTools, o pídele al paciente que escriba *AGENDAR* para crear su registro completo automáticamente.",
             );
+            await notifySecretary(
+                `⚠️ Cita NO se pudo confirmar (paciente no registrado en Saludtools)\n\n` +
+                    `👤 ${payload.fullName || "Paciente"}\n📞 ${job.phone}\n` +
+                    `📄 Doc: ${docNumber}\n📅 ${payload.dateLabel || "fecha seleccionada"} ${payload.timeLabel || "hora seleccionada"}`,
+            );
             return;
         }
 
         await handleRetryOrFail({
             job,
             error,
-            userWaitingMessage:
-                "⏳ Seguimos procesando tu solicitud. Aún estamos esperando confirmación del sistema y volveremos a intentarlo en unos minutos.",
+            userWaitingMessage: quietForPatient
+                ? null
+                : "⏳ Seguimos procesando tu solicitud. Aún estamos esperando confirmación del sistema y volveremos a intentarlo en unos minutos.",
             userFailMessage:
                 "⚠️ No fue posible crear tu cita en este momento. Nuestro equipo revisará tu caso.",
             onFinalFail: async () => {
@@ -565,6 +604,13 @@ async function processAppointmentCreate(job) {
                         "FAILED",
                     );
                 }
+
+                await notifySecretary(
+                    `⚠️ Cita NO se pudo confirmar en Saludtools tras varios intentos\n\n` +
+                        `👤 ${payload.fullName || "Paciente"}\n📞 ${job.phone}\n` +
+                        `📅 ${payload.dateLabel || "fecha seleccionada"} ${payload.timeLabel || "hora seleccionada"}\n\n` +
+                        `Escribe 6️⃣ en el panel ("Citas con problemas") para agendarla manualmente.`,
+                );
             },
         });
     }

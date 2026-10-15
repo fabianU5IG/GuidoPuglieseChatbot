@@ -36,8 +36,9 @@ test("el botón real 'Volver' de info/costos (costos_volver) regresa al menú", 
 // "Entendido" a la plantilla de solicitud registrada. Sin la consulta de
 // estado, el bot repetía "seguimos procesando" a alguien cuya cita ya estaba
 // confirmada. Aquí no hay MySQL real disponible, así que la consulta de
-// estado falla y debe degradar exactamente al mensaje genérico de siempre,
-// sin lanzar ni dejar al paciente sin respuesta.
+// estado falla y debe degradar al mismo mensaje optimista que ya recibió al
+// agendar (optimisticPatientConfirm en agendar.state.js) -- no a uno de
+// "seguimos procesando", que ahora solo aparece si la cita falló de verdad.
 test("POST_CREATED responde 'Entendido' sin romperse cuando no se puede leer el estado real", async () => {
     const result = await agendarState(
         "1",
@@ -53,7 +54,7 @@ test("POST_CREATED responde 'Entendido' sin romperse cuando no se puede leer el 
 
     assert.equal(result.nextState, "MENU");
     assert.match(result.response, /Juan/);
-    assert.match(result.response, /procesando/i);
+    assert.match(result.response, /agendada/i);
 });
 
 // Bug reportado en QA en vivo: "Perfecto, Paciente. Ya tengo tus datos de

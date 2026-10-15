@@ -66,7 +66,6 @@ const TEMPLATE_REG_HABEAS = "HX62472923e206f68c3ae192d27d188c00";
 
 // Plantillas nuevas: confirmación final de cita y cierre del flujo de agendamiento.
 const TEMPLATE_CONFIRM_CITA = "HX09bc015255e25e9ea2d0b5660d9fc997";
-const TEMPLATE_SOLICITUD_REGISTRADA = "HXe4cb711727614f411e3374d9b5bb9d84";
 
 // Recomendación de fecha/hora de la IA, una plantilla por cantidad de opciones.
 const TEMPLATE_RECOMENDACION_1 = "HX7fe33a8cca15e6ffc7dc1001d4c6eb3d";
@@ -2921,10 +2920,14 @@ export default async function agendarState(msg, data, context = {}) {
             if (existingAppointmentId) {
                 data.appointmentId = existingAppointmentId;
                 data.step = "POST_CREATED";
-                return sendTemplate(TEMPLATE_SOLICITUD_REGISTRADA, "AGENDAR", data, {
-                    "1": data.firstName,
-                    "2": data.attentionType,
-                });
+                return {
+                    response:
+                        `✅ Listo ${data.firstName}! Tu cita de ${data.attentionType} quedó agendada para el ${data.date} a las ${data.time}.\n\n` +
+                        `Te esperamos 😊\n\n` +
+                        `1️⃣ Continuar\n0️⃣ Menú principal`,
+                    nextState: "AGENDAR",
+                    data,
+                };
             }
 
             const appointmentId = await createProposedAppointment({
@@ -3034,6 +3037,16 @@ export default async function agendarState(msg, data, context = {}) {
                     dateLabel: data.date,
                     timeLabel: data.time,
                     patientExistsLocal: Boolean(data.patientExistsLocal),
+                    // Al paciente ya se le dijo "tu cita quedó agendada" apenas se
+                    // encoló (ver POST_CREATED más abajo), para no hacerlo esperar
+                    // en los momentos de mucho tráfico con Saludtools. El worker
+                    // usa este flag para no mandarle luego mensajes de "seguimos
+                    // procesando" ni una segunda confirmación que contradiga esa
+                    // primera respuesta — solo le avisa si termina fallando de
+                    // verdad. La secretaría, en cambio, sí recibe el detalle del
+                    // job en cola y de su resultado (éxito o fallo) para poder
+                    // intervenir manualmente si Saludtools no responde.
+                    optimisticPatientConfirm: true,
                     patientBody,
                     appointmentBody: {
                         startAppointment: `${ymd} ${data.time}`,
@@ -3079,11 +3092,37 @@ export default async function agendarState(msg, data, context = {}) {
                 priority: 80,
             });
 
+            // Aviso a secretaría de que esta cita quedó en cola para Saludtools.
+            // Al paciente ya se le confirma de una (ver más abajo) para no
+            // hacerlo esperar en los picos de tráfico con Saludtools; la
+            // secretaría es quien necesita saber que todavía se está
+            // sincronizando por detrás, para poder revisarla de noche si el
+            // worker no logra confirmarla sola (ver "Citas con problemas" del
+            // panel y el resumen nocturno).
+            try {
+                await sendWhatsAppMessage(
+                    process.env.SECRETARY_WHATSAPP_NUMBER,
+                    `🕓 Cita en cola para Saludtools\n\n` +
+                        `👤 ${data.fullName}\n📞 ${phone}\n📅 ${data.date} ${data.time}\n` +
+                        `📋 ${data.attentionType}\n\n` +
+                        `Ya se le avisó al paciente que quedó agendada. Si Saludtools tarda, te avisamos cuando se confirme o si falla.`,
+                );
+            } catch (error) {
+                console.error(
+                    "❌ No fue posible avisarle a secretaría de la cita en cola:",
+                    error,
+                );
+            }
+
             data.step = "POST_CREATED";
-            return sendTemplate(TEMPLATE_SOLICITUD_REGISTRADA, "AGENDAR", data, {
-                "1": data.firstName,
-                "2": data.attentionType,
-            });
+            return {
+                response:
+                    `✅ Listo ${data.firstName}! Tu cita de ${data.attentionType} quedó agendada para el ${data.date} a las ${data.time}.\n\n` +
+                    `Te esperamos 😊\n\n` +
+                    `1️⃣ Continuar\n0️⃣ Menú principal`,
+                nextState: "AGENDAR",
+                data,
+            };
         }
 
         case "POST_CREATED": {
@@ -3092,12 +3131,15 @@ export default async function agendarState(msg, data, context = {}) {
                     data.appointmentId,
                 );
 
+                // Al paciente ya se le dijo que su cita quedó agendada apenas se
+                // encoló (optimisticPatientConfirm), así que mientras no haya un
+                // fallo definitivo seguimos mostrando esa misma confirmación acá
+                // -- decirle "seguimos procesando" después de haberle dicho que
+                // ya estaba lista solo generaría dudas sin necesidad.
                 const response =
-                    currentStatus === "CONFIRMED"
-                        ? `Listo ${data.firstName}. Tu cita ya quedó confirmada. ✅\n\nNos vemos pronto.`
-                        : currentStatus === "FAILED"
-                          ? `${data.firstName}, tuvimos un inconveniente confirmando tu cita. Nuestro equipo ya está al tanto y te contactaremos por este medio.`
-                          : `Listo ${data.firstName}.\n\nSeguiremos procesando tu solicitud y te avisaremos por este medio cuando quede confirmada.`;
+                    currentStatus === "FAILED"
+                        ? `${data.firstName}, tuvimos un inconveniente confirmando tu cita. Nuestro equipo ya está al tanto y te contactaremos por este medio.`
+                        : `Listo ${data.firstName}. Tu cita ya quedó agendada. ✅\n\nNos vemos pronto.`;
 
                 return {
                     response,

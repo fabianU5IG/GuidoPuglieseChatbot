@@ -159,7 +159,7 @@ export async function getStaleUnresolvedSaludtoolsJobs({
 } = {}) {
   const [rows] = await db.query(
     `
-      SELECT id, phone, job_type, created_at, last_notified_at
+      SELECT id, phone, job_type, payload, created_at, last_notified_at
       FROM saludtools_jobs
       WHERE status IN ('PENDING', 'RETRY', 'PROCESSING')
         AND created_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
@@ -173,7 +173,7 @@ export async function getStaleUnresolvedSaludtoolsJobs({
     [olderThanMinutes, olderThanMinutes, limit],
   );
 
-  return rows;
+  return rows.map(parsePayload);
 }
 
 // Jobs que agotaron todos sus reintentos: antes no había ninguna forma de
