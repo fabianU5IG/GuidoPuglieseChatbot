@@ -1,12 +1,22 @@
-// Barrido nocturno de citas que quedaron en FAILED en saludtools_jobs
-// (agotaron todos sus reintentos sin lograr sincronizar con Saludtools). El
-// paciente de cada una ya cree que su cita está agendada (ver
-// optimisticPatientConfirm en agendar.state.js), así que antes de molestar a
-// secretaría les damos una última oportunidad: se reencolan, se espera a que
-// el worker (que ya corre 24/7 en pm2) las reprocese, y SOLO entonces se
-// revisa cuáles siguen sin resolverse para avisar por esas -- muchas veces
-// Saludtools se recupera sola entre que fallaron y la noche, y no hace falta
-// que nadie intervenga a mano.
+// Resumen nocturno para secretaría con dos cosas que necesitan que alguien
+// intervenga a mano:
+//
+// 1. Citas que quedaron en FAILED en saludtools_jobs (agotaron todos sus
+//    reintentos sin lograr sincronizar con Saludtools). El paciente de cada
+//    una ya cree que su cita está agendada (ver optimisticPatientConfirm en
+//    agendar.state.js), así que antes de molestar a secretaría les damos una
+//    última oportunidad: se reencolan, se espera a que el worker (que ya
+//    corre 24/7 en pm2) las reprocese, y SOLO entonces se revisa cuáles
+//    siguen sin resolverse -- muchas veces Saludtools se recupera sola entre
+//    que fallaron y la noche.
+//
+// 2. Registros que el paciente dejó a medias (nunca llegaron a confirmar,
+//    status PROPOSED) y con los que SÍ se puede hacer algo: solo se incluyen
+//    si el teléfono guardado es uno real al que secretaría le pueda escribir
+//    -- si el paciente llegó por Instagram/Messenger y quedó con el
+//    identificador raro de Twilio (CO.xxx/QD-xxx), no hay nada que
+//    secretaría pueda hacer con eso, así que se descarta en vez de generar
+//    ruido sin acción posible.
 //
 // Uso (pensado para cron, una vez por noche):
 //   node scripts/nightly-failed-jobs-digest.mjs
@@ -17,7 +27,10 @@ import {
     getRecentFailedSaludtoolsJobs,
     getSaludtoolsJobById,
 } from "../services/saludtools-jobs.service.js";
-import { sendWhatsAppMessage } from "../services/whatsapp.service.js";
+import {
+    sendWhatsAppMessage,
+    isCallablePhone,
+} from "../services/whatsapp.service.js";
 
 const PREVIEW_LIMIT = 10;
 
@@ -26,6 +39,10 @@ const PREVIEW_LIMIT = 10;
 // agotar los 60 intentos completos -- solo para que Saludtools tenga una
 // oportunidad real esta noche, con un par de reintentos si vuelve a dar 429.
 const SWEEP_WAIT_MS = 5 * 60_000;
+
+// Un registro recién empezado (el paciente está escribiendo en este mismo
+// momento) no es "abandonado" -- se da este margen antes de considerarlo así.
+const ABANDONED_AFTER_MINUTES = 60;
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,6 +61,10 @@ function describeJob(job) {
     return `• ${name} — 📞 ${job.phone} — 📅 ${when}`;
 }
 
+function describeAbandoned(row) {
+    return `• ${row.full_name || "Paciente sin nombre"} — 📞 ${row.phone} — 📅 ${row.scheduled_date} ${row.scheduled_time}`;
+}
+
 async function requeueForSweep(jobId) {
     await db.query(
         `
@@ -59,13 +80,12 @@ async function requeueForSweep(jobId) {
     );
 }
 
-async function main() {
+async function getStillStuckFailedJobs() {
     const failedJobs = await getRecentFailedSaludtoolsJobs(200);
 
     if (!failedJobs.length) {
-        console.log("Sin citas fallidas pendientes, no se envía resumen.");
-        await db.end();
-        return;
+        console.log("Sin citas fallidas pendientes para el barrido.");
+        return [];
     }
 
     console.log(
@@ -90,32 +110,71 @@ async function main() {
 
     if (!stillStuck.length) {
         console.log(
-            `Las ${failedJobs.length} cita(s) se resolvieron solas en el barrido, no se envía resumen.`,
+            `Las ${failedJobs.length} cita(s) se resolvieron solas en el barrido.`,
         );
+    }
+
+    return stillStuck;
+}
+
+async function getAbandonedWithRealPhone() {
+    const [rows] = await db.query(
+        `
+          SELECT a.id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time
+          FROM appointments a
+          JOIN patients p ON p.id = a.patient_id
+          WHERE a.status = 'PROPOSED'
+            AND a.created_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+          ORDER BY a.created_at ASC
+        `,
+        [ABANDONED_AFTER_MINUTES],
+    );
+
+    return rows.filter((row) => isCallablePhone(row.phone));
+}
+
+function buildSection(title, items, describe, actionLine) {
+    if (!items.length) return null;
+
+    const preview = items.slice(0, PREVIEW_LIMIT).map(describe).join("\n");
+    const extra =
+        items.length > PREVIEW_LIMIT
+            ? `\n\n...y ${items.length - PREVIEW_LIMIT} más.`
+            : "";
+
+    return `${title}\n\n${preview}${extra}\n\n${actionLine}`;
+}
+
+async function main() {
+    const stillStuck = await getStillStuckFailedJobs();
+    const abandoned = await getAbandonedWithRealPhone();
+
+    const sections = [
+        buildSection(
+            `⚠️ Hay ${stillStuck.length} cita(s) que NO se pudieron sincronizar con Saludtools, incluso después de reintentarlas de nuevo esta noche. Los pacientes ya creen que están agendadas, así que hay que registrarlas a mano:`,
+            stillStuck,
+            describeJob,
+            `Escribe 6️⃣ en el panel ("Citas con problemas") para ver el detalle completo y reintentarlas una por una.`,
+        ),
+        buildSection(
+            `📵 Hay ${abandoned.length} paciente(s) que empezaron a agendar pero nunca confirmaron, y tenemos un número real para contactarlos:`,
+            abandoned,
+            describeAbandoned,
+            `Si quieren, pueden escribirles para preguntar si todavía quieren esa cita.`,
+        ),
+    ].filter(Boolean);
+
+    if (!sections.length) {
+        console.log("Nada pendiente de revisar, no se envía resumen.");
         await db.end();
         return;
     }
 
-    const preview = stillStuck
-        .slice(0, PREVIEW_LIMIT)
-        .map(describeJob)
-        .join("\n");
-
-    const extra =
-        stillStuck.length > PREVIEW_LIMIT
-            ? `\n\n...y ${stillStuck.length - PREVIEW_LIMIT} más.`
-            : "";
-
-    const body =
-        `🌙 Resumen nocturno — Citas en Saludtools\n\n` +
-        `Hay ${stillStuck.length} cita(s) que NO se pudieron sincronizar con Saludtools, incluso después de reintentarlas de nuevo esta noche. ` +
-        `Los pacientes ya creen que están agendadas, así que hay que registrarlas a mano:\n\n` +
-        `${preview}${extra}\n\n` +
-        `Escribe 6️⃣ en el panel ("Citas con problemas") para ver el detalle completo y reintentarlas una por una.`;
+    const body = `🌙 Resumen nocturno\n\n${sections.join("\n\n---\n\n")}`;
 
     await sendWhatsAppMessage(process.env.SECRETARY_WHATSAPP_NUMBER, body);
     console.log(
-        `Resumen enviado a secretaría: ${stillStuck.length} de ${failedJobs.length} cita(s) seguían sin resolverse.`,
+        `Resumen enviado a secretaría: ${stillStuck.length} cita(s) sin sincronizar, ${abandoned.length} registro(s) abandonado(s) con número real.`,
     );
 
     await db.end();

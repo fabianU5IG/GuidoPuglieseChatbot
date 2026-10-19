@@ -171,7 +171,7 @@ const SECRETARY_NOTIFICATION_TEMPLATE_SID =
 // secretaria intenta llamar a ese "número" y no puede (caso real: Darys con
 // un paciente "CO.1055819750822021", 19-oct) -- la única forma de responderle
 // es por este mismo chat de WhatsApp, no por teléfono.
-function isCallablePhone(phone) {
+export function isCallablePhone(phone) {
     return /^\+?\d{7,15}$/.test(String(phone || "").trim());
 }
 
