@@ -1,7 +1,4 @@
-import {
-    notifySecretarySupportRequest,
-    sendWhatsAppMessage,
-} from "../services/whatsapp.service.js";
+import { notifySecretarySupportRequest } from "../services/whatsapp.service.js";
 import { resolveFlowFallback } from "../services/flowFallback.service.js";
 
 const TEMPLATE_MENU_PRINCIPAL = "HX58b32a7d0047f3359d9680ecf201c250";
@@ -287,10 +284,55 @@ function isInfoIntent(normalizedMsg, compactMsg) {
     );
 }
 
+// Pacientes que llegan por Click-to-WhatsApp o Messenger/Instagram no traen
+// un teléfono real (Twilio entrega un identificador de conversación opaco,
+// ej. "CO.1055819750822021") -- cuando piden hablar con un asesor, secretaría
+// no tenía forma de devolverle la llamada (no hay panel para responder un
+// chat puntual, solo recibe el aviso). En vez de construir esa opción en el
+// panel, se le pide el número directo al paciente antes de avisar, para que
+// a Darys le llegue siempre un teléfono real al que pueda llamar. Caso real
+// que lo disparó: Darys recibiendo "Tel: CO.1055819750822021", 19-oct.
+function isValidContactPhone(value) {
+    const digits = String(value || "").replace(/\D/g, "");
+    return digits.length >= 7 && digits.length <= 15;
+}
+
 export default async function menuState(msg, data = {}, context = {}) {
     const normalizedMsg = normalizeOption(msg);
     const compactMsg = compact(msg);
     const interactionVariants = getInteractionVariants(msg, context);
+
+    if (data.step === "ASK_ADVISOR_PHONE") {
+        if (!isValidContactPhone(msg)) {
+            return {
+                response:
+                    "Ese número no parece válido. Escribe tu número de celular (solo dígitos, ej. 3001234567) para que la secretaria te pueda contactar.",
+                nextState: "MENU",
+                data: { step: "ASK_ADVISOR_PHONE" },
+            };
+        }
+
+        try {
+            await notifySecretarySupportRequest({
+                patientPhone: msg.trim(),
+                patientName: data.fullName || data.patientName || "Paciente",
+                reason: "Solicitud general a secretaria",
+                note: data.advisorNote || "",
+            });
+        } catch (error) {
+            console.error(
+                "❌ No fue posible notificar a la secretaria:",
+                error,
+            );
+        }
+
+        return {
+            response:
+                "¡Gracias! Le pasamos tu número a la secretaria y te contactará pronto.\n\nMientras esperas, puedes seguir usando el menú:",
+            nextState: "MENU",
+            data: { renderMenu: true },
+        };
+    }
 
     // `renderMenu` lo dejan varios estados (agendar.state.js, teleconsulta.state.js,
     // flowFallback.service.js) al volver a MENU tras un mensaje de texto plano
@@ -434,31 +476,16 @@ export default async function menuState(msg, data = {}, context = {}) {
     }
 
     if (matchesAnyInteractionVariant(interactionVariants, isAdvisorIntent)) {
-        try {
-            await notifySecretarySupportRequest({
-                patientPhone: context.from,
-                patientName: data.fullName || data.patientName || "Paciente",
-                reason: "Solicitud general a secretaria",
-                note: String(context.rawBody?.Body || "").trim(),
-            });
-        } catch (error) {
-            console.error(
-                "❌ No fue posible notificar a la secretaria:",
-                error,
-            );
-        }
-
-        try {
-            await sendWhatsAppMessage(
-                context.from,
-                "Tu solicitud fue enviada a la secretaria y te responderemos por este mismo medio.\n\n" +
-                    "Mientras esperas, puedes seguir usando el menú:",
-            );
-        } catch (error) {
-            console.error("❌ No fue posible enviar el aviso de solicitud enviada:", error);
-        }
-
-        return sendTemplate(TEMPLATE_MENU_PRINCIPAL, "MENU", {});
+        return {
+            response:
+                "Claro, te comunico con la secretaria. Para que te pueda llamar o escribir, ¿cuál es tu número de celular?",
+            nextState: "MENU",
+            data: {
+                step: "ASK_ADVISOR_PHONE",
+                fullName: data.fullName || data.patientName,
+                advisorNote: String(context.rawBody?.Body || "").trim(),
+            },
+        };
     }
 
     const aiFallback = await resolveFlowFallback({
