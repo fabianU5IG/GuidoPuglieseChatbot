@@ -242,6 +242,25 @@ function isPatientNotFoundError(error) {
     return text.includes("no se ha encontrado") && text.includes("paciente");
 }
 
+// Caso real visto en producción (Maria Alejandra, doc 1140871779, 19-oct):
+// readPatientInSaludtools y searchPatientInSaludtools no la encontraron (la
+// búsqueda de Saludtools no siempre indexa bien el documento), así que
+// ensurePatientExists intentó crearla de nuevo -- y Saludtools la rechazó
+// como duplicada (ConstraintViolationException real en su base), porque SÍ
+// existía. Antes esto tiraba toda la solicitud a FAILED sin reintentar (ver
+// isPatientNotFoundError arriba, mismo problema de status HTTP real vs.
+// businessCode). Si el propio Saludtools dice "ya existe", lo correcto es
+// seguir con la cita en vez de fallar por no haber podido crear a alguien
+// que de hecho ya está registrado.
+function isDuplicatePatientError(error) {
+    const text = normalizeErrorText(error);
+    return (
+        text.includes("constraintviolationexception") ||
+        (text.includes("could not execute statement") &&
+            text.includes("constraint"))
+    );
+}
+
 // Se manda una sola vez por solicitud (al 5to intento, ~5 minutos), no en cada
 // reintento — antes se repetía cada 5 intentos y el paciente podía recibir el
 // mismo aviso de "seguimos procesando" 5+ veces seguidas en una sola solicitud
@@ -296,7 +315,14 @@ async function ensurePatientExists(patientBody) {
         }
     } catch {}
 
-    return createPatientInSaludtools(patientBody);
+    try {
+        return await createPatientInSaludtools(patientBody);
+    } catch (error) {
+        if (isDuplicatePatientError(error)) {
+            return null;
+        }
+        throw error;
+    }
 }
 
 async function handleRetryOrFail({
