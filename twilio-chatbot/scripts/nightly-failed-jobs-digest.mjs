@@ -11,12 +11,10 @@
 //    que fallaron y la noche.
 //
 // 2. Registros que el paciente dejó a medias (nunca llegaron a confirmar,
-//    status PROPOSED) y con los que SÍ se puede hacer algo: solo se incluyen
-//    si el teléfono guardado es uno real al que secretaría le pueda escribir
-//    -- si el paciente llegó por Instagram/Messenger y quedó con el
-//    identificador raro de Twilio (CO.xxx/QD-xxx), no hay nada que
-//    secretaría pueda hacer con eso, así que se descarta en vez de generar
-//    ruido sin acción posible.
+//    status PROPOSED). Se muestran todos, marcando con una advertencia los
+//    que quedaron con el identificador raro de Twilio (CO.xxx/QD-xxx) en vez
+//    de un teléfono real -- secretaría decide si igual quiere intentar algo
+//    (reconocer el nombre, etc.), pero sabe de entrada que no puede llamarlos.
 //
 // Uso (pensado para cron, una vez por noche):
 //   node scripts/nightly-failed-jobs-digest.mjs
@@ -29,7 +27,7 @@ import {
 } from "../services/saludtools-jobs.service.js";
 import {
     sendWhatsAppMessage,
-    isCallablePhone,
+    formatPatientPhoneForSecretary,
 } from "../services/whatsapp.service.js";
 
 const PREVIEW_LIMIT = 10;
@@ -62,7 +60,9 @@ function describeJob(job) {
 }
 
 function describeAbandoned(row) {
-    return `• ${row.full_name || "Paciente sin nombre"} — 📞 ${row.phone} — 📅 ${row.scheduled_date} ${row.scheduled_time}`;
+    const name = row.full_name || "Paciente sin nombre";
+    const phone = formatPatientPhoneForSecretary(row.phone);
+    return `• ${name} — 📞 ${phone} — 📅 ${row.scheduled_date} ${row.scheduled_time}`;
 }
 
 async function requeueForSweep(jobId) {
@@ -117,7 +117,7 @@ async function getStillStuckFailedJobs() {
     return stillStuck;
 }
 
-async function getAbandonedWithRealPhone() {
+async function getAbandonedRegistrations() {
     const [rows] = await db.query(
         `
           SELECT a.id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time
@@ -130,7 +130,7 @@ async function getAbandonedWithRealPhone() {
         [ABANDONED_AFTER_MINUTES],
     );
 
-    return rows.filter((row) => isCallablePhone(row.phone));
+    return rows;
 }
 
 function buildSection(title, items, describe, actionLine) {
@@ -147,7 +147,7 @@ function buildSection(title, items, describe, actionLine) {
 
 async function main() {
     const stillStuck = await getStillStuckFailedJobs();
-    const abandoned = await getAbandonedWithRealPhone();
+    const abandoned = await getAbandonedRegistrations();
 
     const sections = [
         buildSection(
@@ -157,10 +157,10 @@ async function main() {
             `Escribe 6️⃣ en el panel ("Citas con problemas") para ver el detalle completo y reintentarlas una por una.`,
         ),
         buildSection(
-            `📵 Hay ${abandoned.length} paciente(s) que empezaron a agendar pero nunca confirmaron, y tenemos un número real para contactarlos:`,
+            `📵 Hay ${abandoned.length} paciente(s) que empezaron a agendar pero nunca confirmaron:`,
             abandoned,
             describeAbandoned,
-            `Si quieren, pueden escribirles para preguntar si todavía quieren esa cita.`,
+            `A los que tienen número real les pueden escribir para preguntar si todavía quieren esa cita. A los demás (marcados con ⚠️) no se les puede llamar, pero quedan acá por si reconocen el nombre.`,
         ),
     ].filter(Boolean);
 

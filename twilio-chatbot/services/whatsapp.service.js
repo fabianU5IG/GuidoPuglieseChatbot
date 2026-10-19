@@ -175,7 +175,7 @@ export function isCallablePhone(phone) {
     return /^\+?\d{7,15}$/.test(String(phone || "").trim());
 }
 
-function formatPatientPhoneForSecretary(phone) {
+export function formatPatientPhoneForSecretary(phone) {
     const raw = String(phone || "").trim();
     if (isCallablePhone(raw)) return raw;
     return `${raw} ⚠️ No es un número para llamar (contacto de Messenger/Instagram). Respóndele por este mismo chat.`;
