@@ -164,6 +164,23 @@ const SECRETARY_NOTIFICATION_TEMPLATE_SID =
     process.env.TWILIO_SECRETARY_NOTIFICATION_TEMPLATE_SID ||
     "HX8eda3d18d10efe8ade4fa7427f96cd51";
 
+// Pacientes que escriben desde un anuncio de "Click to WhatsApp" o desde
+// Messenger/Instagram enlazado no llegan con un número real -- Twilio entrega
+// un identificador de conversación opaco (ej. "CO.1055819750822021",
+// "QD-3519079cd9a95a24") en vez de un teléfono. Sin esta aclaración, la
+// secretaria intenta llamar a ese "número" y no puede (caso real: Darys con
+// un paciente "CO.1055819750822021", 19-oct) -- la única forma de responderle
+// es por este mismo chat de WhatsApp, no por teléfono.
+function isCallablePhone(phone) {
+    return /^\+?\d{7,15}$/.test(String(phone || "").trim());
+}
+
+function formatPatientPhoneForSecretary(phone) {
+    const raw = String(phone || "").trim();
+    if (isCallablePhone(raw)) return raw;
+    return `${raw} ⚠️ No es un número para llamar (contacto de Messenger/Instagram). Respóndele por este mismo chat.`;
+}
+
 export async function notifySecretarySupportRequest({
     patientPhone,
     patientName = "Paciente",
@@ -180,7 +197,7 @@ export async function notifySecretarySupportRequest({
 
     return sendWhatsAppTemplate(SECRETARY_WHATSAPP, SECRETARY_NOTIFICATION_TEMPLATE_SID, {
         1: patientName,
-        2: patientPhone,
+        2: formatPatientPhoneForSecretary(patientPhone),
         3: reason,
         4: note && note.trim() ? note.trim() : "Sin mensaje adicional",
     });
