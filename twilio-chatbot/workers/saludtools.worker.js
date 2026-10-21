@@ -590,7 +590,18 @@ async function processAppointmentCreate(job) {
             return;
         }
 
-        if (isPatientNotFoundError(error)) {
+        // Solo se trata como fallo definitivo cuando confiamos en que el
+        // paciente ya existía (patientExistsLocal) y por eso ni se intentó
+        // registrarlo -- ahí "no encontrado" sí significa que falta
+        // registrarlo. Cuando patientExistsLocal es false, el bot acaba de
+        // registrar a ese mismo paciente unos segundos antes (ensurePatientExists
+        // más arriba) y Saludtools a veces tarda en propagarlo internamente
+        // antes de que el endpoint de citas lo "vea" -- en ese caso no es que
+        // falte registrarlo, es que Saludtools todavía no se puso al día, y
+        // sí vale la pena reintentar (cae al handleRetryOrFail genérico de
+        // abajo). Caso real: Valentina Manotas, doc 1007951351, 21-oct --
+        // se registró completa segundos antes y aun así la cita dio este error.
+        if (isPatientNotFoundError(error) && patientExistsLocal) {
             if (job.appointment_id) {
                 await updateAppointmentStatusById(job.appointment_id, "FAILED");
             }
