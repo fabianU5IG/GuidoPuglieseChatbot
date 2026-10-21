@@ -174,7 +174,7 @@ async function main() {
 
     await sendWhatsAppMessage(process.env.SECRETARY_WHATSAPP_NUMBER, body);
     console.log(
-        `Resumen enviado a secretaría: ${stillStuck.length} cita(s) sin sincronizar, ${abandoned.length} registro(s) abandonado(s) con número real.`,
+        `Resumen enviado a secretaría: ${stillStuck.length} cita(s) sin sincronizar, ${abandoned.length} registro(s) abandonado(s).`,
     );
 
     await db.end();
