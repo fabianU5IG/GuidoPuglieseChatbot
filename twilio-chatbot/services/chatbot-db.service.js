@@ -599,6 +599,26 @@ export async function updateAppointmentStatusById(appointmentId, newStatus) {
     );
 }
 
+// Pacientes que empezaron a agendar pero nunca confirmaron (quedaron en
+// PROPOSED). Mismo criterio que usa el resumen nocturno -- se le da 1h de
+// margen antes de considerarlo "abandonado" por si el paciente sigue
+// escribiendo en ese momento.
+export async function getAbandonedRegistrations(olderThanMinutes = 60) {
+    const [rows] = await db.query(
+        `
+          SELECT a.id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time
+          FROM appointments a
+          JOIN patients p ON p.id = a.patient_id
+          WHERE a.status = 'PROPOSED'
+            AND a.created_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+          ORDER BY a.created_at ASC
+        `,
+        [olderThanMinutes],
+    );
+
+    return rows;
+}
+
 export async function findLocalSaludtoolsAppointmentById(saludtoolsId) {
     const [rows] = await db.query(
         `

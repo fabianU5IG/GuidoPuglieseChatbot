@@ -9,6 +9,7 @@ import {
     logAppointmentMessage,
     createSecretaryQuickAppointment,
     findSaludtoolsPatientsByName,
+    getAbandonedRegistrations,
 } from "../services/chatbot-db.service.js";
 import {
     createSaludtoolsJob,
@@ -67,7 +68,8 @@ const DASHBOARD_MENU_TEXT =
     "3️⃣ Resumen automático de pendientes 🤖\n" +
     "4️⃣ Cancelar cita\n" +
     "5️⃣ Reagendar cita\n" +
-    "6️⃣ Citas con problemas\n\n" +
+    "6️⃣ Citas con problemas\n" +
+    "7️⃣ Registros abandonados\n\n" +
     "💬 También puedes escribir, por ejemplo: \"el jueves el doctor no está disponible\" o \"el jueves no está de 8 a 9\" para bloquear un día u horario, o \"desbloquea el 1/09\" para quitarlo.\n\n" +
     "0️⃣ Salir";
 
@@ -1211,6 +1213,61 @@ async function buildFailedJobsResponse(extra = "", page = 0) {
     };
 }
 
+function describeAbandonedRegistration(row, absoluteIndex) {
+    const emojiIndex = toEmojiNumber(absoluteIndex + 1);
+    const when = formatDateTimeForHumans(
+        `${row.scheduled_date} ${row.scheduled_time}`,
+    );
+    return `${emojiIndex} ${row.full_name || "Paciente sin nombre"} — 📞 ${row.phone}${when ? ` — 📅 ${when}` : ""}\n\n`;
+}
+
+// Pacientes que empezaron a agendar pero nunca confirmaron. A diferencia de
+// "Citas con problemas" (que reintenta un envío fallido a Saludtools), acá
+// no hay nada que reintentar -- la secretaria solo necesita una forma de
+// decir "ya lo resolví" (lo contactó, lo agendó a mano, o decidió que ya no
+// aplica) para que deje de salir en el resumen nocturno. Antes esto se hacía
+// a mano por SQL cada vez (caso real: Sara pidiendo "una opción de validar
+// para que se borre", 23-oct).
+async function buildAbandonedResponse(extra = "", page = 0) {
+    const rows = await getAbandonedRegistrations();
+
+    if (!rows.length) {
+        return {
+            response:
+                `${extra}😊 No hay registros abandonados por revisar.\n\n` +
+                DASHBOARD_MENU_TEXT,
+            nextState: "DASHBOARD",
+            data: { step: "MENU" },
+        };
+    }
+
+    const paginated = paginateCases(rows, page, FAILED_JOBS_PAGE_SIZE);
+
+    let response = `${extra}📵 Registros abandonados (${paginated.total} en total):\n\n`;
+
+    paginated.items.forEach((row, i) => {
+        response += describeAbandonedRegistration(row, paginated.start + i);
+    });
+
+    response += `Página ${paginated.page + 1} de ${Math.max(1, paginated.totalPages)}\n`;
+
+    if (paginated.hasNext) {
+        response += "\n1️⃣1️⃣ Ver más";
+    }
+    if (paginated.hasPrev) {
+        response += "\n1️⃣2️⃣ Ver anteriores";
+    }
+
+    response +=
+        "\n\nEscribe el número global para marcarlo como resuelto (ya no sale más), o 0️⃣ para volver al menú.";
+
+    return {
+        response,
+        nextState: "DASHBOARD",
+        data: { step: "ABANDONED_LIST", abandonedRows: rows, page: paginated.page },
+    };
+}
+
 async function cancelSelectedCase({ from, data }) {
     const apptId = data?.selectedCase?.appointment_id || null;
     const saludId = data?.selectedCase?.saludtools_appointment_id || null;
@@ -1641,6 +1698,10 @@ export default async function dashboardState(msg, data = {}, context) {
 
             if (msg === "6") {
                 return await buildFailedJobsResponse();
+            }
+
+            if (msg === "7") {
+                return await buildAbandonedResponse();
             }
 
             // Antes, bloquear un día del doctor requería que alguien tocara
@@ -3108,6 +3169,75 @@ export default async function dashboardState(msg, data = {}, context) {
                 retried
                     ? "🔄 Listo, la puse de nuevo en la fila. En un momento el sistema la vuelve a intentar.\n\n"
                     : "😊 Esa sincronización ya no estaba pendiente de reintento (puede que alguien ya la haya resuelto).\n\n",
+            );
+        }
+
+        case "ABANDONED_LIST": {
+            if (msg === "0") {
+                return {
+                    response: DASHBOARD_MENU_TEXT,
+                    nextState: "DASHBOARD",
+                    data: { step: "MENU" },
+                };
+            }
+
+            const abandonedRows = Array.isArray(data.abandonedRows)
+                ? data.abandonedRows
+                : [];
+            const abandonedPage = Number(data.page || 0);
+            const rawAbandoned = String(msg || "").trim();
+
+            if (rawAbandoned === "11") {
+                const paginated = paginateCases(
+                    abandonedRows,
+                    abandonedPage,
+                    FAILED_JOBS_PAGE_SIZE,
+                );
+                return buildAbandonedResponse(
+                    paginated.hasNext ? "" : "⚠️ No hay más para mostrar.\n\n",
+                    paginated.hasNext ? abandonedPage + 1 : abandonedPage,
+                );
+            }
+
+            if (rawAbandoned === "12") {
+                const paginated = paginateCases(
+                    abandonedRows,
+                    abandonedPage,
+                    FAILED_JOBS_PAGE_SIZE,
+                );
+                return buildAbandonedResponse(
+                    paginated.hasPrev ? "" : "⚠️ Ya estás en la primera página.\n\n",
+                    paginated.hasPrev ? abandonedPage - 1 : abandonedPage,
+                );
+            }
+
+            const abandonedNumber = parseInt(rawAbandoned, 10);
+            const abandonedIndex = Number.isInteger(abandonedNumber)
+                ? abandonedNumber - 1
+                : -1;
+            const chosenAbandoned = abandonedRows[abandonedIndex];
+
+            if (!Number.isInteger(abandonedIndex) || !chosenAbandoned) {
+                const abandonedFallback = await applyDashboardAIFallback(
+                    msg,
+                    "ABANDONED_LIST",
+                );
+                if (abandonedFallback) return abandonedFallback;
+
+                return buildAbandonedResponse(
+                    "❌ No reconocí esa opción.\n\n",
+                    abandonedPage,
+                );
+            }
+
+            const dismissed = await markCancelled(chosenAbandoned.id, {
+                changedBy: "SECRETARY",
+            });
+
+            return buildAbandonedResponse(
+                dismissed
+                    ? "✅ Listo, ya no va a volver a salir.\n\n"
+                    : "😊 Ese registro ya no estaba pendiente (puede que alguien ya lo haya resuelto).\n\n",
             );
         }
 
