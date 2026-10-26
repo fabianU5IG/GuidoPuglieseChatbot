@@ -343,8 +343,22 @@ async function handleRetryOrFail({
     // dependía de que alguien se diera cuenta y la reencolara a mano -- caso
     // real: Yamil Navarro, doc 1042970427, cita del 24-oct quedó 2 días sin
     // resolverse hasta que el paciente se presentó físicamente el 26-oct.
+    //
+    // 412 como status HTTP (no businessCode) también entra aquí: es el mismo
+    // "no se ha encontrado paciente" que processAppointmentCreate ya decide
+    // que vale la pena reintentar cuando patientExistsLocal es false (ver
+    // comentario junto a isPatientNotFoundError más arriba) -- pero ese caso
+    // cae aquí, a este chequeo genérico, y antes 412 solo se miraba como
+    // businessCode (error con HTTP 200 y código de negocio en el body), nunca
+    // como status HTTP real, así que nunca calificaba como reintentable y la
+    // cita fallaba de inmediato en el primer intento. Si llegamos aquí con
+    // isPatientNotFoundError, patientExistsLocal ya es false por definición
+    // (el caso true se resuelve antes, arriba, sin pasar por acá), así que es
+    // seguro tratarlo como reintentable -- es justo el caso de "Saludtools
+    // todavía no propagó al paciente que acabamos de crear". Caso real:
+    // Javier Rodriguez Guzman, doc 72185849, 26-oct, job 113.
     const retryable =
-        [401, 429, 500, 502, 503, 504].includes(status) ||
+        [401, 412, 429, 500, 502, 503, 504].includes(status) ||
         [412].includes(businessCode);
 
     const lastError = safeErrorMessage(error);
