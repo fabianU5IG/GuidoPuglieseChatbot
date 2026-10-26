@@ -335,8 +335,16 @@ async function handleRetryOrFail({
     const status = error?.status;
     const businessCode = error?.businessCode;
 
+    // 401 se agrega a la lista de reintentables: Saludtools lo devuelve de
+    // forma intermitente con el mismo mensaje "No tiene permisos para
+    // acceder al servidor" que el 429, y en la práctica se ha visto
+    // resolverse solo minutos/horas después (igual que el 429). Antes fallaba
+    // la cita de inmediato en el primer intento sin ningún reintento, y
+    // dependía de que alguien se diera cuenta y la reencolara a mano -- caso
+    // real: Yamil Navarro, doc 1042970427, cita del 24-oct quedó 2 días sin
+    // resolverse hasta que el paciente se presentó físicamente el 26-oct.
     const retryable =
-        [429, 500, 502, 503, 504].includes(status) ||
+        [401, 429, 500, 502, 503, 504].includes(status) ||
         [412].includes(businessCode);
 
     const lastError = safeErrorMessage(error);
