@@ -1,7 +1,8 @@
-// Reporte mas profundo que overview.mjs: en vez de solo "hoy", mira todo
-// desde una fecha de inicio (por defecto el 1 de octubre) para responder la
-// pregunta de fondo que preocupa a secretaria: "¿se está perdiendo gente que
-// cree que agendó pero nunca quedó registrado?"
+// Reporte profundo y en lenguaje simple (pensado para pegarle directo a
+// secretaria, no tecnica) desde una fecha de inicio (default: 1 de octubre).
+// Responde la preocupacion de fondo: "¿se está perdiendo gente que cree que
+// agendó pero nunca quedó registrado?" -- mostrando nombre, cédula y fecha
+// de cada caso que de verdad necesita revisión, no solo numeros y conteos.
 //
 // Uso:
 //   node scripts/deep-overview.mjs [YYYY-MM-DD]
@@ -13,63 +14,53 @@ import { db } from "../db/mysql.js";
 const sinceArg = process.argv[2];
 const since = sinceArg || `${new Date().getFullYear()}-10-01`;
 
-function section(title) {
-    console.log(`\n=== ${title} ===`);
+function parsePayload(raw) {
+    if (!raw) return null;
+    try {
+        return typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+        return null;
+    }
+}
+
+function formatFecha(value) {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value || "");
+    return d.toLocaleDateString("es-CO", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+    });
+}
+
+async function getDocumentNumberForAppointment(appointmentId) {
+    const [rows] = await db.query(
+        `SELECT payload FROM saludtools_jobs WHERE appointment_id = ? ORDER BY id DESC LIMIT 1`,
+        [appointmentId],
+    );
+    const payload = parsePayload(rows?.[0]?.payload);
+    return (
+        payload?.appointmentBody?.patientDocumentNumber ||
+        payload?.patientBody?.documentNumber ||
+        null
+    );
 }
 
 async function main() {
-    console.log(`Reporte desde ${since} hasta hoy`);
-
-    section("Citas creadas por estado final");
     const [byStatus] = await db.query(
         `SELECT status, COUNT(*) as total
          FROM appointments
          WHERE created_at >= ?
-         GROUP BY status
-         ORDER BY total DESC`,
+         GROUP BY status`,
         [since],
     );
-    let totalAppointments = 0;
-    for (const row of byStatus) {
-        totalAppointments += row.total;
-        console.log(`${row.status}: ${row.total}`);
-    }
-    console.log(`TOTAL: ${totalAppointments}`);
 
-    section("Citas creadas por semana (CONFIRMED vs el resto)");
-    const [byWeek] = await db.query(
-        `SELECT
-            YEARWEEK(created_at, 3) as semana,
-            MIN(DATE(created_at)) as desde,
-            SUM(status = 'CONFIRMED') as confirmadas,
-            SUM(status != 'CONFIRMED') as no_confirmadas,
-            COUNT(*) as total
-         FROM appointments
-         WHERE created_at >= ?
-         GROUP BY semana
-         ORDER BY semana ASC`,
-        [since],
-    );
-    for (const row of byWeek) {
-        console.log(
-            `Semana de ${row.desde}: ${row.total} total — ${row.confirmadas} confirmadas, ${row.no_confirmadas} sin confirmar`,
-        );
-    }
+    const totals = Object.fromEntries(byStatus.map((r) => [r.status, r.total]));
+    const totalAppointments = byStatus.reduce((acc, r) => acc + r.total, 0);
+    const confirmadas = totals.CONFIRMED || 0;
+    const canceladas = totals.CANCELLED || 0;
+    const sinResolver = totalAppointments - confirmadas - canceladas;
 
-    section("Jobs de Saludtools por estado (desde la fecha)");
-    const [jobsByStatus] = await db.query(
-        `SELECT status, COUNT(*) as total
-         FROM saludtools_jobs
-         WHERE created_at >= ?
-         GROUP BY status
-         ORDER BY total DESC`,
-        [since],
-    );
-    for (const row of jobsByStatus) {
-        console.log(`${row.status}: ${row.total}`);
-    }
-
-    section("TODAS las citas que NO quedaron confirmadas (de cualquier fecha, abiertas ahora)");
     const [unresolved] = await db.query(
         `SELECT a.id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time, a.status, a.created_at
          FROM appointments a
@@ -79,36 +70,43 @@ async function main() {
          ORDER BY a.created_at ASC`,
         [since],
     );
-    if (!unresolved.length) {
-        console.log("Ninguna -- todo lo creado desde esa fecha terminó CONFIRMED o CANCELLED.");
-    } else {
-        for (const row of unresolved) {
-            console.log(
-                `• [#${row.id}] ${row.full_name} — ${row.phone} — cita ${row.scheduled_date} ${row.scheduled_time} — estado: ${row.status} (creado ${row.created_at})`,
-            );
-        }
-    }
 
-    section("Jobs de Saludtools que fallaron de verdad (status FAILED ahora mismo)");
-    const [failedNow] = await db.query(
-        `SELECT id, phone, payload, last_error, created_at
-         FROM saludtools_jobs
-         WHERE status = 'FAILED' AND created_at >= ?
-         ORDER BY created_at ASC`,
-        [since],
+    const STATUS_LABEL = {
+        PROPOSED: "Empezó a agendar pero nunca confirmó",
+        QUEUED: "Se está procesando todavía",
+        FAILED: "No se pudo confirmar con Saludtools",
+    };
+
+    console.log(`📊 Reporte de citas desde el ${formatFecha(since)}\n`);
+    console.log(`Se agendaron ${totalAppointments} citas en total:`);
+    console.log(`✅ ${confirmadas} quedaron confirmadas correctamente`);
+    console.log(`🚫 ${canceladas} fueron canceladas (por el paciente o la secretaría)`);
+    console.log(
+        `⚠️ ${sinResolver} necesitan revisión (no se confirmaron ni se cancelaron)\n`,
     );
-    if (!failedNow.length) {
-        console.log("Ninguno -- nada quedó fallido sin resolver.");
+
+    if (!unresolved.length) {
+        console.log("No hay ningún caso pendiente de revisar. Todo lo demás quedó en orden. ✅");
     } else {
-        for (const row of failedNow) {
-            const payload = typeof row.payload === "string" ? JSON.parse(row.payload) : row.payload;
+        console.log(`Estos son los ${unresolved.length} caso(s) que hay que revisar:\n`);
+
+        let i = 1;
+        for (const row of unresolved) {
+            const docNumber = await getDocumentNumberForAppointment(row.id);
+            console.log(`${i}. 👤 ${row.full_name || "Paciente sin nombre"}`);
+            if (docNumber) console.log(`   📄 Cédula: ${docNumber}`);
+            console.log(`   📞 Teléfono: ${row.phone}`);
             console.log(
-                `• [job ${row.id}] ${payload?.fullName || "?"} — ${row.phone} — error: ${row.last_error} (creado ${row.created_at})`,
+                `   📅 Fecha de la cita: ${formatFecha(row.scheduled_date)} a las ${row.scheduled_time}`,
             );
+            console.log(
+                `   📌 Situación: ${STATUS_LABEL[row.status] || row.status}`,
+            );
+            console.log();
+            i += 1;
         }
     }
 
-    console.log();
     await db.end();
 }
 
