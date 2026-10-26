@@ -107,6 +107,36 @@ async function main() {
         }
     }
 
+    console.log(`\n📋 Lista completa de TODOS los que agendaron desde el ${formatFecha(since)} (${totalAppointments} en total):\n`);
+
+    const [all] = await db.query(
+        `SELECT a.id, p.full_name, p.phone, a.scheduled_date, a.scheduled_time, a.status
+         FROM appointments a
+         JOIN patients p ON p.id = a.patient_id
+         WHERE a.created_at >= ?
+         ORDER BY a.scheduled_date ASC, a.scheduled_time ASC`,
+        [since],
+    );
+
+    const ALL_STATUS_LABEL = {
+        CONFIRMED: "✅ Confirmada",
+        CANCELLED: "🚫 Cancelada",
+        PROPOSED: "⚠️ Nunca confirmó",
+        QUEUED: "⏳ En proceso",
+        FAILED: "⚠️ No se pudo confirmar",
+    };
+
+    let j = 1;
+    for (const row of all) {
+        const docNumber = await getDocumentNumberForAppointment(row.id);
+        console.log(
+            `${j}. ${row.full_name || "Paciente sin nombre"}` +
+                (docNumber ? ` — Cédula: ${docNumber}` : "") +
+                ` — Tel: ${row.phone} — Cita: ${formatFecha(row.scheduled_date)} ${row.scheduled_time} — ${ALL_STATUS_LABEL[row.status] || row.status}`,
+        );
+        j += 1;
+    }
+
     await db.end();
 }
 
