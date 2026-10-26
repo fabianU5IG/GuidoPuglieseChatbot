@@ -1360,6 +1360,46 @@ function isCancelledSaludtoolsStatus(status) {
     return normalized === "CANCELLED" || normalized === "CANCELED";
 }
 
+// Las citas de este flujo vienen directo de la API de Saludtools (búsqueda
+// por documento), no de nuestra tabla local -- por eso nunca traían consigo
+// un appointment_id nuestro, y cancelSelectedCase (más abajo) solo actualiza
+// la base local cuando sí tiene ese id. Resultado real: la cita de Javier
+// Rodriguez Guzman (doc 72185849, 26-oct) quedó cancelada correctamente en
+// Saludtools pero siguió mostrándose como CONFIRMED en nuestros reportes,
+// porque este flujo nunca supo qué fila local le correspondía. Se busca la
+// cita local equivalente cruzando documento + fecha/hora contra el payload
+// que guardamos en saludtools_jobs al crearla (best-effort: si la cita es
+// muy vieja o no la creó el bot, puede no encontrarse, y el flujo sigue
+// funcionando igual, solo que sin poder sincronizar el estado local).
+async function findLocalAppointmentIdForSaludtoolsAppointment({
+    documentNumber,
+    startAppointment,
+}) {
+    const [date, time] = String(startAppointment || "").split(" ");
+    if (!date || !time) return null;
+
+    try {
+        const [rows] = await db.query(
+            `SELECT a.id
+             FROM appointments a
+             JOIN saludtools_jobs j ON j.appointment_id = a.id
+             WHERE JSON_UNQUOTE(JSON_EXTRACT(j.payload, '$.appointmentBody.patientDocumentNumber')) = ?
+               AND a.scheduled_date = ?
+               AND TIME_FORMAT(a.scheduled_time, '%H:%i') = ?
+             ORDER BY j.created_at DESC
+             LIMIT 1`,
+            [String(documentNumber), date, time.slice(0, 5)],
+        );
+        return rows?.[0]?.id || null;
+    } catch (error) {
+        console.error(
+            "❌ Error buscando cita local equivalente para cancelar/reagendar:",
+            error,
+        );
+        return null;
+    }
+}
+
 async function findUpcomingAppointmentsForPatient({
     documentType,
     documentNumber,
@@ -1374,7 +1414,7 @@ async function findUpcomingAppointmentsForPatient({
     const content = resp?.body?.content || resp?.content || [];
     const todayYmd = new Date().toISOString().slice(0, 10);
 
-    return (Array.isArray(content) ? content : [])
+    const upcoming = (Array.isArray(content) ? content : [])
         .filter(
             (item) =>
                 !isCancelledSaludtoolsStatus(item?.stateAppointment) &&
@@ -1383,6 +1423,18 @@ async function findUpcomingAppointmentsForPatient({
         .sort((a, b) =>
             String(a.startAppointment).localeCompare(String(b.startAppointment)),
         );
+
+    return Promise.all(
+        upcoming.map(async (item) => ({
+            ...item,
+            local_appointment_id: await findLocalAppointmentIdForSaludtoolsAppointment(
+                {
+                    documentNumber,
+                    startAppointment: item.startAppointment,
+                },
+            ),
+        })),
+    );
 }
 
 function buildCancelAppointmentPrompt(appointments) {
@@ -2395,6 +2447,7 @@ export default async function dashboardState(msg, data = {}, context) {
                 from,
                 data: {
                     selectedCase: {
+                        appointment_id: chosen.local_appointment_id || null,
                         saludtools_appointment_id: chosen.id,
                         patient_document_type: data.cancelDocumentType,
                         patient_document_number: data.cancelDocumentNumber,
