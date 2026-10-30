@@ -149,10 +149,21 @@ export async function markSaludtoolsJobNotified(jobId) {
 }
 
 // Jobs que llevan tiempo sin resolverse (PENDING/RETRY/PROCESSING) y a los
-// que no se les ha avisado nada en los últimos `olderThanMinutes` minutos —
-// independiente de si hay errores o no. Antes el único aviso intermedio
-// dependía de reintentos fallidos (5to intento); un job simplemente atascado
-// en la cola sin errores podía tardar mucho sin dar ninguna señal de vida.
+// que no se les ha avisado nada todavía -- independiente de si hay errores o
+// no. Antes el único aviso intermedio dependía de reintentos fallidos (5to
+// intento); un job simplemente atascado en la cola sin errores podía tardar
+// mucho sin dar ninguna señal de vida.
+//
+// Antes se volvía a avisar cada vez que pasaban otros `olderThanMinutes`
+// minutos desde el aviso anterior (`last_notified_at <= NOW() - N min`), y
+// como el worker revisa esto cada N minutos exactos (ver
+// STALE_NOTIFY_INTERVAL_MS), un job que se demora en resolverse -- como un
+// bloqueo largo de Saludtools -- cae justo en esa ventana en cada vuelta y
+// recibe el mismo aviso para siempre mientras dure el bloqueo. Caso real:
+// job 120 (cancelación de cita, 30-oct), bloqueado horas por un 401
+// intermitente de Saludtools, le mandó "seguimos trabajando..." a la
+// secretaria cada 5 minutos sin parar toda la tarde. Ahora el aviso es
+// una sola vez por job (solo cuando last_notified_at todavía es NULL).
 export async function getStaleUnresolvedSaludtoolsJobs({
   olderThanMinutes = 5,
   limit = 20,
@@ -163,14 +174,11 @@ export async function getStaleUnresolvedSaludtoolsJobs({
       FROM saludtools_jobs
       WHERE status IN ('PENDING', 'RETRY', 'PROCESSING')
         AND created_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
-        AND (
-          last_notified_at IS NULL
-          OR last_notified_at <= DATE_SUB(NOW(), INTERVAL ? MINUTE)
-        )
+        AND last_notified_at IS NULL
       ORDER BY created_at ASC
       LIMIT ?
     `,
-    [olderThanMinutes, olderThanMinutes, limit],
+    [olderThanMinutes, limit],
   );
 
   return rows.map(parsePayload);
