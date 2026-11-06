@@ -31,17 +31,28 @@ async function requeue(jobId) {
 async function main() {
     const failedJobs = await getRecentFailedSaludtoolsJobs(200);
 
-    if (!failedJobs.length) {
+    // Algunos jobs se marcan FAILED a propósito y para siempre (ver
+    // isNonRetryableDeleteError en saludtools.worker.js): son rechazos
+    // definitivos de Saludtools (ej: no se puede eliminar una cita con
+    // información médica asociada), no tropiezos pasajeros. Reencolarlos cada
+    // hora solo los hace fallar de nuevo y repetir el mismo aviso a la
+    // secretaría sin parar -- caso real: job 120, reencolado así durante
+    // días seguidos.
+    const retryable = failedJobs.filter(
+        (job) => !String(job.last_error || "").startsWith("NO_RETRYABLE"),
+    );
+
+    if (!retryable.length) {
         console.log("Sin citas fallidas pendientes, nada para reencolar.");
         await db.end();
         return;
     }
 
-    for (const job of failedJobs) {
+    for (const job of retryable) {
         await requeue(job.id);
     }
 
-    console.log(`Reencoladas ${failedJobs.length} cita(s) fallida(s) para reintento silencioso.`);
+    console.log(`Reencoladas ${retryable.length} cita(s) fallida(s) para reintento silencioso.`);
     await db.end();
 }
 

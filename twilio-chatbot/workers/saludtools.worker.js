@@ -261,6 +261,22 @@ function isDuplicatePatientError(error) {
     );
 }
 
+// Caso real (job 120, 30-oct a 06-nov): Saludtools rechaza eliminar una cita
+// que ya tiene información médica asociada (historia clínica, notas, etc.)
+// con un 412 de negocio -- este es un rechazo DEFINITIVO de Saludtools, no un
+// tropiezo pasajero como el 429/401. handleRetryOrFail trataba cualquier 412
+// de negocio como reintentable (ver comentario en isPatientNotFoundError
+// sobre ese mismo código para otro caso que sí vale la pena reintentar), así
+// que esta cita se reintentaba durante horas, fallaba, y el barrido automático
+// (hourly-retry-failed-jobs.mjs / nightly-failed-jobs-digest.mjs) la volvía a
+// reencolar sin más -- un ciclo infinito que le mandó a la secretaria el
+// mismo par de avisos contradictorios ("no se pudo" seguido de "seguimos
+// intentando") una y otra vez durante días.
+function isNonRetryableDeleteError(error) {
+    const text = normalizeErrorText(error);
+    return text.includes("informacion medica asociada");
+}
+
 // Se manda una sola vez por solicitud (al 5to intento, ~5 minutos), no en cada
 // reintento — antes se repetía cada 5 intentos y el paciente podía recibir el
 // mismo aviso de "seguimos procesando" 5+ veces seguidas en una sola solicitud
@@ -916,6 +932,26 @@ async function processAppointmentDelete(job) {
             "✅ Tu cita fue cancelada correctamente.",
         );
     } catch (error) {
+        if (isNonRetryableDeleteError(error)) {
+            await markSaludtoolsJobFailed(
+                job.id,
+                `NO_RETRYABLE_INFO_MEDICA: ${safeErrorMessage(error)}`,
+            );
+
+            await safeSendWhatsApp(
+                job.phone,
+                "⚠️ No fue posible cancelar tu cita: ya tiene información médica registrada en el sistema, así que Saludtools no permite eliminarla automáticamente. La secretaría se encargará de resolverlo manualmente.",
+            );
+
+            await notifySecretary(
+                `⚠️ Esta cita NO se puede cancelar de forma automática\n\n` +
+                    `📅 Cita Saludtools ID: ${appointmentId}\n📞 ${job.phone}\n\n` +
+                    `Motivo: ya tiene información médica asociada (historia clínica, notas, etc.) -- esto es una restricción real de Saludtools, no un error pasajero, así que no se va a resolver solo por más que se reintente.\n\n` +
+                    `Si de verdad hay que cancelarla, tiene que hacerse manualmente desde Saludtools.`,
+            );
+            return;
+        }
+
         await handleRetryOrFail({
             job,
             error,
