@@ -24,6 +24,7 @@ import { db } from "../db/mysql.js";
 import {
     getRecentFailedSaludtoolsJobs,
     getSaludtoolsJobById,
+    isExcludedFromAutoSweep,
 } from "../services/saludtools-jobs.service.js";
 import {
     sendWhatsAppMessage,
@@ -83,13 +84,8 @@ async function requeueForSweep(jobId) {
 async function getStillStuckFailedJobs() {
     const allFailedJobs = await getRecentFailedSaludtoolsJobs(200);
 
-    // Jobs marcados FAILED a propósito y para siempre (rechazo definitivo de
-    // Saludtools, ej: no se puede eliminar una cita con información médica
-    // asociada -- ver isNonRetryableDeleteError en saludtools.worker.js) no
-    // se reencolan aquí: reintentarlos nunca los va a resolver, solo repite
-    // el mismo aviso a la secretaría cada noche sin parar.
     const failedJobs = allFailedJobs.filter(
-        (job) => !String(job.last_error || "").startsWith("NO_RETRYABLE"),
+        (job) => !isExcludedFromAutoSweep(job.last_error),
     );
 
     if (!failedJobs.length) {

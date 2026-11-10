@@ -11,6 +11,21 @@ function parsePayload(job) {
   };
 }
 
+// Jobs que no deben reencolarse solos (ni cada hora ni en el barrido
+// nocturno): o son un rechazo definitivo de Saludtools que nunca cambia
+// (NO_RETRYABLE_*, ver saludtools.worker.js), o son un conflicto de horario
+// (HORARIO_NO_DISPONIBLE) que casi nunca se resuelve solo con el paso del
+// tiempo -- reencolarlos a ciegas solo los hace fallar de nuevo contra el
+// mismo motivo y repetir el mismo aviso a la secretaria sin parar. Caso
+// real: job 127 (Alexander Jose Cardenas Rico, doc 72097562, conflicto de
+// horario del 06-nov), reencolado cada hora y mandando el mismo aviso a
+// Darys "a toda hora". Siguen visibles y reintentables a mano desde el
+// panel ("Citas con problemas"), solo no se tocan automáticamente.
+export function isExcludedFromAutoSweep(lastError) {
+  const raw = String(lastError || "");
+  return raw.startsWith("NO_RETRYABLE") || raw.startsWith("HORARIO_NO_DISPONIBLE");
+}
+
 export async function createSaludtoolsJob({
   jobType,
   phone,

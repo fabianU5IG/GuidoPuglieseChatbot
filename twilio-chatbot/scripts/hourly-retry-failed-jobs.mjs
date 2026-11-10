@@ -11,7 +11,10 @@
 
 import "dotenv/config";
 import { db } from "../db/mysql.js";
-import { getRecentFailedSaludtoolsJobs } from "../services/saludtools-jobs.service.js";
+import {
+    getRecentFailedSaludtoolsJobs,
+    isExcludedFromAutoSweep,
+} from "../services/saludtools-jobs.service.js";
 
 async function requeue(jobId) {
     await db.query(
@@ -31,15 +34,8 @@ async function requeue(jobId) {
 async function main() {
     const failedJobs = await getRecentFailedSaludtoolsJobs(200);
 
-    // Algunos jobs se marcan FAILED a propósito y para siempre (ver
-    // isNonRetryableDeleteError en saludtools.worker.js): son rechazos
-    // definitivos de Saludtools (ej: no se puede eliminar una cita con
-    // información médica asociada), no tropiezos pasajeros. Reencolarlos cada
-    // hora solo los hace fallar de nuevo y repetir el mismo aviso a la
-    // secretaría sin parar -- caso real: job 120, reencolado así durante
-    // días seguidos.
     const retryable = failedJobs.filter(
-        (job) => !String(job.last_error || "").startsWith("NO_RETRYABLE"),
+        (job) => !isExcludedFromAutoSweep(job.last_error),
     );
 
     if (!retryable.length) {
