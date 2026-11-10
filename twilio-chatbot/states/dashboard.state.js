@@ -1119,9 +1119,23 @@ const FAILED_JOBS_PAGE_SIZE = 5;
 // internos) a frases simples -- Darys (secretaria) no es técnica, así que
 // mostrarle "PACIENTE_NO_REGISTRADO: {"id":null,"code":412,...}" no le decía
 // nada útil, solo se veía como un error del sistema.
+// Caso real (job 120): Darys vio "hubo un problema técnico al enviarlo a
+// Saludtools" para esta cita (motivo genérico, igual al de cualquier fallo
+// pasajero), le dio reintentar, y como el motivo real es un rechazo
+// DEFINITIVO de Saludtools (no se puede eliminar una cita con información
+// médica asociada), volvió a fallar de inmediato y le llegó el mismo aviso
+// de nuevo -- parecía que "el bot se había vuelto loco" repitiendo el mismo
+// mensaje, cuando en realidad reintentarla nunca iba a funcionar.
+function isPermanentlyUnresolvable(job) {
+    return String(job.last_error || "").startsWith("NO_RETRYABLE");
+}
+
 function humanizeJobError(job) {
     const raw = String(job.last_error || "");
 
+    if (raw.startsWith("NO_RETRYABLE_INFO_MEDICA")) {
+        return "Saludtools NO permite eliminar esta cita porque ya tiene información médica asociada -- esto no se arregla reintentando, hay que hacerlo manualmente en Saludtools";
+    }
     if (raw.startsWith("PACIENTE_NO_REGISTRADO")) {
         return "el paciente todavía no está registrado en Saludtools";
     }
@@ -3213,6 +3227,12 @@ export default async function dashboardState(msg, data = {}, context) {
                 return buildFailedJobsResponse(
                     "❌ No reconocí esa opción.\n\n",
                     currentPage,
+                );
+            }
+
+            if (isPermanentlyUnresolvable(chosen)) {
+                return buildFailedJobsResponse(
+                    "⚠️ Esta no se puede reintentar: Saludtools la rechaza de forma definitiva (ver el motivo arriba), no es un error pasajero. Hay que resolverla manualmente directo en Saludtools.\n\n",
                 );
             }
 
